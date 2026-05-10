@@ -3,11 +3,13 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use serde::Serialize;
 
-use crate::algorithm::Algorithm;
-use crate::bar::Bar;
-use crate::context::{Context, OrderKind};
-use crate::data::{iter_bars, load_ticker_map};
-use crate::slice::Slice;
+use crate::{
+    algorithm::Algorithm,
+    bar::Bar,
+    context::{Context, OrderKind},
+    data::{iter_bars, load_ticker_map},
+    slice::Slice,
+};
 
 #[derive(Serialize)]
 struct TradeRecord {
@@ -47,17 +49,21 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
     let mut last_date: Option<NaiveDate> = None;
 
     for (ts_ns, bars) in tick_map {
-        let secs  = ts_ns / 1_000_000_000;
+        let secs = ts_ns / 1_000_000_000;
         let nanos = (ts_ns % 1_000_000_000) as u32;
         let tick_time = Utc.timestamp_opt(secs, nanos).single().unwrap();
         let tick_date = tick_time.date_naive();
 
         // Date range filter
         if let Some(start) = ctx.start_date {
-            if tick_date < start { continue; }
+            if tick_date < start {
+                continue;
+            }
         }
         if let Some(end) = ctx.end_date {
-            if tick_date > end { break; }
+            if tick_date > end {
+                break;
+            }
         }
 
         let current_prices: HashMap<String, f64> =
@@ -115,21 +121,26 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
                 OrderKind::SetHoldings(pct) => {
                     let total = ctx.portfolio.total_value(&current_prices);
                     let desired_qty = total * pct / price;
-                    let current_qty = ctx.portfolio.positions.get(&order.symbol)
-                        .map(|p| p.quantity).unwrap_or(0.0);
+                    let current_qty = ctx
+                        .portfolio
+                        .positions
+                        .get(&order.symbol)
+                        .map(|p| p.quantity)
+                        .unwrap_or(0.0);
                     desired_qty - current_qty
                 }
                 OrderKind::Liquidate => {
-                    -ctx.portfolio.positions.get(&order.symbol)
-                        .map(|p| p.quantity).unwrap_or(0.0)
+                    -ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0)
                 }
             };
 
-            if qty.abs() < 1e-9 { continue; }
+            if qty.abs() < 1e-9 {
+                continue;
+            }
 
             // Record trade if closing/reducing a position
-            let current_qty = ctx.portfolio.positions.get(&order.symbol)
-                .map(|p| p.quantity).unwrap_or(0.0);
+            let current_qty =
+                ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
 
             if current_qty != 0.0 && qty * current_qty < 0.0 {
                 if let Some(entry) = open_entries.remove(&order.symbol) {
@@ -154,9 +165,8 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
     }
 
     // Final equity (mark open positions at last known price)
-    let last_prices: HashMap<String, f64> = ctx.portfolio.positions.values()
-        .map(|p| (p.symbol.clone(), p.avg_price))
-        .collect();
+    let last_prices: HashMap<String, f64> =
+        ctx.portfolio.positions.values().map(|p| (p.symbol.clone(), p.avg_price)).collect();
     let final_equity = ctx.portfolio.total_value(&last_prices);
 
     let total_pnl: f64 = trades.iter().map(|t| t.pnl).sum();
@@ -169,6 +179,9 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
     println!("=== Backtest Complete ===");
     println!(
         "Trades: {}  |  Win Rate: {:.0}%  |  Total PnL: ${:.0}  |  Final Equity: ${:.0}",
-        trades.len(), win_rate, total_pnl, final_equity
+        trades.len(),
+        win_rate,
+        total_pnl,
+        final_equity
     );
 }

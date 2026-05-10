@@ -24,7 +24,9 @@ impl Portfolio {
     }
 
     pub fn total_value(&self, prices: &HashMap<String, f64>) -> f64 {
-        let holdings: f64 = self.positions.values()
+        let holdings: f64 = self
+            .positions
+            .values()
             .map(|p| p.quantity * prices.get(&p.symbol).copied().unwrap_or(p.avg_price))
             .sum();
         self.cash + holdings

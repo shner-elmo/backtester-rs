@@ -1,5 +1,7 @@
-use backtester_rs::indicators::{Ema, Next};
-use backtester_rs::{Algorithm, Context, Slice, run};
+use backtester_rs::{
+    indicators::{Ema, Next},
+    run, Algorithm, Context, Slice,
+};
 
 struct EmaCross {
     symbol: String,

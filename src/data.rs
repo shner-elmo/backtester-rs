@@ -1,12 +1,15 @@
-use std::collections::HashMap;
-use std::fs::{read_to_string, File};
-use std::path::PathBuf;
+use std::{
+    collections::HashMap,
+    fs::{read_to_string, File},
+    path::PathBuf,
+};
 
 use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt8Array};
 use chrono::{TimeZone, Utc};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ProjectionMask;
-use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::{
+    arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask},
+    file::reader::{FileReader, SerializedFileReader},
+};
 use walkdir::WalkDir;
 
 use crate::bar::{Bar, MarketSession};
@@ -15,8 +18,7 @@ const COLUMNS: [&str; 5] = ["ticker", "open", "close", "window_start", "market_s
 
 pub fn load_ticker_map(data_root: &str) -> HashMap<u16, String> {
     let path = format!("{}/encoded_tickers.json", data_root);
-    let content = read_to_string(&path)
-        .unwrap_or_else(|_| panic!("could not read {}", path));
+    let content = read_to_string(&path).unwrap_or_else(|_| panic!("could not read {}", path));
     let temp: HashMap<String, String> = serde_json::from_str(&content).unwrap();
     temp.into_iter().map(|(k, v)| (k.parse::<u16>().unwrap(), v)).collect()
 }
@@ -44,10 +46,11 @@ pub fn iter_bars(
             let batch = batch.unwrap();
 
             let ticker_col = batch.column(0).as_any().downcast_ref::<UInt16Array>().unwrap();
-            let open_col   = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
-            let close_col  = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
-            let ts_col     = batch.column(3).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let sess_col   = batch.column(4).as_any().downcast_ref::<UInt8Array>().unwrap();
+            let open_col = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+            let close_col = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+            let ts_col =
+                batch.column(3).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+            let sess_col = batch.column(4).as_any().downcast_ref::<UInt8Array>().unwrap();
 
             for i in 0..batch.num_rows() {
                 let ticker_id = ticker_col.value(i);
@@ -57,9 +60,9 @@ pub fn iter_bars(
                 };
 
                 let ts_ns = ts_col.value(i);
-                let secs  = ts_ns / 1_000_000_000;
+                let secs = ts_ns / 1_000_000_000;
                 let nanos = (ts_ns % 1_000_000_000) as u32;
-                let time  = Utc.timestamp_opt(secs, nanos).single().unwrap();
+                let time = Utc.timestamp_opt(secs, nanos).single().unwrap();
 
                 let session = match sess_col.value(i) {
                     1 => MarketSession::PreMarket,
@@ -68,7 +71,15 @@ pub fn iter_bars(
                     _ => continue,
                 };
 
-                cb(symbol, Bar { time, open: open_col.value(i), close: close_col.value(i), market_session: session });
+                cb(
+                    symbol,
+                    Bar {
+                        time,
+                        open: open_col.value(i),
+                        close: close_col.value(i),
+                        market_session: session,
+                    },
+                );
             }
         }
     }
@@ -83,17 +94,18 @@ fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
         .collect();
 
     files.sort_by_key(|x| {
-        let month: u32 = x
-            .parent().unwrap()
-            .file_name().unwrap()
-            .to_string_lossy()
-            .parse().unwrap_or(0);
+        let month: u32 =
+            x.parent().unwrap().file_name().unwrap().to_string_lossy().parse().unwrap_or(0);
         let year: u32 = x
-            .parent().unwrap()
-            .parent().unwrap()
-            .file_name().unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
             .to_string_lossy()
-            .parse().unwrap_or(0);
+            .parse()
+            .unwrap_or(0);
         (year, month)
     });
 

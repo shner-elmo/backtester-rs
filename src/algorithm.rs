@@ -1,5 +1,4 @@
-use crate::context::Context;
-use crate::slice::Slice;
+use crate::{context::Context, slice::Slice};
 
 pub trait Algorithm {
     fn initialize(&mut self, ctx: &mut Context);

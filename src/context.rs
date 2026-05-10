@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+
 use chrono::NaiveDate;
-use crate::bar::Bar;
-use crate::broker::Portfolio;
-use crate::consolidator::{ConsolidatorEntry, ConsolidatorPeriod};
+
+use crate::{
+    bar::Bar,
+    broker::Portfolio,
+    consolidator::{ConsolidatorEntry, ConsolidatorPeriod},
+};
 
 pub(crate) enum OrderKind {
     Market(f64),
@@ -80,19 +84,17 @@ impl Context {
         period: ConsolidatorPeriod,
         cb: impl Fn(&Bar) + 'static,
     ) {
-        self.consolidators.push(ConsolidatorEntry::new(
-            symbol.to_string(),
-            period,
-            Box::new(cb),
-        ));
+        self.consolidators.push(ConsolidatorEntry::new(symbol.to_string(), period, Box::new(cb)));
     }
 
     pub fn market_order(&mut self, symbol: &str, qty: f64) {
-        self.pending_orders.push(Order { symbol: symbol.to_string(), kind: OrderKind::Market(qty) });
+        self.pending_orders
+            .push(Order { symbol: symbol.to_string(), kind: OrderKind::Market(qty) });
     }
 
     pub fn set_holdings(&mut self, symbol: &str, pct: f64) {
-        self.pending_orders.push(Order { symbol: symbol.to_string(), kind: OrderKind::SetHoldings(pct) });
+        self.pending_orders
+            .push(Order { symbol: symbol.to_string(), kind: OrderKind::SetHoldings(pct) });
     }
 
     pub fn liquidate(&mut self, symbol: &str) {
