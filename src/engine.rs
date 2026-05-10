@@ -102,6 +102,9 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
         }
         last_date = Some(tick_date);
 
+        // Fire scheduled time callbacks (times are US Eastern)
+        ctx.fire_time_callbacks(&tick_time, tick_date);
+
         // Build slice
         let slice_bars: HashMap<String, Bar> = bars.into_iter().collect();
         let slice = Slice { time: tick_time, bars: slice_bars };
