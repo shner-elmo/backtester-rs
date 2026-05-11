@@ -11,6 +11,7 @@
 - [ ] **`Bar` missing `high`, `low`, `volume`** — columns exist in Parquet but aren't loaded. Blocks ATR, VWAP, volume filters, etc. `bar.rs`, `data.rs`
 - [ ] **No commission / slippage model** — orders fill at close price with zero friction, producing unrealistically good results
 - [ ] **`consolidate` takes `Fn` not `FnMut`** — can't update strategy state (e.g. an indicator) from a consolidator callback without `RefCell`. `context.rs:82`
+- [ ] **Consolidator doesn't aggregate high/low** — when merging sub-bars only `close` and `time` are updated; `high` should be running max and `low` running min across the period. Needs fixing alongside the `Bar` high/low fields. `consolidator.rs:28-32`
 
 ## Performance
 
