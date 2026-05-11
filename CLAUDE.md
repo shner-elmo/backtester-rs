@@ -37,7 +37,7 @@ Parquet files → Bar stream → Engine loop → Consolidators → Algorithm cal
 - `slice.rs` — `Slice`: point-in-time snapshot of bars for all subscribed symbols
 - `indicators.rs` — Re-exports from the `ta` crate: `Ema`, `Sma`, `Macd`, `Rsi`, `BollingerBands`
 
-**Writing a strategy:** implement `Algorithm`, call `ctx.subscribe()` and set dates/cash in `initialize()`, then trade in `on_data()`. See `examples/ema_cross.rs` for a complete example.
+**Writing a strategy:** implement `Algorithm`, call `ctx.add_equity()` and set dates/cash in `initialize()`, then trade in `on_data()`. See `examples/ema_cross.rs` for a complete example.
 
 **Order processing** happens after `on_data()` returns. `SetHoldings(pct)` targets a portfolio-weight allocation; `Liquidate` closes all positions; `Market(qty)` trades a fixed quantity.
 
