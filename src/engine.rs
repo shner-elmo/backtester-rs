@@ -176,6 +176,11 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
         }
     }
 
+    // Fire any incomplete consolidation periods buffered at end of data
+    for c in ctx.consolidators.iter_mut() {
+        c.flush();
+    }
+
     // Final equity (mark open positions at last known market price)
     let final_equity = ctx.portfolio.total_value(&last_known_prices);
 

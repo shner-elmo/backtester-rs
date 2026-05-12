@@ -33,6 +33,8 @@ impl ConsolidatorEntry {
                         self.bar_count = 1;
                     }
                     Some(cb) => {
+                        cb.high = cb.high.max(bar.high);
+                        cb.low = cb.low.min(bar.low);
                         cb.close = bar.close;
                         cb.time = bar.time;
                         self.bar_count += 1;
@@ -58,6 +60,8 @@ impl ConsolidatorEntry {
                             (self.callback)(&fired);
                             self.current_bar = Some(bar.clone());
                         } else {
+                            cb.high = cb.high.max(bar.high);
+                            cb.low = cb.low.min(bar.low);
                             cb.close = bar.close;
                             cb.time = bar.time;
                         }
@@ -65,5 +69,13 @@ impl ConsolidatorEntry {
                 }
             }
         }
+    }
+
+    pub fn flush(&mut self) {
+        if let Some(bar) = &self.current_bar {
+            (self.callback)(bar);
+        }
+        self.current_bar = None;
+        self.bar_count = 0;
     }
 }
