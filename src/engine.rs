@@ -93,7 +93,6 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
         // Warm-up
         if ctx.warm_up_remaining > 0 {
             ctx.warm_up_remaining -= 1;
-            last_date = Some(tick_date);
             continue;
         }
 
