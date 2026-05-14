@@ -81,7 +81,8 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
             }
         }
 
-        // Feed consolidators
+        // Feed consolidators before the warm-up gate so their internal state
+        // (e.g. a 60-min bar) builds up over the warm-up period.
         for (symbol, bar) in &bars {
             for c in ctx.consolidators.iter_mut() {
                 if c.symbol == *symbol {
@@ -90,7 +91,8 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
             }
         }
 
-        // Warm-up
+        // Warm-up: last_date is intentionally not set here so that
+        // on_end_of_day never fires for days that were purely in warm-up.
         if ctx.warm_up_remaining > 0 {
             ctx.warm_up_remaining -= 1;
             continue;
@@ -151,7 +153,7 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
 
             if current_qty != 0.0 && qty * current_qty < 0.0 {
                 let closed_qty = qty.abs().min(current_qty.abs());
-                let is_full_close = closed_qty >= current_qty.abs() - 1e-9;
+                let is_full_close = closed_qty >= current_qty.abs() - 1e-9; // epsilon for float equality
                 let entry_time =
                     open_entries.get(&order.symbol).map(|e| e.time).unwrap_or(tick_time);
                 let pnl = (price - avg_price) * closed_qty * current_qty.signum();

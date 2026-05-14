@@ -36,6 +36,9 @@ impl ConsolidatorEntry {
                     }
                     (Some(start), Some(cb)) => {
                         if bar.time >= start + duration {
+                            // Fire on the first bar that crosses the boundary so the
+                            // fired bar's timestamp is the period open, not the close.
+                            // This bar then seeds the next period.
                             let fired = cb.clone();
                             (self.callback)(&fired);
                             self.period_start = Some(bar.time);
@@ -44,6 +47,7 @@ impl ConsolidatorEntry {
                             cb.high = cb.high.max(bar.high);
                             cb.low = cb.low.min(bar.low);
                             cb.close = bar.close;
+                            // cb.time is not updated: it stays as the period-open timestamp.
                         }
                     }
                     _ => unreachable!(),
