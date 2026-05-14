@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 
 use crate::bar::{Bar, MarketSession};
 
-const COLUMNS: [&str; 5] = ["ticker", "open", "close", "window_start", "market_session"];
+const COLUMNS: [&str; 7] = ["ticker", "open", "high", "low", "close", "window_start", "market_session"];
 
 pub fn load_ticker_map(data_root: &str) -> HashMap<u16, String> {
     let path = format!("{}/encoded_tickers.json", data_root);
@@ -47,10 +47,12 @@ pub fn iter_bars(
 
             let ticker_col = batch.column(0).as_any().downcast_ref::<UInt16Array>().unwrap();
             let open_col = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
-            let close_col = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+            let high_col = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+            let low_col = batch.column(3).as_any().downcast_ref::<Float64Array>().unwrap();
+            let close_col = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
             let ts_col =
-                batch.column(3).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let sess_col = batch.column(4).as_any().downcast_ref::<UInt8Array>().unwrap();
+                batch.column(5).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
+            let sess_col = batch.column(6).as_any().downcast_ref::<UInt8Array>().unwrap();
 
             for i in 0..batch.num_rows() {
                 let ticker_id = ticker_col.value(i);
@@ -76,6 +78,8 @@ pub fn iter_bars(
                     Bar {
                         time,
                         open: open_col.value(i),
+                        high: high_col.value(i),
+                        low: low_col.value(i),
                         close: close_col.value(i),
                         market_session: session,
                     },

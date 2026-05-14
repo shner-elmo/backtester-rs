@@ -23,7 +23,6 @@ struct TradeRecord {
 }
 
 struct OpenEntry {
-    price: f64,
     time: DateTime<Utc>,
 }
 
@@ -47,6 +46,7 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
     let mut trades: Vec<TradeRecord> = Vec::new();
     let mut open_entries: HashMap<String, OpenEntry> = HashMap::new();
     let mut last_date: Option<NaiveDate> = None;
+    let mut last_known_prices: HashMap<String, f64> = HashMap::new();
 
     for (ts_ns, bars) in tick_map {
         let secs = ts_ns / 1_000_000_000;
@@ -68,6 +68,9 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
 
         let current_prices: HashMap<String, f64> =
             bars.iter().map(|(s, b)| (s.clone(), b.close)).collect();
+        for (s, &p) in &current_prices {
+            last_known_prices.insert(s.clone(), p);
+        }
 
         // Update history
         for (symbol, bar) in &bars {
@@ -78,7 +81,8 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
             }
         }
 
-        // Feed consolidators
+        // Feed consolidators before the warm-up gate so their internal state
+        // (e.g. a 60-min bar) builds up over the warm-up period.
         for (symbol, bar) in &bars {
             for c in ctx.consolidators.iter_mut() {
                 if c.symbol == *symbol {
@@ -87,10 +91,10 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
             }
         }
 
-        // Warm-up
+        // Warm-up: last_date is intentionally not set here so that
+        // on_end_of_day never fires for days that were purely in warm-up.
         if ctx.warm_up_remaining > 0 {
             ctx.warm_up_remaining -= 1;
-            last_date = Some(tick_date);
             continue;
         }
 
@@ -144,33 +148,42 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
             // Record trade if closing/reducing a position
             let current_qty =
                 ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
+            let avg_price =
+                ctx.portfolio.positions.get(&order.symbol).map(|p| p.avg_price).unwrap_or(0.0);
 
             if current_qty != 0.0 && qty * current_qty < 0.0 {
-                if let Some(entry) = open_entries.remove(&order.symbol) {
-                    let closed_qty = qty.abs().min(current_qty.abs());
-                    let pnl = (price - entry.price) * closed_qty * current_qty.signum();
-                    trades.push(TradeRecord {
-                        symbol: order.symbol.clone(),
-                        entry_price: entry.price,
-                        exit_price: price,
-                        entry_time: entry.time.to_rfc3339(),
-                        exit_time: tick_time.to_rfc3339(),
-                        quantity: closed_qty,
-                        pnl,
-                    });
+                let closed_qty = qty.abs().min(current_qty.abs());
+                let is_full_close = closed_qty >= current_qty.abs() - 1e-9; // epsilon for float equality
+                let entry_time =
+                    open_entries.get(&order.symbol).map(|e| e.time).unwrap_or(tick_time);
+                let pnl = (price - avg_price) * closed_qty * current_qty.signum();
+                trades.push(TradeRecord {
+                    symbol: order.symbol.clone(),
+                    entry_price: avg_price,
+                    exit_price: price,
+                    entry_time: entry_time.to_rfc3339(),
+                    exit_time: tick_time.to_rfc3339(),
+                    quantity: closed_qty,
+                    pnl,
+                });
+                if is_full_close {
+                    open_entries.remove(&order.symbol);
                 }
             } else if current_qty == 0.0 {
-                open_entries.insert(order.symbol.clone(), OpenEntry { price, time: tick_time });
+                open_entries.insert(order.symbol.clone(), OpenEntry { time: tick_time });
             }
 
             ctx.portfolio.apply_fill(&order.symbol, qty, price);
         }
     }
 
-    // Final equity (mark open positions at last known price)
-    let last_prices: HashMap<String, f64> =
-        ctx.portfolio.positions.values().map(|p| (p.symbol.clone(), p.avg_price)).collect();
-    let final_equity = ctx.portfolio.total_value(&last_prices);
+    // Fire any incomplete consolidation periods buffered at end of data
+    for c in ctx.consolidators.iter_mut() {
+        c.flush();
+    }
+
+    // Final equity (mark open positions at last known market price)
+    let final_equity = ctx.portfolio.total_value(&last_known_prices);
 
     let total_pnl: f64 = trades.iter().map(|t| t.pnl).sum();
     let wins = trades.iter().filter(|t| t.pnl > 0.0).count();

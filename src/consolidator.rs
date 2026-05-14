@@ -1,3 +1,5 @@
+use chrono::{Duration, DateTime, Utc};
+
 use crate::bar::Bar;
 
 pub enum ConsolidatorPeriod {
@@ -9,41 +11,46 @@ pub enum ConsolidatorPeriod {
 pub(crate) struct ConsolidatorEntry {
     pub symbol: String,
     period: ConsolidatorPeriod,
-    bar_count: u32,
+    period_start: Option<DateTime<Utc>>,
     current_bar: Option<Bar>,
     callback: Box<dyn Fn(&Bar)>,
 }
 
 impl ConsolidatorEntry {
     pub fn new(symbol: String, period: ConsolidatorPeriod, callback: Box<dyn Fn(&Bar)>) -> Self {
-        Self { symbol, period, bar_count: 0, current_bar: None, callback }
+        Self { symbol, period, period_start: None, current_bar: None, callback }
     }
 
     pub fn feed(&mut self, bar: &Bar) {
         match &self.period {
             ConsolidatorPeriod::Minutes(_) | ConsolidatorPeriod::Hours(_) => {
-                let target = match &self.period {
-                    ConsolidatorPeriod::Hours(h) => h * 60,
-                    ConsolidatorPeriod::Minutes(m) => *m,
+                let duration = match &self.period {
+                    ConsolidatorPeriod::Hours(h) => Duration::hours(*h as i64),
+                    ConsolidatorPeriod::Minutes(m) => Duration::minutes(*m as i64),
                     _ => unreachable!(),
                 };
-                match self.current_bar.as_mut() {
-                    None => {
+                match (self.period_start, self.current_bar.as_mut()) {
+                    (None, _) => {
+                        self.period_start = Some(bar.time);
                         self.current_bar = Some(bar.clone());
-                        self.bar_count = 1;
                     }
-                    Some(cb) => {
-                        cb.close = bar.close;
-                        cb.time = bar.time;
-                        self.bar_count += 1;
+                    (Some(start), Some(cb)) => {
+                        if bar.time >= start + duration {
+                            // Fire on the first bar that crosses the boundary so the
+                            // fired bar's timestamp is the period open, not the close.
+                            // This bar then seeds the next period.
+                            let fired = cb.clone();
+                            (self.callback)(&fired);
+                            self.period_start = Some(bar.time);
+                            self.current_bar = Some(bar.clone());
+                        } else {
+                            cb.high = cb.high.max(bar.high);
+                            cb.low = cb.low.min(bar.low);
+                            cb.close = bar.close;
+                            // cb.time is not updated: it stays as the period-open timestamp.
+                        }
                     }
-                }
-                if self.bar_count >= target {
-                    if let Some(consolidated) = &self.current_bar {
-                        (self.callback)(consolidated);
-                    }
-                    self.current_bar = None;
-                    self.bar_count = 0;
+                    _ => unreachable!(),
                 }
             }
             ConsolidatorPeriod::Daily => {
@@ -58,6 +65,8 @@ impl ConsolidatorEntry {
                             (self.callback)(&fired);
                             self.current_bar = Some(bar.clone());
                         } else {
+                            cb.high = cb.high.max(bar.high);
+                            cb.low = cb.low.min(bar.low);
                             cb.close = bar.close;
                             cb.time = bar.time;
                         }
@@ -65,5 +74,13 @@ impl ConsolidatorEntry {
                 }
             }
         }
+    }
+
+    pub fn flush(&mut self) {
+        if let Some(bar) = &self.current_bar {
+            (self.callback)(bar);
+        }
+        self.current_bar = None;
+        self.period_start = None;
     }
 }
