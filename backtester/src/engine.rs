@@ -178,7 +178,9 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
     // Adjust the stats equity curve to reflect the actual final equity including open positions
     let stats = compute_stats(&trades, initial_cash);
 
-    let file = std::fs::File::create("backtest_trades.json").unwrap();
+    let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
+    let file = std::fs::File::create(format!("../../trash/backtest_trades_{ts}.json")).unwrap();
+
     serde_json::to_writer_pretty(file, &trades).unwrap();
 
     println!("=== Backtest Complete ===");
