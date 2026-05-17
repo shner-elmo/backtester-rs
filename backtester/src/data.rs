@@ -14,13 +14,41 @@ use walkdir::WalkDir;
 
 use crate::bar::{Bar, MarketSession};
 
-const COLUMNS: [&str; 7] = ["ticker", "open", "high", "low", "close", "window_start", "market_session"];
+pub const COLUMNS: [&str; 7] =
+    ["ticker", "open", "high", "low", "close", "window_start", "market_session"];
 
 pub fn load_ticker_map(data_root: &str) -> HashMap<u16, String> {
     let path = format!("{}/encoded_tickers.json", data_root);
     let content = read_to_string(&path).unwrap_or_else(|_| panic!("could not read {}", path));
     let temp: HashMap<String, String> = serde_json::from_str(&content).unwrap();
     temp.into_iter().map(|(k, v)| (k.parse::<u16>().unwrap(), v)).collect()
+}
+
+pub fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = WalkDir::new(data_root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "parquet"))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    files.sort_by_key(|x| {
+        let month: u32 =
+            x.parent().unwrap().file_name().unwrap().to_string_lossy().parse().unwrap_or(0);
+        let year: u32 = x
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .parse()
+            .unwrap_or(0);
+        (year, month)
+    });
+
+    files
 }
 
 pub fn iter_bars(
@@ -87,31 +115,4 @@ pub fn iter_bars(
             }
         }
     }
-}
-
-fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = WalkDir::new(data_root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "parquet"))
-        .map(|e| e.path().to_path_buf())
-        .collect();
-
-    files.sort_by_key(|x| {
-        let month: u32 =
-            x.parent().unwrap().file_name().unwrap().to_string_lossy().parse().unwrap_or(0);
-        let year: u32 = x
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .parse()
-            .unwrap_or(0);
-        (year, month)
-    });
-
-    files
 }
