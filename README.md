@@ -1,25 +1,52 @@
 # backtester-rs
 
-A fast, event-driven backtesting engine written in Rust. Strategies are defined by implementing a single trait; the engine handles data loading, order execution, and performance reporting.
+A fast, event-driven backtesting engine written in Rust. Strategies are defined
+by implementing a single trait; the engine handles data loading, order
+execution, and performance reporting. Think QuantConnect-style ergonomics, but
+local and fast.
 
-## Quick Start
+The repo is a Cargo workspace with three crates:
+
+- **`backtester`** — the core engine and strategy API.
+- **`data-viz`** — a DataFusion-backed Parquet explorer (OHLCV + indicator charts).
+- **`ui`** — a planned results dashboard (currently a stub).
+
+## Quick start
+
+Run the built-in EMA-crossover strategy against the committed test fixture
+(AAPL, Jan 2023) — no external data needed:
 
 ```bash
-cargo run --example ema_cross -- data/output/minute
+cargo run --example ema_cross -- backtester/tests/fixtures
 ```
 
-This runs the built-in EMA crossover strategy on AAPL for 2023. The engine writes `backtest_trades.json` and prints a summary:
-
 ```
-Trades: 42 | Win Rate: 61.9% | Total PnL: $3,241.50 | Final Equity: $103,241.50
+=== Backtest Complete ===
+Trades written to: backtest_trades_2026-07-03T18-07-59.json
+Trades: 92  |  Win Rate: 24%  |  Total PnL: $-1404  |  Final Equity: $98725
+Profit Factor: 0.88  |  Max Drawdown: 4.8%  |  Sharpe: -0.63
 ```
 
-## Writing a Strategy
+To run against a full dataset, pass a directory containing
+`encoded_tickers.json` (see [docs/data-setup.md](docs/data-setup.md)):
 
-Implement the `Algorithm` trait:
+```bash
+cargo run --release --example ema_cross -- /path/to/data/output
+```
+
+## Documentation
+
+| Guide | Contents |
+|-------|----------|
+| [docs/backtesting.md](docs/backtesting.md) | Write and run a strategy: the `Algorithm` trait, `Context` API, indicators, consolidation |
+| [docs/results.md](docs/results.md) | The console summary, the trades JSON, and exploring results with `jq` |
+| [docs/visualization.md](docs/visualization.md) | The `data-viz` chart explorer (run command, HTTP API) and `ui` status |
+| [docs/data-setup.md](docs/data-setup.md) | Dataset layout & schema, `STONKS_DATA_ROOT`, the test fixture, helper examples |
+
+## Writing a strategy (at a glance)
 
 ```rust
-use backtester_rs::{run, Algorithm, Context, Slice};
+use backtester::{run, Algorithm, Context, Slice};
 
 struct MyStrategy;
 
@@ -28,79 +55,59 @@ impl Algorithm for MyStrategy {
         ctx.set_start_date(2023, 1, 1);
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
-        ctx.set_warm_up(20);       // bars to skip before on_data is called
+        ctx.set_warm_up(20);        // bars to skip before on_data fires
         ctx.add_equity("AAPL");
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
         let Some(bar) = data.bars.get("AAPL") else { return };
-        // bar.open, bar.close, bar.time, bar.market_session
-        ctx.set_holdings("AAPL", 1.0); // go 100% long
+        // bar.open, bar.high, bar.low, bar.close, bar.time, bar.market_session
+        ctx.set_holdings("AAPL", 1.0);   // go 100% long
     }
 }
 
 fn main() {
-    run(MyStrategy, "data/output/minute");
+    run(MyStrategy, "backtester/tests/fixtures");
 }
 ```
 
-### Context API
+Full API reference in [docs/backtesting.md](docs/backtesting.md).
 
-| Method | Description |
-|--------|-------------|
-| `ctx.add_equity(symbol)` | Subscribe to a symbol |
-| `ctx.market_order(symbol, qty)` | Buy/sell a fixed quantity (negative to sell) |
-| `ctx.set_holdings(symbol, pct)` | Target a portfolio-weight (1.0 = 100%) |
-| `ctx.liquidate(symbol)` | Close the entire position |
-| `ctx.history(symbol, n)` | Last `n` bars (up to 500) |
-| `ctx.consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
-| `ctx.portfolio` | Access cash, positions, and equity |
+## Common commands
 
-### Built-in Indicators
-
-Thin wrappers over the [`ta`](https://crates.io/crates/ta) crate:
-
-```rust
-use backtester_rs::indicators::{Ema, Sma, Macd, Rsi, BollingerBands, Next};
-
-let mut ema = Ema::new(14).unwrap();
-let value = ema.next(bar.close);
+```bash
+cargo build                          # build the workspace
+cargo test                           # run all tests (uses the committed fixture)
+cargo fmt                            # format (max width 100)
+cargo clippy                         # lint
+cargo run --example ema_cross -- backtester/tests/fixtures   # run a backtest
+DATA_PATH=/path/to/data/output cargo run -p data-viz         # chart explorer at :3000
 ```
 
-### Bar Consolidation
+## Data format
 
-Aggregate minute bars into larger timeframes:
-
-```rust
-use backtester_rs::ConsolidatorPeriod;
-
-ctx.consolidate("AAPL", ConsolidatorPeriod::Hours(1), |bar| {
-    println!("Hourly bar close: {}", bar.close);
-});
-// Also: ConsolidatorPeriod::Minutes(5), ConsolidatorPeriod::Daily
-```
-
-## Data Format
-
-The engine reads Parquet files from a directory structured as:
+Hive-partitioned minute Parquet plus a ticker-encoding JSON:
 
 ```
-data/output/minute/
-  YYYY-MM/
-    *.parquet
+<data root>/
+  encoded_tickers.json                    # {"47": "AAPL", ...}
+  minute/year=YYYY/month=M/part-0.parquet
 ```
 
-Each file contains columns: `ticker` (encoded ID), `open`, `close`, `window_start` (timestamp), `market_session`. A companion JSON file maps ticker IDs to symbols.
+Parquet columns: `ticker` (encoded id), `volume`, `open`, `close`, `high`,
+`low`, `window_start` (timestamp), `transactions`, `market_session`, `day`.
+Full details and the `STONKS_DATA_ROOT` env var are in
+[docs/data-setup.md](docs/data-setup.md).
 
 ## Output
 
-- **`backtest_trades.json`** — Array of trade records with symbol, side, quantity, price, PnL
-- **Stdout** — Trade count, win rate, total PnL, final equity
+- **`backtest_trades_<timestamp>.json`** — array of closed-trade records
+  (symbol, entry/exit price & time, quantity, PnL), written to the working
+  directory.
+- **Stdout** — trade count, win rate, total PnL, final equity, profit factor,
+  max drawdown, Sharpe. See [docs/results.md](docs/results.md).
 
-## Dependencies
+## Status & roadmap
 
-- `arrow` / `parquet` — Parquet data loading
-- `ta` — Technical indicators
-- `chrono` / `chrono-tz` — Timestamp handling
-- `serde` / `serde_json` — Trade record serialization
-- `walkdir` — Parquet file discovery
+See [TODO.md](TODO.md) for known bugs, missing features (commission/slippage,
+`ui` dashboard, streaming data load), and rough edges.
