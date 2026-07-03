@@ -109,5 +109,7 @@ Full details and the `STONKS_DATA_ROOT` env var are in
 
 ## Status & roadmap
 
-See [TODO.md](TODO.md) for known bugs, missing features (commission/slippage,
-`ui` dashboard, streaming data load), and rough edges.
+Slippage is customizable (`ctx.set_slippage(..)`, see
+[docs/backtesting.md](docs/backtesting.md#slippage)). See [TODO.md](TODO.md) for
+known bugs, remaining features (commission model, `ui` dashboard, streaming
+data load), and rough edges.

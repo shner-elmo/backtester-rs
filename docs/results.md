@@ -79,5 +79,7 @@ For a **visual** exploration of price + indicators, see
 - Trade recording is currently reliable only for simple open→close round trips.
   Partial fills and direction flips are not tracked correctly yet (see
   [`TODO.md`](../TODO.md)).
-- With no commission/slippage model, results are optimistic relative to live
-  trading.
+- Slippage is modeled if you set one (see
+  [backtesting.md](./backtesting.md#slippage)); there is still no commission
+  model, so results with zero friction configured are optimistic relative to
+  live trading.

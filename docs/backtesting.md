@@ -81,8 +81,48 @@ Configure the run and interact with the portfolio through `ctx`:
 | `ctx.portfolio` | Cash, positions, and equity |
 
 Orders are queued during `on_data` and filled at the bar's **close** price
-after the callback returns. There is currently **no commission or slippage**
-model — fills are frictionless.
+after the callback returns, adjusted by the [slippage model](#slippage) (none
+by default). There is currently **no commission** model.
+
+## Slippage
+
+Set a slippage model in `initialize` to make fills execute away from the
+reference (close) price — buys higher, sells lower:
+
+```rust
+use backtester::slippage::PercentSlippage;
+
+ctx.set_slippage(PercentSlippage::bps(10.0)); // 0.1% against the aggressor
+```
+
+Built-in models (`backtester::slippage`):
+
+| Model | Behavior |
+|-------|----------|
+| `NoSlippage` | Fills at the reference price (the default) |
+| `PercentSlippage { rate }` / `PercentSlippage::bps(n)` | Moves price by a fraction / basis points |
+| `FixedSlippage { per_share }` | Moves price by a fixed cash amount per share |
+
+It's fully customizable — pass your own type implementing `SlippageModel`, or
+just a closure `Fn(&FillContext) -> f64`. The `FillContext` gives you the
+signed `quantity`, the reference `price`, a `direction()` helper (+1 buy / −1
+sell), and the full `bar`, so you can key slippage off the bar's range or
+volume:
+
+```rust
+use backtester::slippage::FillContext;
+
+// Wider slippage on volatile bars: a quarter of the bar's high–low range.
+ctx.set_slippage(|fill: &FillContext| {
+    let range = (fill.bar.high - fill.bar.low).max(0.0);
+    fill.price + 0.25 * range * fill.direction()
+});
+```
+
+Slippage affects both realized PnL and the cash paid/received; order *sizing*
+(e.g. `set_holdings`) still uses the reference price. See
+[`examples/slippage_demo.rs`](../backtester/examples/slippage_demo.rs) for a
+runnable before/after comparison against `ema_cross`.
 
 ## Bars, slices, and sessions
 
@@ -142,5 +182,5 @@ These are tracked in [`TODO.md`](../TODO.md):
 - `on_end_of_day` fires one tick late (first bar of the following day).
 - Trade recording is only correct for simple open→close round trips, not
   partial fills or direction flips.
-- No commission/slippage model.
+- No commission model (slippage is supported — see [Slippage](#slippage)).
 - `set_holdings` can produce fractional shares.
