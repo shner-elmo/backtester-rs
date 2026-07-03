@@ -67,5 +67,13 @@ pub fn compute_stats(trades: &[Trade], initial_cash: f64) -> BacktestStats {
     let std_pnl = variance.sqrt();
     let sharpe_ratio = if std_pnl == 0.0 { 0.0 } else { mean_pnl / std_pnl * 252.0_f64.sqrt() };
 
-    BacktestStats { trade_count, win_rate, total_pnl, profit_factor, max_drawdown, sharpe_ratio, final_equity }
+    BacktestStats {
+        trade_count,
+        win_rate,
+        total_pnl,
+        profit_factor,
+        max_drawdown,
+        sharpe_ratio,
+        final_equity,
+    }
 }

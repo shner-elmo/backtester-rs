@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>data-viz</title>
+  <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #131722; color: #d1d4dc; display: flex; flex-direction: column; height: 100vh; }
+    #controls { display: flex; gap: 8px; padding: 10px 16px; background: #1e222d; align-items: center; }
+    #controls input { background: #2a2e39; border: 1px solid #363a45; color: #d1d4dc; padding: 6px 10px; border-radius: 4px; }
+    #controls button { background: #2962ff; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; }
+    #chart { flex: 1; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <input id="symbol" type="text" value="AAPL" placeholder="Symbol" />
+    <input id="start" type="date" placeholder="Start date" />
+    <input id="end" type="date" placeholder="End date" />
+    <button onclick="load()">Load</button>
+  </div>
+  <div id="chart"></div>
+
+  <script>
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+      layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+      grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+      width: window.innerWidth,
+      height: window.innerHeight - document.getElementById('controls').offsetHeight,
+    });
+
+    const series = chart.addCandlestickSeries({
+      upColor: '#26a69a', downColor: '#ef5350',
+      borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    });
+
+    window.addEventListener('resize', () => {
+      chart.resize(window.innerWidth, window.innerHeight - document.getElementById('controls').offsetHeight);
+    });
+
+    async function load() {
+      const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+      const start  = document.getElementById('start').value;
+      const end    = document.getElementById('end').value;
+      let url = `/api/bars?symbol=${encodeURIComponent(symbol)}`;
+      if (start) url += `&start=${start}`;
+      if (end)   url += `&end=${end}`;
+
+      const res = await fetch(url);
+      if (!res.ok) { alert(`Error: ${res.status}`); return; }
+      const data = await res.json();
+
+      series.setData(data.map(b => ({
+        time: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      })));
+
+      chart.timeScale().fitContent();
+    }
+
+    load();
+  </script>
+</body>
+</html>

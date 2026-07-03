@@ -1,4 +1,4 @@
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 
 #[tokio::main]
 async fn main() {

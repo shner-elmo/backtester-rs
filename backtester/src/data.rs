@@ -6,10 +6,7 @@ use std::{
 
 use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt8Array};
 use chrono::{TimeZone, Utc};
-use parquet::{
-    arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask},
-    file::reader::{FileReader, SerializedFileReader},
-};
+use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
 use walkdir::WalkDir;
 
 use crate::bar::{Bar, MarketSession};
@@ -28,7 +25,7 @@ pub fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = WalkDir::new(data_root)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "parquet"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
         .map(|e| e.path().to_path_buf())
         .collect();
 
@@ -57,30 +54,44 @@ pub fn iter_bars(
     mut cb: impl FnMut(String, Bar),
 ) {
     let files = sorted_parquet_files(data_root);
+    let mut mask: Option<ProjectionMask> = None;
 
     for file_path in &files {
         let file = File::open(file_path).unwrap();
-        let file_reader = SerializedFileReader::new(file).unwrap();
-        let schema = file_reader.metadata().file_metadata().schema_descr();
-
-        let file = File::open(file_path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-            .unwrap()
-            .with_projection(ProjectionMask::columns(schema, COLUMNS))
-            .build()
-            .unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mask = mask
+            .get_or_insert_with(|| ProjectionMask::columns(builder.parquet_schema(), COLUMNS))
+            .clone();
+        let reader = builder.with_projection(mask).build().unwrap();
 
         for batch in reader {
             let batch = batch.unwrap();
 
-            let ticker_col = batch.column(0).as_any().downcast_ref::<UInt16Array>().unwrap();
-            let open_col = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
-            let high_col = batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
-            let low_col = batch.column(3).as_any().downcast_ref::<Float64Array>().unwrap();
-            let close_col = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
-            let ts_col =
-                batch.column(5).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            let sess_col = batch.column(6).as_any().downcast_ref::<UInt8Array>().unwrap();
+            // Look up columns by name: `ProjectionMask::columns` returns columns
+            // in the file's schema order, which differs from `COLUMNS` order, so
+            // positional indexing would silently scramble high/low/close.
+            let f64_col = |name: &str| {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+                    .unwrap_or_else(|| panic!("missing f64 column {name}"))
+            };
+            let ticker_col = batch
+                .column_by_name("ticker")
+                .and_then(|c| c.as_any().downcast_ref::<UInt16Array>())
+                .expect("missing column ticker");
+            let open_col = f64_col("open");
+            let high_col = f64_col("high");
+            let low_col = f64_col("low");
+            let close_col = f64_col("close");
+            let ts_col = batch
+                .column_by_name("window_start")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
+                .expect("missing column window_start");
+            let sess_col = batch
+                .column_by_name("market_session")
+                .and_then(|c| c.as_any().downcast_ref::<UInt8Array>())
+                .expect("missing column market_session");
 
             for i in 0..batch.num_rows() {
                 let ticker_id = ticker_col.value(i);

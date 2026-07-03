@@ -2,6 +2,8 @@
 
 ## Bugs
 
+- [x] **Column index assumptions in `iter_bars` were wrong** — confirmed: Parquet schema order is `ticker, volume, open, close, high, low, window_start, transactions, market_session, day`, but `data.rs` read projected columns positionally assuming `open, high, low, close`, so `high`/`low`/`close` were scrambled (`ProjectionMask` returns columns in schema order, not `COLUMNS` order). Fixed to look up columns by name in `iter_bars`. Locked in by `backtester/tests/data.rs` against a committed fixture. `data.rs`
+
 - [ ] **Final equity wrong** — open positions at backtest end are marked at `avg_price` (cost basis) instead of last market price. `engine.rs:169`
 - [ ] **`on_end_of_day` fires one tick late** — called at first bar of the new day after that bar's history is already pushed. `engine.rs:98-102`
 - [ ] **Trade recording broken for partial fills / direction flips** — only simple open→close round trips tracked correctly. `engine.rs:141-163`

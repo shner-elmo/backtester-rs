@@ -1,0 +1,3 @@
+[env]
+RUST_LOG = "data_viz=debug"
+# Run with RUST_LOG=data_viz=trace for maximum verbosity or RUST_LOG=info for just the high-level lines.
