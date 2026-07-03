@@ -154,7 +154,10 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
             let avg_price =
                 ctx.portfolio.positions.get(&order.symbol).map(|p| p.avg_price).unwrap_or(0.0);
 
+            let new_qty = current_qty + qty;
             if current_qty != 0.0 && qty * current_qty < 0.0 {
+                // Reducing, closing, or flipping the position: record a realized
+                // trade for the portion of the old position that was closed.
                 let closed_qty = qty.abs().min(current_qty.abs());
                 let is_full_close = closed_qty >= current_qty.abs() - 1e-9;
                 let entry_time =
@@ -170,7 +173,13 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
                     pnl,
                 });
                 if is_full_close {
-                    open_entries.remove(&order.symbol);
+                    // A flip leaves a residual position in the new direction;
+                    // start a fresh entry for it, otherwise it's just closed.
+                    if new_qty.abs() > 1e-9 {
+                        open_entries.insert(order.symbol.clone(), OpenEntry { time: tick_time });
+                    } else {
+                        open_entries.remove(&order.symbol);
+                    }
                 }
             } else if current_qty == 0.0 {
                 open_entries.insert(order.symbol.clone(), OpenEntry { time: tick_time });
