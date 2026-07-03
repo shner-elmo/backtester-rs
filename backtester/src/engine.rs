@@ -179,11 +179,13 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
     let stats = compute_stats(&trades, initial_cash);
 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
-    let file = std::fs::File::create(format!("../../trash/backtest_trades_{ts}.json")).unwrap();
+    let out_path = format!("backtest_trades_{ts}.json");
+    let file = std::fs::File::create(&out_path).unwrap();
 
     serde_json::to_writer_pretty(file, &trades).unwrap();
 
     println!("=== Backtest Complete ===");
+    println!("Trades written to: {out_path}");
     println!(
         "Trades: {}  |  Win Rate: {:.0}%  |  Total PnL: ${:.0}  |  Final Equity: ${:.0}",
         stats.trade_count,
