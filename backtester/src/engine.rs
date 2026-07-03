@@ -8,6 +8,7 @@ use crate::{
     context::{Context, OrderKind},
     data::{iter_bars, load_ticker_map},
     slice::Slice,
+    slippage::FillContext,
     stats::{compute_stats, Trade},
 };
 
@@ -135,6 +136,18 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
                 continue;
             }
 
+            // Actual execution price after the user's slippage model. Sizing
+            // (above) uses the reference price; slippage only affects the fill.
+            let fill_price = match slice.bars.get(&order.symbol) {
+                Some(bar) => ctx.slippage.fill_price(&FillContext {
+                    symbol: &order.symbol,
+                    quantity: qty,
+                    price,
+                    bar,
+                }),
+                None => price,
+            };
+
             // Record trade if closing/reducing a position
             let current_qty =
                 ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
@@ -146,11 +159,11 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
                 let is_full_close = closed_qty >= current_qty.abs() - 1e-9;
                 let entry_time =
                     open_entries.get(&order.symbol).map(|e| e.time).unwrap_or(tick_time);
-                let pnl = (price - avg_price) * closed_qty * current_qty.signum();
+                let pnl = (fill_price - avg_price) * closed_qty * current_qty.signum();
                 trades.push(Trade {
                     symbol: order.symbol.clone(),
                     entry_price: avg_price,
-                    exit_price: price,
+                    exit_price: fill_price,
                     entry_time: entry_time.to_rfc3339(),
                     exit_time: tick_time.to_rfc3339(),
                     quantity: closed_qty,
@@ -163,7 +176,7 @@ pub fn run<A: Algorithm>(mut algo: A, data_path: &str) {
                 open_entries.insert(order.symbol.clone(), OpenEntry { time: tick_time });
             }
 
-            ctx.portfolio.apply_fill(&order.symbol, qty, price);
+            ctx.portfolio.apply_fill(&order.symbol, qty, fill_price);
         }
     }
 

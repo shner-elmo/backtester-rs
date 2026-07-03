@@ -7,9 +7,11 @@ pub mod data;
 pub mod engine;
 pub mod indicators;
 pub mod slice;
+pub mod slippage;
 pub mod stats;
 
 pub use algorithm::Algorithm;
 pub use context::Context;
 pub use engine::run;
 pub use slice::Slice;
+pub use slippage::{FillContext, FixedSlippage, NoSlippage, PercentSlippage, SlippageModel};

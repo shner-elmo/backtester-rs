@@ -7,6 +7,7 @@ use crate::{
     bar::Bar,
     broker::Portfolio,
     consolidator::{ConsolidatorEntry, ConsolidatorPeriod},
+    slippage::{NoSlippage, SlippageModel},
 };
 
 pub(crate) enum OrderKind {
@@ -38,6 +39,7 @@ pub struct Context {
     pub(crate) subscribed_symbols: HashSet<String>,
     pub(crate) pending_orders: Vec<Order>,
     pub(crate) max_history: usize,
+    pub(crate) slippage: Box<dyn SlippageModel>,
 }
 
 impl Default for Context {
@@ -53,6 +55,7 @@ impl Default for Context {
             subscribed_symbols: HashSet::new(),
             pending_orders: Vec::new(),
             max_history: 500,
+            slippage: Box::new(NoSlippage),
         }
     }
 }
@@ -79,6 +82,13 @@ impl Context {
 
     pub fn add_equity(&mut self, symbol: &str) {
         self.subscribed_symbols.insert(symbol.to_string());
+    }
+
+    /// Set the slippage model applied to every fill. Accepts any built-in
+    /// model, a custom [`SlippageModel`](crate::slippage::SlippageModel), or a
+    /// closure `Fn(&FillContext) -> f64`. Defaults to no slippage.
+    pub fn set_slippage(&mut self, model: impl SlippageModel + 'static) {
+        self.slippage = Box::new(model);
     }
 
     pub fn history(&self, symbol: &str, n: usize) -> Vec<Bar> {
