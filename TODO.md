@@ -6,7 +6,7 @@
 
 - [ ] **Final equity wrong** — open positions at backtest end are marked at `avg_price` (cost basis) instead of last market price. `engine.rs:169`
 - [ ] **`on_end_of_day` fires one tick late** — called at first bar of the new day after that bar's history is already pushed. `engine.rs:98-102`
-- [ ] **Trade recording broken for partial fills / direction flips** — only simple open→close round trips tracked correctly. `engine.rs:141-163`
+- [~] **Trade recording** — direction flips (long↔short) now reset cost basis and open a fresh trade entry (`broker.rs` `apply_fill`, `engine.rs`); partial reductions record correctly. Remaining: `set_holdings` re-targets every bar, so a held position emits many tiny rebalance "trades" — worth netting into a single position lifetime. `engine.rs`
 
 ## Missing Features
 
