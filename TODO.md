@@ -40,8 +40,12 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
 - [ ] **True k-way merge streaming** — data now streams one month-file at a
   time (memory = one month of *subscribed* bars, so wide-universe runs are
   still heavy). A k-way merge across per-symbol readers would flatten that.
-- [ ] **Benchmark run on the full 44 GB dataset** — never done; would validate
-  the streaming path and produce a nice headline number.
+- [x] **Benchmark run on the full 44 GB dataset** — done 2026-07-05:
+  `ema_cross` over all of 2023 (AAPL, minute bars) ran in **74 s with a
+  41.8 MB peak RSS**; equity-curve dates strictly increasing across all 12
+  month files, accounting identity exact to 7e-12 over 3673 trades. A
+  full-ticker OHLC invariant sweep of June 2023 (31.9M bars, 11,453
+  symbols; `examples/data_invariants_check.rs`) found zero violations.
 - [ ] **`ui` niceties** — compare two result files side by side; serve a list
   of all `backtest_result_*.json` and switch between them.
 - [ ] **Per-bar equity marks** — the equity curve is daily; intraday drawdown
