@@ -118,6 +118,7 @@ mod tests {
             high: price + 1.0,
             low: price - 1.0,
             close: price,
+            volume: 1_000,
             market_session: MarketSession::Main,
         };
         (bar, quantity)

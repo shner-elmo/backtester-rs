@@ -34,6 +34,26 @@ fn maps_columns_to_the_right_fields() {
 }
 
 #[test]
+fn volume_is_loaded() {
+    let bars = load();
+    // Real minute data always has traded volume on at least some bars; a
+    // wiring mistake (wrong column / always-zero default) would fail this.
+    assert!(bars.iter().any(|(_, b)| b.volume > 0), "all volumes are zero");
+}
+
+#[test]
+fn file_year_month_parses_hive_partition_dirs() {
+    use backtester::data::file_year_month;
+    use std::path::Path;
+
+    let hive = Path::new("/data/minute/year=2023/month=7/part-0.parquet");
+    assert_eq!(file_year_month(hive), Some((2023, 7)));
+
+    let bare = Path::new("/data/minute/2023/7/part-0.parquet");
+    assert_eq!(file_year_month(bare), Some((2023, 7)));
+}
+
+#[test]
 fn every_bar_satisfies_ohlc_invariants() {
     // A scrambled high/low/close mapping breaks these on real data almost
     // immediately, so this guards against a regression to positional indexing.
