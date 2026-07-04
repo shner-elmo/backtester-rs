@@ -6,6 +6,7 @@ use chrono_tz::US::Eastern;
 use crate::{
     bar::Bar,
     broker::Portfolio,
+    commission::{CommissionModel, NoCommission},
     consolidator::{ConsolidatorEntry, ConsolidatorPeriod},
     slippage::{NoSlippage, SlippageModel},
 };
@@ -22,8 +23,8 @@ pub(crate) struct Order {
 }
 
 pub(crate) struct ScheduledTimeEntry {
-    pub hour: u32,
-    pub minute: u32,
+    /// Target time as minutes since midnight ET, precomputed at registration.
+    pub target_min: u32,
     pub last_fired_date: Option<NaiveDate>,
     pub callback: Box<dyn FnMut(&mut Context)>,
 }
@@ -40,6 +41,8 @@ pub struct Context {
     pub(crate) pending_orders: Vec<Order>,
     pub(crate) max_history: usize,
     pub(crate) slippage: Box<dyn SlippageModel>,
+    pub(crate) commission: Box<dyn CommissionModel>,
+    pub(crate) lot_size: f64,
 }
 
 impl Default for Context {
@@ -56,6 +59,8 @@ impl Default for Context {
             pending_orders: Vec::new(),
             max_history: 500,
             slippage: Box::new(NoSlippage),
+            commission: Box::new(NoCommission),
+            lot_size: 1.0,
         }
     }
 }
@@ -91,6 +96,22 @@ impl Context {
         self.slippage = Box::new(model);
     }
 
+    /// Set the commission model applied to every fill. Accepts any built-in
+    /// model, a custom [`CommissionModel`](crate::commission::CommissionModel),
+    /// or a closure `Fn(&FillContext) -> f64` returning the cash charge.
+    /// Defaults to no commission.
+    pub fn set_commission(&mut self, model: impl CommissionModel + 'static) {
+        self.commission = Box::new(model);
+    }
+
+    /// Set the share lot `set_holdings` rounds order quantities to. Defaults
+    /// to `1.0` (whole shares); use e.g. `0.1` or `0.001` to allow fractional
+    /// shares, or `100.0` for round lots. Must be positive.
+    pub fn set_lot_size(&mut self, lot: f64) {
+        assert!(lot > 0.0, "lot size must be positive");
+        self.lot_size = lot;
+    }
+
     pub fn history(&self, symbol: &str, n: usize) -> Vec<Bar> {
         self.history_store
             .get(symbol)
@@ -102,7 +123,7 @@ impl Context {
         &mut self,
         symbol: &str,
         period: ConsolidatorPeriod,
-        cb: impl Fn(&Bar) + 'static,
+        cb: impl FnMut(&Bar) + 'static,
     ) {
         self.consolidators.push(ConsolidatorEntry::new(symbol.to_string(), period, Box::new(cb)));
     }
@@ -116,8 +137,7 @@ impl Context {
         callback: impl FnMut(&mut Context) + 'static,
     ) {
         self.time_callbacks.push(ScheduledTimeEntry {
-            hour,
-            minute,
+            target_min: hour * 60 + minute,
             last_fired_date: None,
             callback: Box::new(callback),
         });
@@ -129,7 +149,7 @@ impl Context {
         let tick_min = tick_et.hour() * 60 + tick_et.minute();
         let n = self.time_callbacks.len();
         for i in 0..n {
-            let entry_min = self.time_callbacks[i].hour * 60 + self.time_callbacks[i].minute;
+            let entry_min = self.time_callbacks[i].target_min;
             if self.time_callbacks[i].last_fired_date == Some(tick_date) {
                 continue;
             }

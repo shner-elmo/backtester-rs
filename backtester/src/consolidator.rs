@@ -13,11 +13,11 @@ pub(crate) struct ConsolidatorEntry {
     period: ConsolidatorPeriod,
     period_start: Option<DateTime<Utc>>,
     current_bar: Option<Bar>,
-    callback: Box<dyn Fn(&Bar)>,
+    callback: Box<dyn FnMut(&Bar)>,
 }
 
 impl ConsolidatorEntry {
-    pub fn new(symbol: String, period: ConsolidatorPeriod, callback: Box<dyn Fn(&Bar)>) -> Self {
+    pub fn new(symbol: String, period: ConsolidatorPeriod, callback: Box<dyn FnMut(&Bar)>) -> Self {
         Self { symbol, period, period_start: None, current_bar: None, callback }
     }
 
@@ -47,6 +47,7 @@ impl ConsolidatorEntry {
                             cb.high = cb.high.max(bar.high);
                             cb.low = cb.low.min(bar.low);
                             cb.close = bar.close;
+                            cb.volume += bar.volume;
                             // cb.time is not updated: it stays as the period-open timestamp.
                         }
                     }
@@ -68,6 +69,7 @@ impl ConsolidatorEntry {
                             cb.high = cb.high.max(bar.high);
                             cb.low = cb.low.min(bar.low);
                             cb.close = bar.close;
+                            cb.volume += bar.volume;
                             cb.time = bar.time;
                         }
                     }

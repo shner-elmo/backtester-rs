@@ -26,3 +26,4 @@ trash/
 
 # backtest run output
 backtest_trades_*.json
+backtest_result_*.json

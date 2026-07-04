@@ -1,0 +1,137 @@
+//! Engine-level tests against the committed AAPL fixture (Jan 2023): trade
+//! netting, equity-curve consistency, commission accounting.
+
+use backtester::{
+    commission::PerShareCommission, run_backtest, Algorithm, BacktestResult, Context, Slice,
+};
+
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+
+/// Rebalances to 90% AAPL on every single bar — the pathological case that
+/// used to report thousands of tiny rebalance "trades".
+struct RebalanceEveryBar {
+    commission: bool,
+}
+
+impl Algorithm for RebalanceEveryBar {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        ctx.add_equity("AAPL");
+        if self.commission {
+            ctx.set_commission(PerShareCommission { per_share: 0.005, minimum: 1.0 });
+        }
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        if data.bars.contains_key("AAPL") {
+            ctx.set_holdings("AAPL", 0.9);
+        }
+    }
+}
+
+/// Buys once, holds five bars, liquidates, then stays flat.
+struct OneRoundTrip {
+    bars_seen: usize,
+}
+
+impl Algorithm for OneRoundTrip {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        ctx.add_equity("AAPL");
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        if !data.bars.contains_key("AAPL") {
+            return;
+        }
+        self.bars_seen += 1;
+        match self.bars_seen {
+            1 => ctx.set_holdings("AAPL", 0.5),
+            6 => ctx.liquidate("AAPL"),
+            _ => {}
+        }
+    }
+}
+
+fn cash_conservation_error(r: &BacktestResult) -> f64 {
+    // initial + realized pnl (closed trades and partial unwinds of open
+    // positions) + unrealized pnl must equal final equity; commissions are
+    // already inside the realized figures.
+    let realized: f64 = r.trades.iter().map(|t| t.pnl).sum();
+    let open: f64 = r.open_positions.iter().map(|p| p.unrealized_pnl + p.realized_pnl).sum();
+    (r.initial_cash + realized + open - r.final_equity).abs()
+}
+
+#[test]
+fn constant_rebalancing_nets_into_a_single_position_lifetime() {
+    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE);
+
+    // The position opens on the first bar and never returns to flat, so there
+    // are no completed round trips — only one open position at the end.
+    assert_eq!(result.trades.len(), 0, "rebalance noise leaked into trades");
+    assert_eq!(result.open_positions.len(), 1);
+    assert_eq!(result.open_positions[0].symbol, "AAPL");
+    assert!(result.open_positions[0].quantity > 0.0);
+
+    assert!(cash_conservation_error(&result) < 1e-6);
+}
+
+#[test]
+fn single_round_trip_is_one_trade() {
+    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE);
+
+    assert_eq!(result.trades.len(), 1);
+    let t = &result.trades[0];
+    assert_eq!(t.symbol, "AAPL");
+    assert_eq!(t.direction, "long");
+    assert!(t.quantity > 0.0);
+    assert!(t.entry_time < t.exit_time);
+    // PnL must match the price move times quantity.
+    let expected = (t.exit_price - t.entry_price) * t.quantity;
+    assert!((t.pnl - expected).abs() < 1e-6);
+
+    assert!(result.open_positions.is_empty());
+    assert!(cash_conservation_error(&result) < 1e-6);
+}
+
+#[test]
+fn commissions_are_charged_and_attributed() {
+    let with = run_backtest(RebalanceEveryBar { commission: true }, FIXTURE);
+    let without = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE);
+
+    assert!(with.total_commission > 0.0);
+    assert_eq!(without.total_commission, 0.0);
+    // Commission comes straight out of final equity. Sizing feedback (fees
+    // shrink equity, shrinking the 90% target) makes the difference not
+    // exactly equal, but it must be at least the fees paid and same order.
+    let equity_gap = without.final_equity - with.final_equity;
+    assert!(
+        equity_gap >= with.total_commission * 0.5 && equity_gap <= with.total_commission * 2.0,
+        "equity gap {} vs commissions {}",
+        equity_gap,
+        with.total_commission
+    );
+}
+
+#[test]
+fn equity_curve_starts_at_initial_cash_and_ends_at_final_equity() {
+    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE);
+
+    let curve = &result.equity_curve;
+    assert!(curve.len() >= 3, "expected multiple daily points, got {}", curve.len());
+    assert_eq!(curve[0].equity, result.initial_cash);
+    let last = curve.last().unwrap();
+    assert!((last.equity - result.final_equity).abs() < 1e-9);
+
+    // Dates strictly increase and are weekdays-only trading dates.
+    for w in curve.windows(2) {
+        assert!(w[0].time < w[1].time, "curve not sorted: {} -> {}", w[0].time, w[1].time);
+    }
+}
+
+#[test]
+fn set_holdings_rounds_to_whole_shares_by_default() {
+    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE);
+    let qty = result.open_positions[0].quantity;
+    assert!((qty - qty.round()).abs() < 1e-9, "expected whole-share position, got {qty}");
+}

@@ -1,6 +1,6 @@
-//! Same EMA-cross strategy as `ema_cross`, but with a slippage model applied.
-//! Run it and compare the summary against `ema_cross` (no slippage) to see the
-//! friction eat into PnL:
+//! Same EMA-cross strategy as `ema_cross`, but with slippage and commission
+//! models applied. Run it and compare the summary against `ema_cross` (no
+//! friction) to see the costs eat into PnL:
 //!
 //!   cargo run --example ema_cross     -- backtester/tests/fixtures
 //!   cargo run --example slippage_demo -- backtester/tests/fixtures
@@ -9,6 +9,7 @@
 //! closure.
 
 use backtester::{
+    commission::PerShareCommission,
     indicators::{Ema, Next},
     run,
     slippage::{FillContext, PercentSlippage},
@@ -31,6 +32,9 @@ impl Algorithm for EmaCross {
 
         // A flat 10 bps against the aggressor:
         ctx.set_slippage(PercentSlippage::bps(10.0));
+
+        // Broker-style commission: half a cent per share, $1 minimum.
+        ctx.set_commission(PerShareCommission { per_share: 0.005, minimum: 1.0 });
 
         // ...or a custom closure using the bar — e.g. a quarter of each bar's
         // range, so slippage widens on volatile bars:

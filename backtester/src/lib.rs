@@ -1,6 +1,7 @@
 pub mod algorithm;
 pub mod bar;
 pub mod broker;
+pub mod commission;
 pub mod consolidator;
 pub mod context;
 pub mod data;
@@ -11,7 +12,9 @@ pub mod slippage;
 pub mod stats;
 
 pub use algorithm::Algorithm;
+pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
 pub use context::Context;
-pub use engine::run;
+pub use engine::{run, run_backtest, BacktestResult};
 pub use slice::Slice;
 pub use slippage::{FillContext, FixedSlippage, NoSlippage, PercentSlippage, SlippageModel};
+pub use stats::{BacktestStats, EquityPoint, Trade};
