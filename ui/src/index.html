@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Backtest Results</title>
+  <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #131722; --panel: #1e222d; --border: #2a2e39; --text: #d1d4dc;
+      --muted: #787b86; --green: #26a69a; --red: #ef5350; --blue: #2962ff;
+    }
+    body { font-family: -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
+    h1 { font-size: 18px; font-weight: 600; }
+    h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+    header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+    header .src { color: var(--muted); font-size: 12px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+    .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    .card .value { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .pos { color: var(--green); } .neg { color: var(--red); }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+    .chart { width: 100%; }
+    canvas.bars { width: 100%; height: 220px; display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th { text-align: right; color: var(--muted); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    th:first-child, td:first-child { text-align: left; }
+    tbody tr:hover { background: #262b38; }
+    .scroll { max-height: 420px; overflow-y: auto; }
+    .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge.long { background: rgba(38,166,154,.15); color: var(--green); }
+    .badge.short { background: rgba(239,83,80,.15); color: var(--red); }
+    #empty { color: var(--muted); padding: 30px; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Backtest Results</h1>
+    <span class="src" id="source"></span>
+  </header>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="panel">
+    <h2>Equity Curve</h2>
+    <div class="chart" id="equity-chart"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Drawdown</h2>
+    <div class="chart" id="dd-chart"></div>
+  </div>
+
+  <div class="row">
+    <div class="panel">
+      <h2>Trade PnL Distribution</h2>
+      <canvas class="bars" id="pnl-hist"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Monthly Returns</h2>
+      <canvas class="bars" id="monthly"></canvas>
+    </div>
+  </div>
+
+  <div class="panel" id="open-panel" style="display:none">
+    <h2>Open Positions</h2>
+    <table id="open-table">
+      <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Last</th><th>Market Value</th><th>Unrealized</th><th>Realized (open)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Per-Symbol Summary</h2>
+    <table id="symbol-table">
+      <thead><tr><th>Symbol</th><th>Trades</th><th>Win Rate</th><th>Total PnL</th><th>Avg PnL</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Trade Log</h2>
+    <div class="scroll">
+      <table id="trade-table">
+        <thead><tr><th>#</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Entry Time</th><th>Exit Time</th><th>PnL</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const fmt = (n, d = 2) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const usd = n => (n < 0 ? '-$' : '$') + fmt(Math.abs(n));
+    const pnlClass = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
+    const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+    function card(label, value, cls = '') {
+      return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+    }
+
+    function makeChart(el, height) {
+      const chart = LightweightCharts.createChart(el, {
+        layout: { background: { color: css('--panel') }, textColor: css('--text') },
+        grid: { vertLines: { color: css('--border') }, horzLines: { color: css('--border') } },
+        width: el.clientWidth, height,
+        rightPriceScale: { borderColor: css('--border') },
+        timeScale: { borderColor: css('--border') },
+      });
+      new ResizeObserver(() => chart.resize(el.clientWidth, height)).observe(el);
+      return chart;
+    }
+
+    // Minimal categorical bar chart on a canvas (histogram / monthly returns).
+    function drawBars(canvas, labels, values, formatValue, colors) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+      if (!values.length) {
+        ctx.fillStyle = css('--muted'); ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('no data', w / 2, h / 2);
+        return;
+      }
+      const padB = 22, padT = 14;
+      const maxV = Math.max(...values, 0), minV = Math.min(...values, 0);
+      const range = (maxV - minV) || 1;
+      const zeroY = padT + (maxV / range) * (h - padT - padB);
+      const bw = (w / values.length);
+      ctx.font = '10px sans-serif';
+      values.forEach((v, i) => {
+        const x = i * bw + bw * 0.12;
+        const bh = Math.abs(v) / range * (h - padT - padB);
+        ctx.fillStyle = colors ? colors[i] : (v >= 0 ? css('--green') : css('--red'));
+        ctx.fillRect(x, v >= 0 ? zeroY - bh : zeroY, bw * 0.76, Math.max(bh, 1));
+        if (v !== 0 && values.length <= 24) {
+          ctx.fillStyle = css('--text'); ctx.textAlign = 'center';
+          ctx.fillText(formatValue(v), x + bw * 0.38, v >= 0 ? zeroY - bh - 3 : zeroY + bh + 10);
+        }
+      });
+      ctx.strokeStyle = css('--border');
+      ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY); ctx.stroke();
+      ctx.fillStyle = css('--muted'); ctx.textAlign = 'center';
+      const step = Math.ceil(labels.length / Math.floor(w / 60));
+      labels.forEach((l, i) => { if (i % step === 0) ctx.fillText(l, i * bw + bw / 2, h - 6); });
+    }
+
+    async function main() {
+      const r = await (await fetch('/api/result')).json();
+      const s = r.stats;
+      document.getElementById('source').textContent = r.source_file || '';
+
+      const ret = (r.final_equity / r.initial_cash - 1) * 100;
+      document.getElementById('cards').innerHTML = [
+        card('Final Equity', usd(r.final_equity)),
+        card('Total Return', `${ret >= 0 ? '+' : ''}${fmt(ret)}%`, pnlClass(ret)),
+        card('Realized PnL', usd(s.total_pnl), pnlClass(s.total_pnl)),
+        card('Trades', s.trade_count, ''),
+        card('Win Rate', `${fmt(s.win_rate * 100, 1)}%`),
+        card('Profit Factor', isFinite(s.profit_factor) ? fmt(s.profit_factor) : '∞'),
+        card('Max Drawdown', `${fmt(s.max_drawdown * 100, 1)}%`, s.max_drawdown > 0 ? 'neg' : ''),
+        card('Sharpe', fmt(s.sharpe_ratio), pnlClass(s.sharpe_ratio)),
+        card('Commission', usd(r.total_commission)),
+      ].join('');
+
+      // ── Equity curve ──
+      const curve = r.equity_curve.map(p => ({ time: p.time, value: p.equity }));
+      const eqChart = makeChart(document.getElementById('equity-chart'), 320);
+      const eqSeries = eqChart.addAreaSeries({
+        lineColor: css('--blue'), topColor: 'rgba(41,98,255,.35)', bottomColor: 'rgba(41,98,255,.02)',
+        lineWidth: 2, priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      });
+      eqSeries.setData(curve);
+      eqSeries.createPriceLine({ price: r.initial_cash, color: css('--muted'), lineStyle: 2, title: 'start' });
+      eqChart.timeScale().fitContent();
+
+      // ── Drawdown (computed from the curve) ──
+      let peak = -Infinity;
+      const dd = r.equity_curve.map(p => {
+        peak = Math.max(peak, p.equity);
+        return { time: p.time, value: peak > 0 ? -(peak - p.equity) / peak * 100 : 0 };
+      });
+      const ddChart = makeChart(document.getElementById('dd-chart'), 180);
+      const ddSeries = ddChart.addAreaSeries({
+        lineColor: css('--red'), topColor: 'rgba(239,83,80,.02)', bottomColor: 'rgba(239,83,80,.35)',
+        lineWidth: 2, invertFilledArea: true,
+        priceFormat: { type: 'custom', formatter: v => fmt(v, 1) + '%' },
+      });
+      ddSeries.setData(dd);
+      ddChart.timeScale().fitContent();
+
+      // ── PnL histogram ──
+      const pnls = r.trades.map(t => t.pnl);
+      if (pnls.length) {
+        const lo = Math.min(...pnls), hi = Math.max(...pnls);
+        const nBins = Math.min(21, Math.max(7, Math.round(Math.sqrt(pnls.length))));
+        const width = (hi - lo) / nBins || 1;
+        const bins = Array(nBins).fill(0);
+        pnls.forEach(p => bins[Math.min(nBins - 1, Math.floor((p - lo) / width))]++);
+        drawBars(document.getElementById('pnl-hist'),
+          bins.map((_, i) => usd(lo + (i + 0.5) * width)),
+          bins, v => v,
+          bins.map((_, i) => lo + (i + 0.5) * width >= 0 ? css('--green') : css('--red')));
+      } else {
+        drawBars(document.getElementById('pnl-hist'), [], [], v => v);
+      }
+
+      // ── Monthly returns from the equity curve ──
+      const byMonth = new Map();
+      r.equity_curve.forEach(p => byMonth.set(p.time.slice(0, 7), p.equity)); // last point per month
+      const months = [...byMonth.keys()].sort();
+      let prevEq = r.initial_cash;
+      const monthlyVals = months.map(m => {
+        const v = (byMonth.get(m) / prevEq - 1) * 100;
+        prevEq = byMonth.get(m);
+        return v;
+      });
+      drawBars(document.getElementById('monthly'), months, monthlyVals, v => fmt(v, 1) + '%');
+
+      // ── Open positions ──
+      if (r.open_positions.length) {
+        document.getElementById('open-panel').style.display = '';
+        document.querySelector('#open-table tbody').innerHTML = r.open_positions.map(p => `
+          <tr><td>${p.symbol}</td><td>${fmt(p.quantity)}</td><td>${fmt(p.avg_price)}</td>
+          <td>${fmt(p.last_price)}</td><td>${usd(p.market_value)}</td>
+          <td class="${pnlClass(p.unrealized_pnl)}">${usd(p.unrealized_pnl)}</td>
+          <td class="${pnlClass(p.realized_pnl)}">${usd(p.realized_pnl)}</td></tr>`).join('');
+      }
+
+      // ── Per-symbol summary ──
+      const bySym = new Map();
+      r.trades.forEach(t => {
+        const s = bySym.get(t.symbol) || { n: 0, wins: 0, pnl: 0 };
+        s.n++; if (t.pnl > 0) s.wins++; s.pnl += t.pnl;
+        bySym.set(t.symbol, s);
+      });
+      document.querySelector('#symbol-table tbody').innerHTML =
+        [...bySym.entries()].sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => `
+          <tr><td>${sym}</td><td>${s.n}</td><td>${fmt(s.wins / s.n * 100, 1)}%</td>
+          <td class="${pnlClass(s.pnl)}">${usd(s.pnl)}</td>
+          <td class="${pnlClass(s.pnl)}">${usd(s.pnl / s.n)}</td></tr>`).join('')
+        || '<tr><td colspan="5" id="empty">no completed trades</td></tr>';
+
+      // ── Trade log (most recent first) ──
+      const short = t => t.replace('T', ' ').slice(0, 16);
+      document.querySelector('#trade-table tbody').innerHTML =
+        r.trades.slice().reverse().map((t, i) => `
+          <tr><td>${r.trades.length - i}</td><td>${t.symbol}</td>
+          <td><span class="badge ${t.direction}">${t.direction}</span></td>
+          <td>${fmt(t.quantity)}</td><td>${fmt(t.entry_price)}</td><td>${fmt(t.exit_price)}</td>
+          <td>${short(t.entry_time)}</td><td>${short(t.exit_time)}</td>
+          <td class="${pnlClass(t.pnl)}">${usd(t.pnl)}</td></tr>`).join('')
+        || '<tr><td colspan="9" id="empty">no completed trades</td></tr>';
+    }
+
+    main().catch(e => document.body.insertAdjacentHTML('afterbegin',
+      `<div class="panel neg">Failed to load result: ${e}</div>`));
+  </script>
+</body>
+</html>
