@@ -9,22 +9,23 @@ The repo is a Cargo workspace with three crates:
 
 - **`backtester`** — the core engine and strategy API.
 - **`data-viz`** — a DataFusion-backed Parquet explorer (OHLCV + indicator charts).
-- **`ui`** — a planned results dashboard (currently a stub).
+- **`ui`** — the backtest-results dashboard (equity curve, drawdown, trade log).
 
 ## Quick start
 
 Run the built-in EMA-crossover strategy against the committed test fixture
-(AAPL, Jan 2023) — no external data needed:
+(AAPL, Jan 2023) — no external data needed — then open the results dashboard:
 
 ```bash
 cargo run --example ema_cross -- backtester/tests/fixtures
+cargo run -p ui        # http://localhost:3001
 ```
 
 ```
 === Backtest Complete ===
-Trades written to: backtest_trades_2026-07-03T18-07-59.json
-Trades: 92  |  Win Rate: 24%  |  Total PnL: $-1404  |  Final Equity: $98725
-Profit Factor: 0.88  |  Max Drawdown: 4.8%  |  Sharpe: -0.63
+Result written to: backtest_result_2026-07-04T22-13-30.json  (view it with `cargo run -p ui`)
+Trades: 92  |  Win Rate: 24%  |  Total PnL: $-1402  |  Final Equity: $98726
+Profit Factor: 0.88  |  Max Drawdown: 3.6%  |  Sharpe: -2.01  |  Commission: $0.00
 ```
 
 To run against a full dataset, pass a directory containing
@@ -39,8 +40,8 @@ cargo run --release --example ema_cross -- /path/to/data/output
 | Guide | Contents |
 |-------|----------|
 | [docs/backtesting.md](docs/backtesting.md) | Write and run a strategy: the `Algorithm` trait, `Context` API, indicators, consolidation |
-| [docs/results.md](docs/results.md) | The console summary, the trades JSON, and exploring results with `jq` |
-| [docs/visualization.md](docs/visualization.md) | The `data-viz` chart explorer (run command, HTTP API) and `ui` status |
+| [docs/results.md](docs/results.md) | The console summary, the result JSON, trade netting, exploring with `jq` |
+| [docs/visualization.md](docs/visualization.md) | The `ui` results dashboard and the `data-viz` chart explorer |
 | [docs/data-setup.md](docs/data-setup.md) | Dataset layout & schema, `STONKS_DATA_ROOT`, the test fixture, helper examples |
 
 ## Writing a strategy (at a glance)
@@ -61,7 +62,7 @@ impl Algorithm for MyStrategy {
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
         let Some(bar) = data.bars.get("AAPL") else { return };
-        // bar.open, bar.high, bar.low, bar.close, bar.time, bar.market_session
+        // bar.open/high/low/close/volume, bar.time, bar.market_session
         ctx.set_holdings("AAPL", 1.0);   // go 100% long
     }
 }
@@ -81,6 +82,7 @@ cargo test                           # run all tests (uses the committed fixture
 cargo fmt                            # format (max width 100)
 cargo clippy                         # lint
 cargo run --example ema_cross -- backtester/tests/fixtures   # run a backtest
+cargo run -p ui                                              # results dashboard at :3001
 DATA_PATH=/path/to/data/output cargo run -p data-viz         # chart explorer at :3000
 ```
 
@@ -101,15 +103,18 @@ Full details and the `STONKS_DATA_ROOT` env var are in
 
 ## Output
 
-- **`backtest_trades_<timestamp>.json`** — array of closed-trade records
-  (symbol, entry/exit price & time, quantity, PnL), written to the working
-  directory.
+- **`backtest_result_<timestamp>.json`** — the full result: stats, daily
+  equity curve, open positions, and completed trades (rebalance fills netted
+  per position lifetime). Written to the working directory; render it with
+  `cargo run -p ui`.
 - **Stdout** — trade count, win rate, total PnL, final equity, profit factor,
-  max drawdown, Sharpe. See [docs/results.md](docs/results.md).
+  max drawdown, Sharpe, commission. See [docs/results.md](docs/results.md).
+- **In code** — `run` returns the `BacktestResult`; `run_backtest` returns it
+  without printing or writing anything.
 
 ## Status & roadmap
 
-Slippage is customizable (`ctx.set_slippage(..)`, see
-[docs/backtesting.md](docs/backtesting.md#slippage)). See [TODO.md](TODO.md) for
-known bugs, remaining features (commission model, `ui` dashboard, streaming
-data load), and rough edges.
+Slippage and commission are customizable (`ctx.set_slippage(..)` /
+`ctx.set_commission(..)`, see [docs/backtesting.md](docs/backtesting.md));
+data streams one month-file at a time. See [TODO.md](TODO.md) for remaining
+rough edges.

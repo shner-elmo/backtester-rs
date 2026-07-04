@@ -18,8 +18,10 @@ pub trait Algorithm {
   warm-up, and subscribe to symbols here.
 - `on_data` runs once per distinct bar timestamp, after warm-up, for every
   subscribed symbol that has a bar at that instant. Place orders here.
-- `on_end_of_day` is optional. (Known rough edge: it currently fires on the
-  first bar of the *next* day — see [Known limitations](#known-limitations).)
+- `on_end_of_day` is optional. It fires when the first bar of a new trading
+  day (US Eastern) arrives, *before* that bar touches history or prices — so
+  it sees the world exactly as it was at the previous day's last bar. Orders
+  placed in it fill at the new day's first bar.
 
 ## A complete strategy
 
@@ -73,16 +75,19 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_warm_up(bars)` | Bars to consume before `on_data` starts firing |
 | `add_equity(symbol)` | Subscribe to a symbol |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
-| `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long) |
+| `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |
+| `set_slippage(model)` | Fill-price friction — see [Slippage](#slippage) |
+| `set_commission(model)` | Cash charge per fill — see [Commission](#commission) |
+| `set_lot_size(lot)` | Share rounding for `set_holdings` (default `1.0` = whole shares) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling 500-bar window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |
 
 Orders are queued during `on_data` and filled at the bar's **close** price
-after the callback returns, adjusted by the [slippage model](#slippage) (none
-by default). There is currently **no commission** model.
+after the callback returns, adjusted by the [slippage model](#slippage) and
+charged the [commission model](#commission) (both default to zero friction).
 
 ## Slippage
 
@@ -124,12 +129,37 @@ Slippage affects both realized PnL and the cash paid/received; order *sizing*
 [`examples/slippage_demo.rs`](../backtester/examples/slippage_demo.rs) for a
 runnable before/after comparison against `ema_cross`.
 
+## Commission
+
+Commission works the same way (`backtester::commission`): a cash charge per
+fill, deducted from cash and attributed to the trade's PnL.
+
+```rust
+use backtester::commission::{PerShareCommission, PercentCommission};
+
+// Broker-style: half a cent per share with a $1 per-order minimum.
+ctx.set_commission(PerShareCommission { per_share: 0.005, minimum: 1.0 });
+// ...or 2 bps of traded notional:
+ctx.set_commission(PercentCommission::bps(2.0));
+// ...or any closure over the same FillContext slippage uses:
+ctx.set_commission(|_fill: &backtester::FillContext| 1.0); // flat $1/order
+```
+
+| Model | Behavior |
+|-------|----------|
+| `NoCommission` | Free fills (the default) |
+| `PerShareCommission { per_share, minimum }` | Cash per share, floored at a per-order minimum |
+| `PercentCommission { rate }` / `PercentCommission::bps(n)` | Fraction of traded notional |
+
+Total commission paid is reported in the run summary and
+`BacktestResult::total_commission`.
+
 ## Bars, slices, and sessions
 
 - A `Slice` (`data`) exposes `data.bars: HashMap<String, Bar>`; use
   `data.bars.get(symbol)`.
 - A [`Bar`](../backtester/src/bar.rs) has `time` (`DateTime<Utc>`), `open`,
-  `high`, `low`, `close`, and `market_session`
+  `high`, `low`, `close`, `volume`, and `market_session`
   (`PreMarket` / `Main` / `AfterMarket`).
 
 ## Indicators
@@ -152,13 +182,13 @@ Aggregate minute bars into larger timeframes:
 use backtester::consolidator::ConsolidatorPeriod;
 
 ctx.consolidate("AAPL", ConsolidatorPeriod::Hours(1), |bar| {
-    println!("hourly close: {}", bar.close);
+    println!("hourly close: {} (volume {})", bar.close, bar.volume);
 });
 // Also: ConsolidatorPeriod::Minutes(5), ConsolidatorPeriod::Daily
 ```
 
-Note: `consolidate` takes an `Fn` (not `FnMut`), so mutating strategy state
-from the callback needs a `RefCell`.
+Consolidated bars aggregate high/low/volume across the period. The callback is
+an `FnMut`, so it can own and mutate captured state (e.g. an indicator).
 
 ## Running it
 
@@ -179,8 +209,9 @@ The `data_path` argument must be a directory that contains
 
 These are tracked in [`TODO.md`](../TODO.md):
 
-- `on_end_of_day` fires one tick late (first bar of the following day).
-- Trade recording is only correct for simple open→close round trips, not
-  partial fills or direction flips.
-- No commission model (slippage is supported — see [Slippage](#slippage)).
-- `set_holdings` can produce fractional shares.
+- Fills happen at the bar close only — no intrabar execution, limit/stop
+  orders, or partial fills.
+- No margin/borrow accounting: shorts and >100% allocations are allowed and
+  simply drive cash negative, cost-free.
+- Data is streamed one month-file at a time; subscribing to a very large
+  symbol set still holds one month of their bars in memory.

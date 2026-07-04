@@ -1,85 +1,118 @@
 # Results & Statistics
 
-When [`run`](../backtester/src/engine.rs) finishes it does two things: writes a
-JSON file of every closed trade, and prints a summary to stdout.
+When [`run`](../backtester/src/engine.rs) finishes it writes the full result to
+a JSON file, prints a summary to stdout, and returns the
+[`BacktestResult`](../backtester/src/engine.rs) struct. If you want the data
+without any printing or file output, call `run_backtest` instead:
+
+```rust
+use backtester::run_backtest;
+
+let result = run_backtest(algo, "backtester/tests/fixtures");
+println!("{} trades, Sharpe {:.2}", result.stats.trade_count, result.stats.sharpe_ratio);
+```
 
 ## Console summary
 
 ```
 === Backtest Complete ===
-Trades written to: backtest_trades_2026-07-03T18-07-59.json
-Trades: 92  |  Win Rate: 24%  |  Total PnL: $-1404  |  Final Equity: $98725
-Profit Factor: 0.88  |  Max Drawdown: 4.8%  |  Sharpe: -0.63
+Result written to: backtest_result_2026-07-04T22-13-30.json  (view it with `cargo run -p ui`)
+Trades: 92  |  Win Rate: 24%  |  Total PnL: $-1402  |  Final Equity: $98726
+Profit Factor: 0.88  |  Max Drawdown: 3.6%  |  Sharpe: -2.01  |  Commission: $0.00
+Open: AAPL 754.00 @ 130.73 (last 130.90, unrealized $128)
 ```
 
 | Metric | Meaning |
 |--------|---------|
-| **Trades** | Number of closed round-trip trades |
+| **Trades** | Completed round trips (one per position lifetime, flat → flat) |
 | **Win Rate** | Fraction of trades with `pnl > 0` |
-| **Total PnL** | Sum of realized PnL across all trades |
-| **Final Equity** | Starting cash + realized PnL + open positions marked at their last seen price |
+| **Total PnL** | Sum of realized trade PnL, net of commissions |
+| **Final Equity** | Cash + open positions marked at their last seen price |
 | **Profit Factor** | Gross profit ÷ gross loss (`inf` if there are no losing trades) |
-| **Max Drawdown** | Largest peak-to-trough drop of the realized-PnL equity curve |
-| **Sharpe** | Mean/σ of per-trade PnL, annualized by √252 (not a time-weighted return Sharpe) |
+| **Max Drawdown** | Worst peak-to-trough drop of the *daily mark-to-market* equity curve |
+| **Sharpe** | Annualized (√252) from daily equity-curve returns, risk-free rate 0 |
+| **Commission** | Total commissions charged across every fill |
 
-The numbers come from
-[`stats::compute_stats`](../backtester/src/stats.rs), which returns a
-`BacktestStats` struct you can also call directly if you embed the engine.
+The numbers come from [`stats::compute_stats`](../backtester/src/stats.rs).
+Because drawdown and Sharpe are computed from the daily mark-to-market curve
+(not per-trade PnL), pain from open positions counts too.
 
-> Note: `Final Equity` (printed) includes open positions valued at the last
-> known price, whereas `BacktestStats::final_equity` reflects realized PnL
-> only. They differ when a position is still open at the end of the run.
+## What counts as a "trade"
 
-## The trades file
+A trade is one **position lifetime**: it opens on the fill that takes the
+position off flat and closes on the fill that returns it to flat (or flips its
+direction). Everything in between — rebalance fills from `set_holdings`,
+partial adds, partial reductions — is netted into the lifetime's
+volume-weighted entry/exit prices and realized PnL rather than reported as
+separate trades. A strategy that re-targets `set_holdings(0.9)` on every bar
+therefore reports *zero* trades until it actually exits.
+
+## The result file
 
 Written to the **current working directory** as
-`backtest_trades_<timestamp>.json` (the path is printed at the end of the run).
-It is a JSON array of trade records:
+`backtest_result_<timestamp>.json` (the path is printed at the end of the run).
+Top-level shape:
 
 ```json
-[
-  {
-    "symbol": "AAPL",
-    "entry_price": 131.24,
-    "exit_price": 131.15,
-    "entry_time": "2023-01-03T09:41:00+00:00",
-    "exit_time": "2023-01-03T09:43:00+00:00",
-    "quantity": 761.9628162145686,
-    "pnl": -68.57665345931377
-  }
-]
+{
+  "initial_cash": 100000.0,
+  "final_equity": 98726.08,
+  "total_commission": 0.0,
+  "stats": { "trade_count": 92, "win_rate": 0.24, "total_pnl": -1402.1,
+             "profit_factor": 0.88, "max_drawdown": 0.036, "sharpe_ratio": -2.01 },
+  "equity_curve": [ { "time": "2023-01-02", "equity": 100000.0 }, ... ],
+  "open_positions": [ { "symbol": "AAPL", "quantity": 754.0, "avg_price": 130.73,
+                        "last_price": 130.9, "market_value": 98698.6,
+                        "unrealized_pnl": 128.2, "realized_pnl": -1402.1 }, ... ],
+  "trades": [ { "symbol": "AAPL", "direction": "long",
+                "entry_price": 131.24, "exit_price": 131.15,
+                "entry_time": "2023-01-03T14:41:00+00:00",
+                "exit_time": "2023-01-03T14:43:00+00:00",
+                "quantity": 761.0, "pnl": -68.6 }, ... ]
+}
 ```
 
-Each record is one closed round trip: `entry_*` / `exit_*` timestamps and
-prices, signed `quantity`, and realized `pnl`.
+- `equity_curve` — one point per trading day (US Eastern dates), starting at
+  the initial cash and ending at the final equity.
+- `open_positions` — positions still held when the run ended, marked at the
+  last known price. `realized_pnl` is PnL already realized by partial unwinds
+  during the *still-open* lifetime — it isn't part of any completed trade, so
+  `initial_cash + Σ trades.pnl + Σ open.(unrealized+realized) == final_equity`
+  always holds.
+- `trades` — completed round trips, `quantity` is the total absolute quantity
+  that round-tripped, `pnl` is net of commissions.
 
-## Exploring the results
+## The dashboard
 
-The JSON is easy to slice with `jq`:
+The fastest way to look at a result:
+
+```bash
+cargo run -p ui               # serves the newest backtest_result_*.json in CWD
+# open http://localhost:3001
+```
+
+See [visualization.md](./visualization.md#ui--the-results-dashboard).
+
+## Exploring with jq
 
 ```bash
 # Sort trades by PnL, worst first
-jq 'sort_by(.pnl)' backtest_trades_*.json
+jq '.trades | sort_by(.pnl)' backtest_result_*.json
 
 # Total and average PnL
-jq '[.[].pnl] | {total: add, avg: (add / length), n: length}' backtest_trades_*.json
+jq '.trades | [.[].pnl] | {total: add, avg: (add / length), n: length}' backtest_result_*.json
 
 # Per-symbol PnL
-jq 'group_by(.symbol) | map({symbol: .[0].symbol, pnl: (map(.pnl) | add)})' backtest_trades_*.json
+jq '.trades | group_by(.symbol) | map({symbol: .[0].symbol, pnl: (map(.pnl) | add)})' backtest_result_*.json
 
-# Only losing trades
-jq 'map(select(.pnl < 0))' backtest_trades_*.json
+# Daily equity as CSV
+jq -r '.equity_curve[] | "\(.time),\(.equity)"' backtest_result_*.json
 ```
-
-For a **visual** exploration of price + indicators, see
-[visualization.md](./visualization.md).
 
 ## Caveats
 
-- Trade recording is currently reliable only for simple open→close round trips.
-  Partial fills and direction flips are not tracked correctly yet (see
-  [`TODO.md`](../TODO.md)).
-- Slippage is modeled if you set one (see
-  [backtesting.md](./backtesting.md#slippage)); there is still no commission
-  model, so results with zero friction configured are optimistic relative to
-  live trading.
+- Fills happen at the bar **close** (plus slippage); there is no intrabar
+  execution, order book, or partial-fill modeling.
+- With no slippage/commission configured, results are optimistic relative to
+  live trading — see [backtesting.md](./backtesting.md#slippage) and
+  [backtesting.md](./backtesting.md#commission).

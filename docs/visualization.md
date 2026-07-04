@@ -1,14 +1,13 @@
 # Visualization & UI
 
-The workspace has two web crates. Their current status differs — read this
-before expecting a dashboard.
+The workspace has two web crates:
 
-| Crate | Status | Purpose |
-|-------|--------|---------|
-| `data-viz` | **Working** | Parquet explorer: OHLCV candles + indicators |
-| `ui` | **Stub** | Planned backtest-results dashboard |
+| Crate | Port | Purpose |
+|-------|------|---------|
+| `data-viz` | `:3000` | Parquet explorer: OHLCV candles + indicators |
+| `ui` | `:3001` | Backtest-results dashboard |
 
-> Both bind `0.0.0.0:3000`, so you can only run one at a time.
+They bind different ports, so both can run at once.
 
 ## data-viz — the Parquet chart explorer
 
@@ -72,15 +71,39 @@ layer:
 - `load_daily_bars(data_root, symbol, start, end) -> Vec<OhlcBar>` — bars
   straight from Parquet via DataFusion.
 
-## ui — results dashboard (not yet implemented)
+## ui — the results dashboard
+
+Renders a `backtest_result_<timestamp>.json` (what every `run` writes — see
+[results.md](./results.md)) as a dark-theme dashboard: stat cards (final
+equity, return, PnL, win rate, profit factor, drawdown, Sharpe, commission),
+the daily equity curve with the starting-capital line, a drawdown chart, a
+trade-PnL histogram, monthly returns, open positions, a per-symbol summary,
+and the full trade log.
+
+### Run it
 
 ```bash
-cargo run -p ui   # serves http://localhost:3000
+# 1. Produce a result file:
+cargo run --example ema_cross -- backtester/tests/fixtures
+
+# 2. Serve it (picks the newest backtest_result_*.json in the current dir):
+cargo run -p ui
+# open http://localhost:3001
+
+# ...or point it at a specific file / different port:
+cargo run -p ui -- path/to/backtest_result.json
+PORT=8080 cargo run -p ui
 ```
 
-Right now [`ui/src/main.rs`](../ui/src/main.rs) is a placeholder that responds
-with `"backtester UI — not yet implemented"`. The intended dashboard (equity
-curve, drawdown, PnL histogram, monthly/daily bars, per-symbol table, trade
-log, wired to `backtester::stats`) is described in [`TODO.md`](../TODO.md).
-Until it lands, use the [trades JSON + jq](./results.md) for results and
-`data-viz` for price charts.
+### HTTP API
+
+| Route | Description |
+|-------|-------------|
+| `GET /` | The dashboard ([`ui/src/index.html`](../ui/src/index.html)) |
+| `GET /api/result` | The loaded result JSON, plus a `source_file` field |
+
+All charts and tables are computed client-side from `/api/result`, so the
+server is just a static file plus one JSON endpoint. Charts use
+[TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts)
+(same as `data-viz`) for the time series and a small canvas renderer for the
+bar charts.
