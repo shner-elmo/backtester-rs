@@ -21,6 +21,47 @@ pub fn load_ticker_map(data_root: &str) -> HashMap<u16, String> {
     temp.into_iter().map(|(k, v)| (k.parse::<u16>().unwrap(), v)).collect()
 }
 
+/// Stock splits per symbol: execution date → ratio (`split_to / split_from`,
+/// so 3.0 for a 1→3 forward split, 0.1 for a 10→1 reverse split). Reads the
+/// Polygon-format `get_splits.json` next to `encoded_tickers.json`; returns an
+/// empty map when the file doesn't exist (e.g. the test fixture). Only splits
+/// for `symbols` are kept.
+pub fn load_splits(
+    data_root: &str,
+    symbols: &std::collections::HashSet<String>,
+) -> HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>> {
+    #[derive(serde::Deserialize)]
+    struct SplitRecord {
+        execution_date: String,
+        ticker: String,
+        split_from: f64,
+        split_to: f64,
+    }
+
+    let path = format!("{}/get_splits.json", data_root);
+    let Ok(content) = read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let records: Vec<SplitRecord> = serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("{path} is not valid splits JSON: {e}"));
+
+    let mut splits: HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>> =
+        HashMap::new();
+    for r in records {
+        if !symbols.contains(&r.ticker) || r.split_from <= 0.0 || r.split_to <= 0.0 {
+            continue;
+        }
+        let Ok(date) = r.execution_date.parse::<chrono::NaiveDate>() else {
+            continue;
+        };
+        // Same-day duplicate records multiply together (defensive; not seen
+        // in practice).
+        let day_ratio = splits.entry(r.ticker).or_default().entry(date).or_insert(1.0);
+        *day_ratio *= r.split_to / r.split_from;
+    }
+    splits
+}
+
 /// Parse a directory name that is either a bare number (`2023`) or a Hive
 /// partition (`year=2023`), returning the numeric part.
 fn dir_number(component: &std::ffi::OsStr) -> Option<u32> {

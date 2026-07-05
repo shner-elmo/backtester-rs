@@ -43,6 +43,7 @@ pub struct Context {
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) lot_size: f64,
+    pub(crate) delist_after_days: usize,
 }
 
 impl Default for Context {
@@ -61,6 +62,7 @@ impl Default for Context {
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             lot_size: 1.0,
+            delist_after_days: 5,
         }
     }
 }
@@ -102,6 +104,14 @@ impl Context {
     /// Defaults to no commission.
     pub fn set_commission(&mut self, model: impl CommissionModel + 'static) {
         self.commission = Box::new(model);
+    }
+
+    /// A held symbol that produces no bars for this many consecutive trading
+    /// days is treated as delisted: the position is force-closed at its last
+    /// known price and `Algorithm::on_delisted` fires. Defaults to 5; pass
+    /// `0` to disable.
+    pub fn set_delist_after_days(&mut self, days: usize) {
+        self.delist_after_days = days;
     }
 
     /// Set the share lot `set_holdings` rounds order quantities to. Defaults

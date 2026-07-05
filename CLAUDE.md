@@ -28,7 +28,7 @@ Parquet files → Bar stream → Engine loop → Consolidators → Algorithm cal
 
 **Modules:**
 
-- `engine.rs` — Orchestrates the backtest: streams data one month-file at a time (skipping months outside the date range), manages warm-up, calls algorithm callbacks, processes orders, nets fills into position-lifetime trades, builds the daily equity curve. `run_backtest()` returns a `BacktestResult`; `run()` additionally prints a summary and writes `backtest_result_<ts>.json`
+- `engine.rs` — Orchestrates the backtest: streams data one month-file at a time (skipping months outside the date range), manages warm-up, calls algorithm callbacks, processes orders, nets fills into position-lifetime trades, builds the daily equity curve. Applies stock splits on execution date (position qty × ratio, basis ÷ ratio, history rescaled; bar prices stay raw) and force-liquidates symbols silent for N trading days (delisting). `run_backtest()` returns a `BacktestResult`; `run()` additionally prints a summary and writes `backtest_result_<ts>.json`
 - `algorithm.rs` — `Algorithm` trait users implement: `initialize()`, `on_data()`, `on_end_of_day()`
 - `context.rs` — Execution context passed to algorithm: subscribe symbols, place orders (`Market`, `SetHoldings`, `Liquidate`), access bar history (rolling 500-bar deque), register consolidators, set slippage/commission/lot-size models
 - `broker.rs` — `Portfolio` (cash + positions map); `Position` tracks qty + avg price; `apply_fill()` updates positions

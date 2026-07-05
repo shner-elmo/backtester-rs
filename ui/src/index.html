@@ -35,6 +35,7 @@
     .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
     .badge.long { background: rgba(38,166,154,.15); color: var(--green); }
     .badge.short { background: rgba(239,83,80,.15); color: var(--red); }
+    .badge.forced { background: rgba(255,183,77,.15); color: #ffb74d; }
     #empty { color: var(--muted); padding: 30px; text-align: center; }
   </style>
 </head>
@@ -252,7 +253,7 @@
       document.querySelector('#trade-table tbody').innerHTML =
         r.trades.slice().reverse().map((t, i) => `
           <tr><td>${r.trades.length - i}</td><td>${t.symbol}</td>
-          <td><span class="badge ${t.direction}">${t.direction}</span></td>
+          <td><span class="badge ${t.direction}">${t.direction}</span>${t.exit_reason && t.exit_reason !== 'signal' ? ` <span class="badge forced">${t.exit_reason}</span>` : ''}</td>
           <td>${fmt(t.quantity)}</td><td>${fmt(t.entry_price)}</td><td>${fmt(t.exit_price)}</td>
           <td>${short(t.entry_time)}</td><td>${short(t.exit_time)}</td>
           <td class="${pnlClass(t.pnl)}">${usd(t.pnl)}</td></tr>`).join('')

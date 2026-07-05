@@ -115,6 +115,8 @@ Full details and the `STONKS_DATA_ROOT` env var are in
 ## Status & roadmap
 
 Slippage and commission are customizable (`ctx.set_slippage(..)` /
-`ctx.set_commission(..)`, see [docs/backtesting.md](docs/backtesting.md));
-data streams one month-file at a time. See [TODO.md](TODO.md) for remaining
-rough edges.
+`ctx.set_commission(..)`); stock splits adjust positions and history on their
+execution date, and silent (delisted/renamed) symbols are force-liquidated —
+see [docs/backtesting.md](docs/backtesting.md#corporate-actions). Data streams
+one month-file at a time. See [TODO.md](TODO.md) for remaining rough edges
+(dividends are not applied yet).

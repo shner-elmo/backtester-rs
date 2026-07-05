@@ -68,7 +68,8 @@ Top-level shape:
                 "entry_price": 131.24, "exit_price": 131.15,
                 "entry_time": "2023-01-03T14:41:00+00:00",
                 "exit_time": "2023-01-03T14:43:00+00:00",
-                "quantity": 761.0, "pnl": -68.6 }, ... ]
+                "quantity": 761.0, "pnl": -68.6,
+                "exit_reason": "signal" }, ... ]
 }
 ```
 
@@ -80,7 +81,11 @@ Top-level shape:
   `initial_cash + Σ trades.pnl + Σ open.(unrealized+realized) == final_equity`
   always holds.
 - `trades` — completed round trips, `quantity` is the total absolute quantity
-  that round-tripped, `pnl` is net of commissions.
+  that round-tripped, `pnl` is net of commissions. `exit_reason` is `"signal"`
+  for strategy-ordered closes, `"delisted"` for forced liquidations of symbols
+  that stopped trading, `"split"` for positions fully cashed out in lieu by a
+  reverse split (see
+  [backtesting.md](./backtesting.md#corporate-actions)).
 
 ## The dashboard
 

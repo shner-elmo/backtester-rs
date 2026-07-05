@@ -11,6 +11,8 @@ pub trait Algorithm {
     fn initialize(&mut self, ctx: &mut Context);          // configure the run
     fn on_data(&mut self, ctx: &mut Context, data: &Slice); // called once per timestamp
     fn on_end_of_day(&mut self, _ctx: &mut Context) {}     // optional, default no-op
+    fn on_split(&mut self, _ctx: &mut Context, _symbol: &str, _ratio: f64) {} // optional
+    fn on_delisted(&mut self, _ctx: &mut Context, _symbol: &str) {}           // optional
 }
 ```
 
@@ -80,6 +82,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_slippage(model)` | Fill-price friction — see [Slippage](#slippage) |
 | `set_commission(model)` | Cash charge per fill — see [Commission](#commission) |
 | `set_lot_size(lot)` | Share rounding for `set_holdings` (default `1.0` = whole shares) |
+| `set_delist_after_days(n)` | Force-close positions in symbols silent for `n` trading days (default 5, `0` = off) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling 500-bar window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
@@ -153,6 +156,51 @@ ctx.set_commission(|_fill: &backtester::FillContext| 1.0); // flat $1/order
 
 Total commission paid is reported in the run summary and
 `BacktestResult::total_commission`.
+
+## Corporate actions
+
+### Splits
+
+If a `get_splits.json` (Polygon format) sits next to `encoded_tickers.json`,
+the engine applies stock splits for subscribed symbols on their execution
+date. The dataset's prices are **raw/unadjusted** (CELH really does go from
+$158 to $52 overnight on its 1→3 split), and the engine keeps them that way —
+what changes is your *account*, exactly like at a real broker:
+
+- **Bar prices in slices are never touched.** If your strategy checks
+  `price > x` in the morning, it sees the true post-split price — the same
+  number it would have seen trading live. Back-adjusting would make it test
+  against prices nobody could ever have traded.
+- **Held positions are adjusted**: quantity × ratio, cost basis ÷ ratio —
+  position value is unchanged and no trade is emitted. The trade ledger is
+  rescaled the same way, so entry/exit averages of an eventual round trip
+  come out in consistent post-split terms.
+- **`ctx.history()` is rescaled** into post-split terms (prices ÷ ratio,
+  volume × ratio), so lookbacks and indicators fed from history don't see a
+  phantom ±ratio move. Indicators *you* own can't be rescaled for you — reset
+  them in `on_split(ctx, symbol, ratio)`.
+- **Fractional remainders are cashed out in lieu**: a reverse split that
+  leaves a fraction against the lot size credits the cash at the post-split
+  price. If that cashes out the whole position, the closing trade carries
+  `exit_reason: "split"`.
+
+The daily equity curve stays continuous across a split (only real market
+moves show), which is locked in by tests and was validated on the real
+dataset across CELH's 2023-11-15 split.
+
+### Delistings & ticker changes
+
+The dataset can't distinguish a delisting from a ticker rename or a buyout —
+in all three the old symbol just stops producing bars. The engine treats them
+uniformly: a **held** symbol with no bars for `set_delist_after_days` (default
+5) consecutive trading days is force-liquidated at its last known price, with
+no commission. The closing trade carries `exit_reason: "delisted"` and
+`on_delisted(ctx, symbol)` fires. This is approximately right for cash
+buyouts, realizes the correct PnL for renames (only the position lifetime
+resets), and closes the book on true delistings — note the last traded price
+of a bankruptcy delisting is usually optimistic.
+
+Cash dividends are **not** applied yet (see `TODO.md`).
 
 ## Bars, slices, and sessions
 

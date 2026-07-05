@@ -16,3 +16,6 @@ walkdir = "2"
 [[example]]
 name = "ema_cross"
 path = "examples/ema_cross.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"

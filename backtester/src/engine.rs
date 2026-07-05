@@ -8,7 +8,9 @@ use crate::{
     algorithm::Algorithm,
     bar::Bar,
     context::{Context, OrderKind},
-    data::{file_year_month, load_ticker_map, read_bars_from_file, sorted_parquet_files},
+    data::{
+        file_year_month, load_splits, load_ticker_map, read_bars_from_file, sorted_parquet_files,
+    },
     slice::Slice,
     slippage::FillContext,
     stats::{compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade},
@@ -62,7 +64,7 @@ impl OpenLifetime {
         }
     }
 
-    fn into_trade(self, symbol: &str, exit_time: DateTime<Utc>) -> Trade {
+    fn into_trade(self, symbol: &str, exit_time: DateTime<Utc>, exit_reason: &str) -> Trade {
         Trade {
             symbol: symbol.to_string(),
             direction: if self.direction > 0.0 { "long" } else { "short" }.to_string(),
@@ -76,8 +78,103 @@ impl OpenLifetime {
             exit_time: exit_time.to_rfc3339(),
             quantity: self.closed_qty,
             pnl: self.realized_pnl,
+            exit_reason: exit_reason.to_string(),
         }
     }
+}
+
+/// Apply a split that executed on `symbol`: rescale the held position
+/// (quantity × ratio, basis ÷ ratio — value invariant), the open-lifetime
+/// ledger, the stored history, and the last known price into post-split
+/// terms. Bar prices in slices are never adjusted — the raw stream is what
+/// the market actually printed. A fractional remainder versus the lot size is
+/// cashed out in lieu at the (post-split) last known price, like a broker
+/// does on reverse splits.
+#[allow(clippy::too_many_arguments)]
+fn apply_split(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    trades: &mut Vec<Trade>,
+    last_known_prices: &mut HashMap<String, f64>,
+    symbol: &str,
+    ratio: f64,
+    tick_time: DateTime<Utc>,
+) {
+    if let Some(hist) = ctx.history_store.get_mut(symbol) {
+        for b in hist.iter_mut() {
+            b.open /= ratio;
+            b.high /= ratio;
+            b.low /= ratio;
+            b.close /= ratio;
+            b.volume = (b.volume as f64 * ratio).round() as u64;
+        }
+    }
+    if let Some(p) = last_known_prices.get_mut(symbol) {
+        *p /= ratio;
+    }
+    if let Some(lt) = lifetimes.get_mut(symbol) {
+        // Express the lifetime in post-split shares; the dollar figures
+        // (entry_value, close_value, realized_pnl) are already invariant.
+        lt.entry_qty *= ratio;
+        lt.closed_qty *= ratio;
+    }
+
+    let Some(pos) = ctx.portfolio.positions.get_mut(symbol) else { return };
+    pos.quantity *= ratio;
+    pos.avg_price /= ratio;
+
+    // Cash-in-lieu for the fractional remainder against the lot size.
+    let lot = ctx.lot_size;
+    let rounded = (pos.quantity / lot).trunc() * lot;
+    let residual = pos.quantity - rounded;
+    if residual.abs() < 1e-9 {
+        return;
+    }
+    let price = last_known_prices.get(symbol).copied().unwrap_or(pos.avg_price);
+    let avg = pos.avg_price;
+    pos.quantity = rounded;
+    ctx.portfolio.cash += residual * price;
+    if let Some(lt) = lifetimes.get_mut(symbol) {
+        lt.closed_qty += residual.abs();
+        lt.close_value += residual.abs() * price;
+        lt.realized_pnl += (price - avg) * residual.abs() * residual.signum();
+    }
+    if rounded.abs() < 1e-9 {
+        // The whole position was cashed out (deep reverse split of a tiny
+        // holding): the lifetime is over.
+        ctx.portfolio.positions.remove(symbol);
+        if let Some(lt) = lifetimes.remove(symbol) {
+            trades.push(lt.into_trade(symbol, tick_time, "split"));
+        }
+    }
+}
+
+/// Force-close a position in a symbol that stopped trading: fill the whole
+/// quantity at the last known price with no commission, and emit the closing
+/// trade with `exit_reason: "delisted"`.
+fn force_close_delisted(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    trades: &mut Vec<Trade>,
+    last_known_prices: &HashMap<String, f64>,
+    symbol: &str,
+    tick_time: DateTime<Utc>,
+) {
+    let Some(pos) = ctx.portfolio.positions.get(symbol) else { return };
+    let qty = pos.quantity;
+    let avg = pos.avg_price;
+    let price = last_known_prices.get(symbol).copied().unwrap_or(avg);
+
+    let lt = lifetimes
+        .entry(symbol.to_string())
+        .or_insert_with(|| OpenLifetime::new(tick_time, qty.signum()));
+    lt.closed_qty += qty.abs();
+    lt.close_value += qty.abs() * price;
+    lt.realized_pnl += (price - avg) * qty.abs() * qty.signum();
+    let lt = lifetimes.remove(symbol).unwrap();
+    trades.push(lt.into_trade(symbol, tick_time, "delisted"));
+
+    ctx.portfolio.apply_fill(symbol, -qty, price);
 }
 
 /// Run a backtest and return its full results without printing anything.
@@ -95,6 +192,20 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
     let mut last_date: Option<NaiveDate> = None;
     let mut last_known_prices: HashMap<String, f64> = HashMap::new();
     let mut total_commission = 0.0;
+
+    // Splits for subscribed symbols, queued by execution date.
+    let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
+    for (symbol, by_date) in load_splits(data_path, &subscribed) {
+        for (date, ratio) in by_date {
+            pending_splits.entry(date).or_default().push((symbol.clone(), ratio));
+        }
+    }
+
+    // Delist detection: which trading day (by index) each symbol last had a
+    // bar on.
+    let mut global_last_date: Option<NaiveDate> = None;
+    let mut day_index: u64 = 0;
+    let mut last_seen_day: HashMap<String, u64> = HashMap::new();
 
     // Stream the dataset one file at a time: files are month-partitioned and
     // chronologically sorted, so only a single month of subscribed bars is
@@ -160,6 +271,72 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
                         algo.on_end_of_day(&mut ctx);
                     }
                 }
+            }
+
+            // Corporate actions & delist scan, once per calendar date, after
+            // the previous day's equity mark (which must see pre-split state)
+            // and before the new day's bars touch anything. Not warm-up
+            // gated: history built during warm-up needs rescaling too, and
+            // no positions can exist in warm-up so the delist scan is
+            // vacuous there.
+            if global_last_date != Some(tick_date) {
+                let is_first_tick = global_last_date.is_none();
+                global_last_date = Some(tick_date);
+                if !is_first_tick {
+                    day_index += 1;
+                }
+
+                while let Some((&date, _)) = pending_splits.first_key_value() {
+                    if date > tick_date {
+                        break;
+                    }
+                    let (_, actions) = pending_splits.pop_first().unwrap();
+                    // Splits dated before the first bar we ever process have
+                    // nothing to adjust — drain them silently.
+                    if is_first_tick {
+                        continue;
+                    }
+                    for (symbol, ratio) in actions {
+                        apply_split(
+                            &mut ctx,
+                            &mut lifetimes,
+                            &mut trades,
+                            &mut last_known_prices,
+                            &symbol,
+                            ratio,
+                            tick_time,
+                        );
+                        algo.on_split(&mut ctx, &symbol, ratio);
+                    }
+                }
+
+                let delist_after = ctx.delist_after_days as u64;
+                if delist_after > 0 && !ctx.portfolio.positions.is_empty() {
+                    let stale: Vec<String> = ctx
+                        .portfolio
+                        .positions
+                        .keys()
+                        .filter(|s| {
+                            let seen = last_seen_day.get(*s).copied().unwrap_or(day_index);
+                            day_index.saturating_sub(seen) >= delist_after
+                        })
+                        .cloned()
+                        .collect();
+                    for symbol in stale {
+                        force_close_delisted(
+                            &mut ctx,
+                            &mut lifetimes,
+                            &mut trades,
+                            &last_known_prices,
+                            &symbol,
+                            tick_time,
+                        );
+                        algo.on_delisted(&mut ctx, &symbol);
+                    }
+                }
+            }
+            for (symbol, _) in &bars {
+                last_seen_day.insert(symbol.clone(), day_index);
             }
 
             let current_prices: HashMap<String, f64> =
@@ -288,7 +465,7 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
                     let is_full_close = closed_now >= current_qty.abs() - 1e-9;
                     if is_full_close {
                         let lt = lifetimes.remove(&order.symbol).unwrap();
-                        trades.push(lt.into_trade(&order.symbol, tick_time));
+                        trades.push(lt.into_trade(&order.symbol, tick_time, "signal"));
                         if new_qty.abs() > 1e-9 {
                             // A flip leaves a residual position in the new
                             // direction; it starts a fresh lifetime.

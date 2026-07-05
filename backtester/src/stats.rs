@@ -19,6 +19,10 @@ pub struct Trade {
     pub quantity: f64,
     /// Realized PnL over the lifetime, net of commissions.
     pub pnl: f64,
+    /// What closed the position: `"signal"` (a strategy order), `"delisted"`
+    /// (forced liquidation after the symbol stopped trading), or `"split"`
+    /// (a reverse split cashed out the whole position in lieu).
+    pub exit_reason: String,
 }
 
 /// Mark-to-market portfolio equity at the end of one trading day.
@@ -128,6 +132,7 @@ mod tests {
             exit_time: "2023-01-04T14:30:00+00:00".into(),
             quantity: 10.0,
             pnl,
+            exit_reason: "signal".into(),
         }
     }
 

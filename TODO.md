@@ -32,6 +32,21 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
 
 ## Remaining ideas (none blocking a demo)
 
+- [x] **Splits & delistings** — done 2026-07-05: splits from `get_splits.json`
+  adjust position/basis/history on execution date (bar prices stay raw);
+  symbols silent ≥5 trading days are force-liquidated
+  (`exit_reason: "delisted"`, `on_delisted`); `on_split` callback for
+  indicator resets. Synthetic-fixture tests in
+  `backtester/tests/corporate_actions.rs`; validated on real data across
+  CELH's 2023-11-15 1→3 split (equity moved −0.10% on split day, not −67%).
+- [ ] **Cash dividends** — `get_dividends.json` (526 MB) is there; on
+  `ex_dividend_date` credit `qty * cash_amount` (debit shorts) in the same
+  day-boundary hook splits use. Needs a streaming/filtered parse.
+- [ ] **Delist fill haircut** — forced liquidation fills at the last traded
+  price, which is optimistic for bankruptcies; make the fill price/haircut
+  configurable.
+- [ ] **Ticker rename chains** — with Polygon's ticker-events data, upgrade
+  renames from forced liquidation to a seamless position transfer.
 - [ ] **Margin/borrow accounting** — shorts and >100% allocations just drive
   cash negative, cost-free. Add a margin-interest / borrow-fee model next to
   slippage & commission.
