@@ -112,11 +112,74 @@ Full details and the `STONKS_DATA_ROOT` env var are in
 - **In code** — `run` returns the `BacktestResult`; `run_backtest` returns it
   without printing or writing anything.
 
+## Simulation semantics — read this before trusting a number
+
+How the engine handles the things that silently corrupt backtests, and the
+things it deliberately does **not** model.
+
+### Execution
+
+- Orders are queued during `on_data` / `on_end_of_day` and fill at the
+  **close of the bar they were placed on**, adjusted by your slippage model
+  and charged your commission model (both default to zero — configure them,
+  or results are optimistic; see
+  [docs/backtesting.md](docs/backtesting.md#slippage)).
+- There are **no limit/stop orders, no intrabar fills, no partial fills, and
+  no liquidity constraints** — you can notionally trade any size at the
+  close. Be skeptical of strategies that trade large size in illiquid names.
+- `set_holdings` sizes at the pre-slippage reference price and rounds to the
+  lot (default: whole shares).
+
+### Sessions
+
+Pre-market and after-market bars **are fed to `on_data`**, and orders placed
+on them fill at their prices — thin, wide-spread sessions where real fills
+are much worse than the print. Check `bar.market_session` and skip
+`PreMarket`/`AfterMarket` unless you mean to trade them.
+
+### Prices & corporate actions
+
+- Bar prices are **raw/unadjusted** — what the tape actually printed. A
+  price filter like `close > 100` behaves exactly as it would have live.
+- **Splits** (from `get_splits.json`) adjust your *account* on execution
+  date, like a real broker: quantity × ratio, basis ÷ ratio, `ctx.history()`
+  rescaled, fractional remainders cashed out in lieu. Position value is
+  invariant — the equity curve shows only market moves across a split
+  (validated on CELH's 2023 1→3 split). **Warning:** indicators you own are
+  *not* reset for you — do it in `on_split`.
+- **Delistings/renames/buyouts** are indistinguishable in this dataset (the
+  symbol just stops printing bars). A held symbol silent for 5 trading days
+  (configurable) is force-liquidated at its last known price
+  (`exit_reason: "delisted"`). **Warning:** for bankruptcies the last traded
+  price is optimistic.
+- **Dividends are NOT applied.** Long dividend-payers are understated,
+  shorts overstated, by the yield. (`TODO.md`.)
+- **No margin or borrow costs**: shorts and >100% allocations just drive cash
+  negative, free. Leverage looks better here than in reality.
+
+### Accounting & stats
+
+- A **"trade"** is one position lifetime, flat → flat: rebalance fills are
+  netted into volume-weighted entry/exit averages, not counted as trades.
+- The identity `initial_cash + Σ trade PnL + Σ open (realized + unrealized)
+  = final equity` holds exactly (asserted in tests; ~1e-12 over a full-year
+  real-data run).
+- **Drawdown and Sharpe come from the daily mark-to-market equity curve**
+  (ET trading dates), not per-trade PnL — open-position pain counts. Sharpe
+  assumes a zero risk-free rate and √252 scaling. The curve is **daily**:
+  intraday drawdown inside a single day is invisible.
+- **Survivorship bias is yours to manage**: the engine only sees symbols you
+  subscribe to. Hand-picking today's winners (the AAPLs) biases results up —
+  delisted losers never make it into the universe.
+
+### Warm-up
+
+`set_warm_up(n)` counts **bars**, not days, starting at the effective start
+date. History and consolidators fill during warm-up; `on_data`,
+`on_end_of_day`, and the equity curve begin after it.
+
 ## Status & roadmap
 
-Slippage and commission are customizable (`ctx.set_slippage(..)` /
-`ctx.set_commission(..)`); stock splits adjust positions and history on their
-execution date, and silent (delisted/renamed) symbols are force-liquidated —
-see [docs/backtesting.md](docs/backtesting.md#corporate-actions). Data streams
-one month-file at a time. See [TODO.md](TODO.md) for remaining rough edges
-(dividends are not applied yet).
+Data streams one month-file at a time (a full year over the 44 GB dataset
+runs in ~74 s at ~42 MB RSS). See [TODO.md](TODO.md) for what's next:
+dividends, delist-fill haircuts, margin/borrow costs, intrabar execution.
