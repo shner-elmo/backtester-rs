@@ -1,0 +1,7 @@
+# Benchmark baseline (ns/iter), captured on a GitHub Actions ubuntu-latest runner.
+# CI fails the bench job if a run is more than 2x slower than these numbers.
+# Refresh after an intended perf change (numbers should come from a CI run, not
+# local hardware):
+#   cargo bench -p backtester --bench engine -- --output-format bencher
+test engine/read_all_bars ... bench:    14517150 ns/iter (+/- 0)
+test engine/ema_cross_backtest ... bench:    130343141 ns/iter (+/- 0)
