@@ -1,5 +1,6 @@
 //! Performance benchmarks, wired into CI so throughput regressions surface in
-//! the run log.
+//! the run log and fail the build (compared against a committed baseline —
+//! see `scripts/bench_compare.py`).
 //!
 //! Two benchmarks:
 //!
@@ -9,45 +10,44 @@
 //!   (indicator updates + `set_holdings` / `liquidate` orders) over the same
 //!   data.
 //!
-//! CI has no access to the real dataset, so by default the benches generate a
-//! synthetic month-partitioned dataset (~160k bars) into a tempdir. Set
+//! CI has no access to the real dataset, so by default the benches build their
+//! input by **replicating the committed AAPL fixture** (`tests/fixtures`, 5,000
+//! Jan-2023 minute bars) across ~30 months: replica `k` is the fixture shifted
+//! forward `k` calendar months with its OHLC scaled by `1.02^k`, giving a
+//! monotonic multi-month single-symbol dataset from real-shaped data. Set
 //! `BENCH_DATA_ROOT` to a real data root (the dir holding `encoded_tickers.json`
 //! and `minute/year=.../month=.../*.parquet`) to benchmark against it instead;
 //! `BENCH_SYMBOLS` (comma-separated, default `AAPL`) picks what the strategy
 //! trades in that case.
+//!
+//! Single-symbol data doesn't stress multi-symbol tick grouping the way a wide
+//! universe would; it's a deterministic, real-shaped regression signal. Symbol
+//! fan-out could be added later by duplicating the batch under new ticker ids.
 
 use std::sync::Arc;
 
 use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
-use chrono::{Duration, NaiveDate, TimeZone, Utc};
+use chrono::{Datelike, Months, NaiveDate, TimeZone, Utc};
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use tempfile::TempDir;
 
 use backtester::{
-    data::{iter_bars, load_ticker_map},
+    data::{iter_bars, load_ticker_map, sorted_parquet_files},
     indicators::{Ema, Next},
     run_backtest, Algorithm, Context, Slice,
 };
 
-const SYMBOLS: usize = 32;
-const MONTHS: &[(i32, u32)] = &[(2023, 6), (2023, 7)];
-const DAYS_PER_MONTH: u32 = 20;
-const BARS_PER_DAY: u32 = 130;
-/// How many synthetic symbols the strategy actually trades.
-const TRADED: usize = 4;
+/// Roughly how many bars the replicated dataset should contain; the number of
+/// monthly replicas is derived from this and the fixture's row count.
+const TARGET_BARS: usize = 150_000;
 
-fn synthetic_symbol(i: usize) -> String {
-    format!("SYM{i:03}")
-}
-
-/// Deterministic oscillating close so fast/slow EMAs cross repeatedly (the
-/// strategy places real orders). Phase differs per symbol.
-fn close_at(global_bar: u64, symbol: usize) -> f64 {
-    let phase = symbol as f64 * 0.37;
-    100.0 + 15.0 * ((global_bar as f64) / 29.0 + phase).sin()
+/// The committed fixture: one symbol (AAPL), Jan 2023, ~5,000 minute bars.
+fn fixture_root() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures").to_string()
 }
 
 fn schema() -> Arc<Schema> {
@@ -63,56 +63,110 @@ fn schema() -> Arc<Schema> {
     ]))
 }
 
-/// Write one month's worth of bars for every symbol into
-/// `minute/year=Y/month=M/part-0.parquet`. Returns the row count written.
-fn write_month(root: &std::path::Path, year: i32, month: u32, base_bar: u64) -> u64 {
-    let schema = schema();
+/// The fixture's columns, read once into memory so each monthly replica is a
+/// cheap transform of them.
+struct FixtureColumns {
+    ticker: Vec<u16>,
+    volume: Vec<u32>,
+    open: Vec<f64>,
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    ts: Vec<i64>,
+    session: Vec<u8>,
+}
 
-    let mut tickers = Vec::new();
-    let mut volume = Vec::new();
-    let mut open = Vec::new();
-    let mut close = Vec::new();
-    let mut high = Vec::new();
-    let mut low = Vec::new();
-    let mut ts = Vec::new();
-    let mut session = Vec::new();
+/// Read every row of the fixture Parquet into column vectors (by name, matching
+/// the loader in `data.rs`).
+fn read_fixture(file: &std::path::Path) -> FixtureColumns {
+    let f = std::fs::File::open(file).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(f).unwrap().build().unwrap();
 
-    let mut global_bar = base_bar;
-    for day in 1..=DAYS_PER_MONTH {
-        for minute in 0..BARS_PER_DAY {
-            // 13:30 UTC = 09:30 ET, so UTC and ET dates agree.
-            let t =
-                NaiveDate::from_ymd_opt(year, month, day).unwrap().and_hms_opt(13, 30, 0).unwrap()
-                    + Duration::minutes(minute as i64);
-            let nanos = Utc.from_utc_datetime(&t).timestamp_nanos_opt().unwrap();
-            for s in 0..SYMBOLS {
-                let c = close_at(global_bar, s);
-                let o = close_at(global_bar.saturating_sub(1), s);
-                tickers.push((s + 1) as u16);
-                volume.push(100u32);
-                open.push(o);
-                close.push(c);
-                high.push(o.max(c) + 0.05);
-                low.push(o.min(c) - 0.05);
-                ts.push(nanos);
-                session.push(2u8);
-            }
-            global_bar += 1;
+    let mut cols = FixtureColumns {
+        ticker: Vec::new(),
+        volume: Vec::new(),
+        open: Vec::new(),
+        high: Vec::new(),
+        low: Vec::new(),
+        close: Vec::new(),
+        ts: Vec::new(),
+        session: Vec::new(),
+    };
+
+    for batch in reader {
+        let batch = batch.unwrap();
+        let u16_col = |name| {
+            batch.column_by_name(name).unwrap().as_any().downcast_ref::<UInt16Array>().unwrap()
+        };
+        let u32_col = |name| {
+            batch.column_by_name(name).unwrap().as_any().downcast_ref::<UInt32Array>().unwrap()
+        };
+        let u8_col = |name| {
+            batch.column_by_name(name).unwrap().as_any().downcast_ref::<UInt8Array>().unwrap()
+        };
+        let f64_col = |name| {
+            batch.column_by_name(name).unwrap().as_any().downcast_ref::<Float64Array>().unwrap()
+        };
+        let ts_col = |name| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap()
+        };
+
+        let ticker = u16_col("ticker");
+        let volume = u32_col("volume");
+        let open = f64_col("open");
+        let high = f64_col("high");
+        let low = f64_col("low");
+        let close = f64_col("close");
+        let ts = ts_col("window_start");
+        let session = u8_col("market_session");
+
+        for i in 0..batch.num_rows() {
+            cols.ticker.push(ticker.value(i));
+            cols.volume.push(volume.value(i));
+            cols.open.push(open.value(i));
+            cols.high.push(high.value(i));
+            cols.low.push(low.value(i));
+            cols.close.push(close.value(i));
+            cols.ts.push(ts.value(i));
+            cols.session.push(session.value(i));
         }
     }
 
-    let rows = tickers.len() as u64;
+    cols
+}
+
+/// Write one replica to `minute/year=Y/month=M/part-0.parquet`.
+#[allow(clippy::too_many_arguments)]
+fn write_replica(
+    root: &std::path::Path,
+    year: i32,
+    month: u32,
+    ticker: &[u16],
+    volume: &[u32],
+    open: Vec<f64>,
+    close: Vec<f64>,
+    high: Vec<f64>,
+    low: Vec<f64>,
+    ts: Vec<i64>,
+    session: &[u8],
+) {
+    let schema = schema();
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(UInt16Array::from(tickers)),
-            Arc::new(UInt32Array::from(volume)),
+            Arc::new(UInt16Array::from(ticker.to_vec())),
+            Arc::new(UInt32Array::from(volume.to_vec())),
             Arc::new(Float64Array::from(open)),
             Arc::new(Float64Array::from(close)),
             Arc::new(Float64Array::from(high)),
             Arc::new(Float64Array::from(low)),
             Arc::new(TimestampNanosecondArray::from(ts)),
-            Arc::new(UInt8Array::from(session)),
+            Arc::new(UInt8Array::from(session.to_vec())),
         ],
     )
     .unwrap();
@@ -123,28 +177,65 @@ fn write_month(root: &std::path::Path, year: i32, month: u32, base_bar: u64) -> 
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
-    rows
 }
 
+/// Build the benchmark dataset by replicating the fixture across months. Returns
+/// the tempdir (kept alive by the caller) and the total bar count.
 fn generate_dataset() -> (TempDir, u64) {
+    let root = fixture_root();
+    let file = sorted_parquet_files(&root).into_iter().next().expect("fixture parquet missing");
+    let fx = read_fixture(&file);
+    let rows = fx.ts.len();
+    assert!(rows > 0, "fixture produced no rows");
+    let months = (TARGET_BARS.div_ceil(rows)).max(1) as u32;
+
     let tmp = tempfile::tempdir().unwrap();
+    // Reuse the fixture's ticker map (id 47 -> AAPL).
+    std::fs::copy(format!("{root}/encoded_tickers.json"), tmp.path().join("encoded_tickers.json"))
+        .unwrap();
 
-    let map = (0..SYMBOLS)
-        .map(|i| format!("\"{}\": \"{}\"", i + 1, synthetic_symbol(i)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    std::fs::write(tmp.path().join("encoded_tickers.json"), format!("{{{map}}}")).unwrap();
+    // The fixture is entirely within Jan 2023, so shifting a whole replica by k
+    // months lands it in month (Jan 2023 + k) — dir label and data stay in sync.
+    let base = NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    for k in 0..months {
+        let shifted = base.checked_add_months(Months::new(k)).unwrap();
+        let scale = 1.02_f64.powi(k as i32);
 
-    let mut total = 0;
-    let mut base_bar = 0u64;
-    for &(y, m) in MONTHS {
-        total += write_month(tmp.path(), y, m, base_bar);
-        base_bar += (DAYS_PER_MONTH * BARS_PER_DAY) as u64;
+        let ts: Vec<i64> = fx
+            .ts
+            .iter()
+            .map(|&ns| {
+                Utc.timestamp_nanos(ns)
+                    .checked_add_months(Months::new(k))
+                    .unwrap()
+                    .timestamp_nanos_opt()
+                    .unwrap()
+            })
+            .collect();
+        let open = fx.open.iter().map(|&v| v * scale).collect();
+        let high = fx.high.iter().map(|&v| v * scale).collect();
+        let low = fx.low.iter().map(|&v| v * scale).collect();
+        let close = fx.close.iter().map(|&v| v * scale).collect();
+
+        write_replica(
+            tmp.path(),
+            shifted.year(),
+            shifted.month(),
+            &fx.ticker,
+            &fx.volume,
+            open,
+            close,
+            high,
+            low,
+            ts,
+            &fx.session,
+        );
     }
-    (tmp, total)
+
+    (tmp, rows as u64 * months as u64)
 }
 
-/// EMA-cross over a handful of symbols: exercises indicator updates and the
+/// EMA-cross over the traded symbol(s): exercises indicator updates and the
 /// order path without dominating the run with strategy work.
 struct EmaCross {
     legs: Vec<(String, Ema, Ema)>,
@@ -183,15 +274,16 @@ impl Algorithm for EmaCross {
 }
 
 fn traded_symbols() -> Vec<String> {
-    if std::env::var("BENCH_DATA_ROOT").is_ok() {
-        std::env::var("BENCH_SYMBOLS")
+    match std::env::var("BENCH_DATA_ROOT") {
+        // Against a real dataset, trade whatever BENCH_SYMBOLS names (default AAPL).
+        Ok(_) => std::env::var("BENCH_SYMBOLS")
             .unwrap_or_else(|_| "AAPL".to_string())
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .collect()
-    } else {
-        (0..TRADED).map(synthetic_symbol).collect()
+            .collect(),
+        // The replicated fixture is AAPL only.
+        Err(_) => vec!["AAPL".to_string()],
     }
 }
 

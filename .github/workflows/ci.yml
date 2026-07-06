@@ -2,10 +2,7 @@ name: CI
 
 on:
   push:
-    # master is the long-term source of the benchmark baseline. The feature
-    # branch is included temporarily so the gh-pages history file starts
-    # accumulating before the first merge — drop it once master has run once.
-    branches: [master, claude/repo-improvements-f6znzr]
+    branches: [master]
   pull_request:
 
 env:
@@ -34,63 +31,19 @@ jobs:
 
   bench:
     runs-on: ubuntu-latest
-    # Push a new baseline to the gh-pages branch (contents) and comment on a PR
-    # when it regresses (pull-requests).
-    permissions:
-      contents: write
-      pull-requests: write
+    # Read-only: no token, no branch pushes, no third-party actions. Regressions
+    # are caught by comparing against a baseline committed in the repo.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Runs on a synthetic dataset since the real data isn't available in CI.
-      # `bencher` output (ns/iter, lower is better) is what the tracker parses.
+      # Runs on the replicated fixture (real data isn't available in CI).
+      # `bencher` output is ns/iter, lower is better.
       - name: Run benchmarks
         run: cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
-      # The tracker fetches an existing gh-pages branch and errors if it's
-      # absent — it will not bootstrap it. Create an empty one on the first
-      # push, isolated in a temp dir so the checkout is untouched.
-      - name: Ensure gh-pages branch exists
-        if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if ! git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            tmp="$(mktemp -d)"
-            git -C "$tmp" init -q
-            git -C "$tmp" checkout -q --orphan gh-pages
-            git -C "$tmp" -c user.name='github-actions[bot]' \
-              -c user.email='github-actions[bot]@users.noreply.github.com' \
-              commit -q --allow-empty -m "Initialize gh-pages for benchmark history"
-            git -C "$tmp" push -q \
-              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
-          fi
-      # PRs must skip the comparison until a baseline exists, or they'd red-fail
-      # on the missing branch rather than on an actual regression.
-      - name: Check for benchmark baseline
-        id: baseline
-        run: |
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Track benchmark results
-        if: github.event_name == 'push' || steps.baseline.outputs.exists == 'true'
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: Backtester throughput
-          tool: cargo
-          output-file-path: bench-output.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          # Alert (and fail) when a run is more than 2x slower than the stored
-          # baseline. 2x is deliberately loose to ride out GitHub runner
-          # variance; tighten once the baseline proves stable.
-          alert-threshold: '200%'
-          comment-on-alert: true
-          fail-on-alert: true
-          # Push events (master, or the bootstrap branch above) append to the
-          # gh-pages history file; PRs compare against it without writing, so
-          # they can't clobber the baseline or need push access from a fork.
-          auto-push: ${{ github.event_name == 'push' }}
-          save-data-file: ${{ github.event_name == 'push' }}
+      # Fail if any benchmark is >2x slower than the committed baseline. Missing
+      # baseline just prints the numbers (exit 0) so a first run can seed it.
+      # Refresh the baseline by re-running the bench and committing the new
+      # backtester/benches/baseline.bencher.txt.
+      - name: Compare against baseline
+        run: python3 scripts/bench_compare.py backtester/benches/baseline.bencher.txt bench-output.txt
