@@ -47,9 +47,26 @@ jobs:
       # `bencher` output (ns/iter, lower is better) is what the tracker parses.
       - name: Run benchmarks
         run: cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
-      # The tracker hard-fails trying to fetch a gh-pages baseline that doesn't
-      # exist yet. Push events create it; PRs must skip the comparison until it
-      # does, or they'd red-fail on a missing branch rather than a regression.
+      # The tracker fetches an existing gh-pages branch and errors if it's
+      # absent — it will not bootstrap it. Create an empty one on the first
+      # push, isolated in a temp dir so the checkout is untouched.
+      - name: Ensure gh-pages branch exists
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            tmp="$(mktemp -d)"
+            git -C "$tmp" init -q
+            git -C "$tmp" checkout -q --orphan gh-pages
+            git -C "$tmp" -c user.name='github-actions[bot]' \
+              -c user.email='github-actions[bot]@users.noreply.github.com' \
+              commit -q --allow-empty -m "Initialize gh-pages for benchmark history"
+            git -C "$tmp" push -q \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          fi
+      # PRs must skip the comparison until a baseline exists, or they'd red-fail
+      # on the missing branch rather than on an actual regression.
       - name: Check for benchmark baseline
         id: baseline
         run: |
