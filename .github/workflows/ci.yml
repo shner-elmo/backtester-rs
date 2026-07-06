@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # master is the long-term source of the benchmark baseline. The feature
+    # branch is included temporarily so the gh-pages history file starts
+    # accumulating before the first merge — drop it once master has run once.
+    branches: [master, claude/repo-improvements-f6znzr]
   pull_request:
 
 env:
@@ -52,7 +55,8 @@ jobs:
           alert-threshold: '200%'
           comment-on-alert: true
           fail-on-alert: true
-          # Publish a new baseline only from master; PRs compare without writing
-          # so they can't clobber the baseline or need push access from a fork.
+          # Push events (master, or the bootstrap branch above) append to the
+          # gh-pages history file; PRs compare against it without writing, so
+          # they can't clobber the baseline or need push access from a fork.
           auto-push: ${{ github.event_name == 'push' }}
           save-data-file: ${{ github.event_name == 'push' }}
