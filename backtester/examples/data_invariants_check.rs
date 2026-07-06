@@ -13,14 +13,17 @@ fn main() {
     let bars_dir = args.get(1).expect("arg 1: dir of parquet files to sweep");
     let root = args.get(2).expect("arg 2: data root containing encoded_tickers.json");
 
-    let ticker_map = load_ticker_map(root);
+    let ticker_map = load_ticker_map(root).unwrap_or_else(|e| {
+        eprintln!("failed to load ticker map: {e}");
+        std::process::exit(1);
+    });
     let mut n: u64 = 0;
     let mut bad: u64 = 0;
     let mut per_symbol: HashMap<String, u64> = HashMap::new();
     let mut min_ts = i64::MAX;
     let mut max_ts = i64::MIN;
 
-    iter_bars(bars_dir, &ticker_map, |sym, b| {
+    let swept = iter_bars(bars_dir, &ticker_map, |sym, b| {
         n += 1;
         *per_symbol.entry(sym.clone()).or_default() += 1;
         let ts = b.time.timestamp();
@@ -44,6 +47,10 @@ fn main() {
             }
         }
     });
+    if let Err(e) = swept {
+        eprintln!("sweep failed: {e}");
+        std::process::exit(1);
+    }
 
     println!("bars={n} symbols={} bad={bad} time_range={min_ts}..{max_ts}", per_symbol.len());
     assert_eq!(bad, 0, "{bad} bars violate OHLC invariants");

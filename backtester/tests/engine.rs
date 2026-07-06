@@ -64,7 +64,7 @@ fn cash_conservation_error(r: &BacktestResult) -> f64 {
 
 #[test]
 fn constant_rebalancing_nets_into_a_single_position_lifetime() {
-    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE);
+    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
 
     // The position opens on the first bar and never returns to flat, so there
     // are no completed round trips — only one open position at the end.
@@ -78,7 +78,7 @@ fn constant_rebalancing_nets_into_a_single_position_lifetime() {
 
 #[test]
 fn single_round_trip_is_one_trade() {
-    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE);
+    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
 
     assert_eq!(result.trades.len(), 1);
     let t = &result.trades[0];
@@ -96,8 +96,8 @@ fn single_round_trip_is_one_trade() {
 
 #[test]
 fn commissions_are_charged_and_attributed() {
-    let with = run_backtest(RebalanceEveryBar { commission: true }, FIXTURE);
-    let without = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE);
+    let with = run_backtest(RebalanceEveryBar { commission: true }, FIXTURE).unwrap();
+    let without = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
 
     assert!(with.total_commission > 0.0);
     assert_eq!(without.total_commission, 0.0);
@@ -115,7 +115,7 @@ fn commissions_are_charged_and_attributed() {
 
 #[test]
 fn equity_curve_starts_at_initial_cash_and_ends_at_final_equity() {
-    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE);
+    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
 
     let curve = &result.equity_curve;
     assert!(curve.len() >= 3, "expected multiple daily points, got {}", curve.len());
@@ -131,7 +131,19 @@ fn equity_curve_starts_at_initial_cash_and_ends_at_final_equity() {
 
 #[test]
 fn set_holdings_rounds_to_whole_shares_by_default() {
-    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE);
+    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
     let qty = result.open_positions[0].quantity;
     assert!((qty - qty.round()).abs() < 1e-9, "expected whole-share position, got {qty}");
+}
+
+#[test]
+fn missing_data_path_is_an_error_not_a_panic() {
+    // A wrong data path used to panic deep in the loader; now it surfaces as a
+    // returned error the caller can report.
+    let err = run_backtest(OneRoundTrip { bars_seen: 0 }, "/no/such/data/root")
+        .expect_err("expected an error for a nonexistent data path");
+    assert!(
+        err.to_string().contains("encoded_tickers.json"),
+        "error should name the missing file, got: {err}"
+    );
 }

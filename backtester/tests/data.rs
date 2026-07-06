@@ -9,9 +9,9 @@ use backtester::data::{iter_bars, load_ticker_map};
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn load() -> Vec<(String, Bar)> {
-    let ticker_map = load_ticker_map(FIXTURE);
+    let ticker_map = load_ticker_map(FIXTURE).unwrap();
     let mut bars = Vec::new();
-    iter_bars(FIXTURE, &ticker_map, |sym, bar| bars.push((sym, bar)));
+    iter_bars(FIXTURE, &ticker_map, |sym, bar| bars.push((sym, bar))).unwrap();
     bars
 }
 

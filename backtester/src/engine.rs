@@ -11,6 +11,7 @@ use crate::{
     data::{
         file_year_month, load_splits, load_ticker_map, read_bars_from_file, sorted_parquet_files,
     },
+    error::BacktestError,
     slice::Slice,
     slippage::FillContext,
     stats::{compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade},
@@ -178,12 +179,15 @@ fn force_close_delisted(
 }
 
 /// Run a backtest and return its full results without printing anything.
-pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResult {
+pub fn run_backtest<A: Algorithm>(
+    mut algo: A,
+    data_path: &str,
+) -> Result<BacktestResult, BacktestError> {
     let mut ctx = Context::default();
     algo.initialize(&mut ctx);
 
     let initial_cash = ctx.portfolio.cash;
-    let ticker_map = load_ticker_map(data_path);
+    let ticker_map = load_ticker_map(data_path)?;
     let subscribed = ctx.subscribed_symbols.clone();
 
     let mut trades: Vec<Trade> = Vec::new();
@@ -195,7 +199,7 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
 
     // Splits for subscribed symbols, queued by execution date.
     let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
-    for (symbol, by_date) in load_splits(data_path, &subscribed) {
+    for (symbol, by_date) in load_splits(data_path, &subscribed)? {
         for (date, ratio) in by_date {
             pending_splits.entry(date).or_default().push((symbol.clone(), ratio));
         }
@@ -211,6 +215,9 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
     // chronologically sorted, so only a single month of subscribed bars is
     // ever resident, instead of the whole dataset.
     let files = sorted_parquet_files(data_path);
+    if files.is_empty() {
+        return Err(BacktestError::NoData { path: data_path.into() });
+    }
     let mut mask = None;
 
     'files: for file_path in &files {
@@ -234,7 +241,7 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
                 let ts = bar.time.timestamp_nanos_opt().unwrap_or(0);
                 tick_map.entry(ts).or_default().push((symbol, bar));
             }
-        });
+        })?;
 
         for (ts_ns, bars) in tick_map {
             let secs = ts_ns / 1_000_000_000;
@@ -519,7 +526,7 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
 
     let stats = compute_stats(&trades, &equity_curve);
 
-    BacktestResult {
+    Ok(BacktestResult {
         initial_cash,
         final_equity,
         total_commission,
@@ -527,19 +534,23 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
         equity_curve,
         open_positions,
         trades,
-    }
+    })
 }
 
 /// Run a backtest, print a summary, and write the full result JSON
 /// (`backtest_result_<timestamp>.json`) for the `ui` dashboard.
-pub fn run<A: Algorithm>(algo: A, data_path: &str) -> BacktestResult {
-    let result = run_backtest(algo, data_path);
+pub fn run<A: Algorithm>(algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
+    let result = run_backtest(algo, data_path)?;
     let stats = &result.stats;
 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
     let out_path = format!("backtest_result_{ts}.json");
-    let file = std::fs::File::create(&out_path).unwrap();
-    serde_json::to_writer_pretty(file, &result).unwrap();
+    let file = std::fs::File::create(&out_path)
+        .map_err(|source| BacktestError::Io { path: out_path.clone().into(), source })?;
+    serde_json::to_writer_pretty(file, &result).map_err(|e| BacktestError::Json {
+        path: out_path.clone().into(),
+        message: e.to_string(),
+    })?;
 
     println!("=== Backtest Complete ===");
     println!("Result written to: {out_path}  (view it with `cargo run -p ui`)");
@@ -566,5 +577,5 @@ pub fn run<A: Algorithm>(algo: A, data_path: &str) -> BacktestResult {
         }
     }
 
-    result
+    Ok(result)
 }
