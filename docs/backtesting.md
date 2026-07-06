@@ -81,6 +81,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `liquidate(symbol)` | Close the entire position |
 | `set_slippage(model)` | Fill-price friction — see [Slippage](#slippage) |
 | `set_commission(model)` | Cash charge per fill — see [Commission](#commission) |
+| `set_fill_timing(timing)` | When orders fill — see [Fill timing](#fill-timing) |
 | `set_lot_size(lot)` | Share rounding for `set_holdings` (default `1.0` = whole shares) |
 | `set_delist_after_days(n)` | Force-close positions in symbols silent for `n` trading days (default 5, `0` = off) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling 500-bar window) |
@@ -88,9 +89,31 @@ Configure the run and interact with the portfolio through `ctx`:
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |
 
-Orders are queued during `on_data` and filled at the bar's **close** price
-after the callback returns, adjusted by the [slippage model](#slippage) and
-charged the [commission model](#commission) (both default to zero friction).
+Orders are queued during `on_data` and filled after the callback returns,
+adjusted by the [slippage model](#slippage) and charged the
+[commission model](#commission) (both default to zero friction). By default the
+fill price is the **close of the same bar**; see [Fill timing](#fill-timing) to
+fill at the next bar's open instead.
+
+## Fill timing
+
+By default an order fills at the **close of the bar it was placed on**
+(`FillTiming::CurrentBarClose`). That is simple but optimistic: the strategy
+transacts at a price it has already seen when it decided to trade. To remove
+that same-bar look-ahead, fill at the **open of the symbol's next bar**:
+
+```rust
+use backtester::FillTiming;
+
+ctx.set_fill_timing(FillTiming::NextBarOpen);
+```
+
+Under `NextBarOpen`, an order decided on bar *t* fills at the open of bar *t+1*
+for that symbol; an order placed on a symbol's final bar never fills (there is
+no next bar), and pending orders are dropped if the symbol is delisted first.
+`set_holdings` sizes against prices known when the order was placed, so no
+information from the fill bar leaks into the decision. Slippage and commission
+apply to the open fill exactly as they do to a close fill.
 
 ## Slippage
 

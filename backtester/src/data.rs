@@ -1,24 +1,37 @@
 use std::{
     collections::HashMap,
     fs::{read_to_string, File},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array};
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array},
+    record_batch::RecordBatch,
+};
 use chrono::{TimeZone, Utc};
 use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
 use walkdir::WalkDir;
 
-use crate::bar::{Bar, MarketSession};
+use crate::{
+    bar::{Bar, MarketSession},
+    error::BacktestError,
+};
 
 pub const COLUMNS: [&str; 8] =
     ["ticker", "volume", "open", "high", "low", "close", "window_start", "market_session"];
 
-pub fn load_ticker_map(data_root: &str) -> HashMap<u16, String> {
-    let path = format!("{}/encoded_tickers.json", data_root);
-    let content = read_to_string(&path).unwrap_or_else(|_| panic!("could not read {}", path));
-    let temp: HashMap<String, String> = serde_json::from_str(&content).unwrap();
-    temp.into_iter().map(|(k, v)| (k.parse::<u16>().unwrap(), v)).collect()
+pub fn load_ticker_map(data_root: &str) -> Result<HashMap<u16, String>, BacktestError> {
+    let path = PathBuf::from(format!("{}/encoded_tickers.json", data_root));
+    let content =
+        read_to_string(&path).map_err(|source| BacktestError::Io { path: path.clone(), source })?;
+    let temp: HashMap<String, String> = serde_json::from_str(&content)
+        .map_err(|e| BacktestError::Json { path: path.clone(), message: e.to_string() })?;
+    temp.into_iter()
+        .map(|(k, v)| match k.parse::<u16>() {
+            Ok(id) => Ok((id, v)),
+            Err(_) => Err(BacktestError::InvalidTickerKey { path: path.clone(), key: k }),
+        })
+        .collect()
 }
 
 /// Stock splits per symbol: execution date → ratio (`split_to / split_from`,
@@ -29,7 +42,7 @@ pub fn load_ticker_map(data_root: &str) -> HashMap<u16, String> {
 pub fn load_splits(
     data_root: &str,
     symbols: &std::collections::HashSet<String>,
-) -> HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>> {
+) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
     #[derive(serde::Deserialize)]
     struct SplitRecord {
         execution_date: String,
@@ -38,12 +51,15 @@ pub fn load_splits(
         split_to: f64,
     }
 
-    let path = format!("{}/get_splits.json", data_root);
-    let Ok(content) = read_to_string(&path) else {
-        return HashMap::new();
+    let path = PathBuf::from(format!("{}/get_splits.json", data_root));
+    let content = match read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(source) => return Err(BacktestError::Io { path, source }),
     };
-    let records: Vec<SplitRecord> = serde_json::from_str(&content)
-        .unwrap_or_else(|e| panic!("{path} is not valid splits JSON: {e}"));
+    let records: Vec<SplitRecord> = serde_json::from_str(&content).map_err(|e| {
+        BacktestError::Json { path, message: format!("not valid splits JSON: {e}") }
+    })?;
 
     let mut splits: HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>> =
         HashMap::new();
@@ -59,7 +75,7 @@ pub fn load_splits(
         let day_ratio = splits.entry(r.ticker).or_default().entry(date).or_insert(1.0);
         *day_ratio *= r.split_to / r.split_from;
     }
-    splits
+    Ok(splits)
 }
 
 /// Parse a directory name that is either a bare number (`2023`) or a Hive
@@ -86,7 +102,14 @@ pub fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
         .map(|e| e.path().to_path_buf())
         .collect();
 
-    files.sort_by_key(|x| file_year_month(x).unwrap_or((0, 0)));
+    // Path as tiebreaker so multiple part files inside one month keep a
+    // deterministic order.
+    files.sort_by(|a, b| {
+        file_year_month(a)
+            .unwrap_or((0, 0))
+            .cmp(&file_year_month(b).unwrap_or((0, 0)))
+            .then_with(|| a.cmp(b))
+    });
 
     files
 }
@@ -95,13 +118,29 @@ pub fn iter_bars(
     data_root: &str,
     ticker_map: &HashMap<u16, String>,
     mut cb: impl FnMut(String, Bar),
-) {
+) -> Result<(), BacktestError> {
     let files = sorted_parquet_files(data_root);
     let mut mask: Option<ProjectionMask> = None;
 
     for file_path in &files {
-        read_bars_from_file(file_path, ticker_map, &mut mask, &mut cb);
+        read_bars_from_file(file_path, ticker_map, &mut mask, &mut cb)?;
     }
+    Ok(())
+}
+
+/// Look up a column by name and downcast it, erroring on absence or a type
+/// mismatch. By-name lookup matters: `ProjectionMask::columns` returns columns
+/// in the file's schema order, which differs from `COLUMNS` order, so
+/// positional indexing would silently scramble high/low/close.
+fn column<'a, T: 'static>(
+    batch: &'a RecordBatch,
+    name: &'static str,
+    path: &Path,
+) -> Result<&'a T, BacktestError> {
+    batch
+        .column_by_name(name)
+        .and_then(|c| c.as_any().downcast_ref::<T>())
+        .ok_or_else(|| BacktestError::MissingColumn { path: path.to_path_buf(), column: name })
 }
 
 /// Read one Parquet file, invoking `cb` for every decodable bar. `mask` caches
@@ -112,46 +151,34 @@ pub fn read_bars_from_file(
     ticker_map: &HashMap<u16, String>,
     mask: &mut Option<ProjectionMask>,
     mut cb: impl FnMut(String, Bar),
-) {
-    let file = File::open(file_path).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+) -> Result<(), BacktestError> {
+    let file = File::open(file_path)
+        .map_err(|source| BacktestError::Io { path: file_path.to_path_buf(), source })?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+        BacktestError::Parquet { path: file_path.to_path_buf(), message: e.to_string() }
+    })?;
     let mask = mask
         .get_or_insert_with(|| ProjectionMask::columns(builder.parquet_schema(), COLUMNS))
         .clone();
-    let reader = builder.with_projection(mask).build().unwrap();
+    let reader = builder.with_projection(mask).build().map_err(|e| BacktestError::Parquet {
+        path: file_path.to_path_buf(),
+        message: e.to_string(),
+    })?;
 
     for batch in reader {
-        let batch = batch.unwrap();
+        let batch = batch.map_err(|e| BacktestError::Parquet {
+            path: file_path.to_path_buf(),
+            message: e.to_string(),
+        })?;
 
-        // Look up columns by name: `ProjectionMask::columns` returns columns
-        // in the file's schema order, which differs from `COLUMNS` order, so
-        // positional indexing would silently scramble high/low/close.
-        let f64_col = |name: &str| {
-            batch
-                .column_by_name(name)
-                .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
-                .unwrap_or_else(|| panic!("missing f64 column {name}"))
-        };
-        let ticker_col = batch
-            .column_by_name("ticker")
-            .and_then(|c| c.as_any().downcast_ref::<UInt16Array>())
-            .expect("missing column ticker");
-        let volume_col = batch
-            .column_by_name("volume")
-            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
-            .expect("missing column volume");
-        let open_col = f64_col("open");
-        let high_col = f64_col("high");
-        let low_col = f64_col("low");
-        let close_col = f64_col("close");
-        let ts_col = batch
-            .column_by_name("window_start")
-            .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
-            .expect("missing column window_start");
-        let sess_col = batch
-            .column_by_name("market_session")
-            .and_then(|c| c.as_any().downcast_ref::<UInt8Array>())
-            .expect("missing column market_session");
+        let ticker_col: &UInt16Array = column(&batch, "ticker", file_path)?;
+        let volume_col: &UInt32Array = column(&batch, "volume", file_path)?;
+        let open_col: &Float64Array = column(&batch, "open", file_path)?;
+        let high_col: &Float64Array = column(&batch, "high", file_path)?;
+        let low_col: &Float64Array = column(&batch, "low", file_path)?;
+        let close_col: &Float64Array = column(&batch, "close", file_path)?;
+        let ts_col: &TimestampNanosecondArray = column(&batch, "window_start", file_path)?;
+        let sess_col: &UInt8Array = column(&batch, "market_session", file_path)?;
 
         for i in 0..batch.num_rows() {
             let ticker_id = ticker_col.value(i);
@@ -163,7 +190,9 @@ pub fn read_bars_from_file(
             let ts_ns = ts_col.value(i);
             let secs = ts_ns / 1_000_000_000;
             let nanos = (ts_ns % 1_000_000_000) as u32;
-            let time = Utc.timestamp_opt(secs, nanos).single().unwrap();
+            let Some(time) = Utc.timestamp_opt(secs, nanos).single() else {
+                continue;
+            };
 
             let session = match sess_col.value(i) {
                 1 => MarketSession::PreMarket,
@@ -186,4 +215,5 @@ pub fn read_bars_from_file(
             );
         }
     }
+    Ok(())
 }

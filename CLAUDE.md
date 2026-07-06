@@ -12,7 +12,15 @@ cargo fmt                       # Format (max width 100, groups: std > external 
 cargo clippy                    # Lint
 cargo run --example ema_cross -- backtester/tests/fixtures  # Run the EMA cross example on the committed fixture
 cargo run -p ui                 # Results dashboard at :3001 (newest backtest_result_*.json in CWD)
+cargo bench -p backtester --bench engine  # Throughput benchmarks (loader + a full backtest)
 ```
+
+CI fails the `bench` job if a benchmark is >2x slower than
+`backtester/benches/baseline.bencher.txt`. Refresh that baseline after an
+intended perf change: `cargo bench -p backtester --bench engine -- --output-format bencher`
+and paste the `test ... bench:` lines into the file (numbers should come from a
+CI run, not local hardware). Point the benches at the real dataset with
+`BENCH_DATA_ROOT=/path/to/data` (and `BENCH_SYMBOLS=AAPL,MSFT`).
 
 ## Architecture
 

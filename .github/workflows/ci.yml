@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Supersede in-flight runs on the same ref so pushes don't pile up.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  bench:
+    runs-on: ubuntu-latest
+    # Read-only: no token, no branch pushes, no third-party actions. Regressions
+    # are caught by comparing against a baseline committed in the repo.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Runs on the replicated fixture (real data isn't available in CI).
+      # `bencher` output is ns/iter, lower is better.
+      - name: Run benchmarks
+        run: cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
+      # Fail if any benchmark is >2x slower than the committed baseline. Missing
+      # baseline just prints the numbers (exit 0) so a first run can seed it.
+      # Refresh the baseline by re-running the bench and committing the new
+      # backtester/benches/baseline.bencher.txt.
+      - name: Compare against baseline
+        run: python3 scripts/bench_compare.py backtester/benches/baseline.bencher.txt bench-output.txt

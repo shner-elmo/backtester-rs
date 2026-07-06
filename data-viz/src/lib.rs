@@ -41,7 +41,8 @@ struct AppState {
 }
 
 async fn make_ctx_and_ticker_map(data_root: &str) -> (SessionContext, HashMap<u16, String>) {
-    let ticker_map = load_ticker_map(data_root);
+    let ticker_map =
+        load_ticker_map(data_root).unwrap_or_else(|e| panic!("failed to load ticker map: {e}"));
     let ctx = SessionContext::new();
     let minute_dir = format!("{}/minute", data_root);
     let files = sorted_parquet_files(&minute_dir);

@@ -6,6 +6,7 @@ pub mod consolidator;
 pub mod context;
 pub mod data;
 pub mod engine;
+pub mod error;
 pub mod indicators;
 pub mod slice;
 pub mod slippage;
@@ -13,8 +14,9 @@ pub mod stats;
 
 pub use algorithm::Algorithm;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
-pub use context::Context;
+pub use context::{Context, FillTiming};
 pub use engine::{run, run_backtest, BacktestResult};
+pub use error::BacktestError;
 pub use slice::Slice;
 pub use slippage::{FillContext, FixedSlippage, NoSlippage, PercentSlippage, SlippageModel};
 pub use stats::{BacktestStats, EquityPoint, Trade};

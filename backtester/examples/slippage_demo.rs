@@ -68,5 +68,8 @@ fn main() {
         slow: Ema::new(30).unwrap(),
     };
 
-    run(algo, data_path);
+    run(algo, data_path).unwrap_or_else(|e| {
+        eprintln!("backtest failed: {e}");
+        std::process::exit(1);
+    });
 }

@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     algorithm::Algorithm,
     bar::Bar,
-    context::{Context, OrderKind},
+    context::{Context, FillTiming, Order, OrderKind},
     data::{
         file_year_month, load_splits, load_ticker_map, read_bars_from_file, sorted_parquet_files,
     },
+    error::BacktestError,
     slice::Slice,
     slippage::FillContext,
     stats::{compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade},
@@ -177,13 +178,113 @@ fn force_close_delisted(
     ctx.portfolio.apply_fill(symbol, -qty, price);
 }
 
+/// Execute one order against the portfolio: resolve its target quantity, apply
+/// slippage and commission, and fold the fill into the symbol's open lifetime
+/// (emitting a completed `Trade` when it returns to flat).
+///
+/// `mark_prices` values the portfolio for `SetHoldings` sizing; `exec_price` is
+/// the pre-slippage reference/fill price for this order's symbol (the current
+/// bar's close under [`FillTiming::CurrentBarClose`], the next bar's open under
+/// [`FillTiming::NextBarOpen`]). `fill_bar` is the bar the fill prints against.
+#[allow(clippy::too_many_arguments)]
+fn execute_order(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    trades: &mut Vec<Trade>,
+    total_commission: &mut f64,
+    order: &Order,
+    mark_prices: &HashMap<String, f64>,
+    exec_price: f64,
+    fill_bar: &Bar,
+    tick_time: DateTime<Utc>,
+) {
+    let current_qty = ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
+
+    let qty = match order.kind {
+        OrderKind::Market(q) => q,
+        OrderKind::SetHoldings(pct) => {
+            let total = ctx.portfolio.total_value(mark_prices);
+            let desired_qty = total * pct / exec_price;
+            // Round the *target* (not the delta) to the lot so the held
+            // position stays on-lot instead of drifting.
+            let lot = ctx.lot_size;
+            let target = (desired_qty / lot).round() * lot;
+            target - current_qty
+        }
+        OrderKind::Liquidate => -current_qty,
+    };
+
+    if qty.abs() < 1e-9 {
+        return;
+    }
+
+    // Actual execution price after the user's slippage model. Sizing (above)
+    // uses the reference price; slippage only affects the fill.
+    let fill_ctx =
+        FillContext { symbol: &order.symbol, quantity: qty, price: exec_price, bar: fill_bar };
+    let fill_price = ctx.slippage.fill_price(&fill_ctx);
+    let commission = ctx.commission.commission(&fill_ctx);
+    *total_commission += commission;
+
+    let avg_price = ctx.portfolio.positions.get(&order.symbol).map(|p| p.avg_price).unwrap_or(0.0);
+    let new_qty = current_qty + qty;
+
+    if current_qty == 0.0 {
+        // Opened from flat: a new position lifetime begins.
+        let mut lt = OpenLifetime::new(tick_time, qty.signum());
+        lt.entry_qty = qty.abs();
+        lt.entry_value = qty.abs() * fill_price;
+        lt.realized_pnl = -commission;
+        lifetimes.insert(order.symbol.clone(), lt);
+    } else if qty * current_qty > 0.0 {
+        // Added in the same direction: grow the open lifetime.
+        let lt = lifetimes
+            .entry(order.symbol.clone())
+            .or_insert_with(|| OpenLifetime::new(tick_time, current_qty.signum()));
+        lt.entry_qty += qty.abs();
+        lt.entry_value += qty.abs() * fill_price;
+        lt.realized_pnl -= commission;
+    } else {
+        // Reduced, closed, or flipped: realize PnL into the open lifetime;
+        // only emit a Trade when the position is flat.
+        let closed_now = qty.abs().min(current_qty.abs());
+        let realized = (fill_price - avg_price) * closed_now * current_qty.signum();
+        let lt = lifetimes
+            .entry(order.symbol.clone())
+            .or_insert_with(|| OpenLifetime::new(tick_time, current_qty.signum()));
+        lt.closed_qty += closed_now;
+        lt.close_value += closed_now * fill_price;
+        lt.realized_pnl += realized - commission;
+
+        let is_full_close = closed_now >= current_qty.abs() - 1e-9;
+        if is_full_close {
+            let lt = lifetimes.remove(&order.symbol).unwrap();
+            trades.push(lt.into_trade(&order.symbol, tick_time, "signal"));
+            if new_qty.abs() > 1e-9 {
+                // A flip leaves a residual position in the new direction; it
+                // starts a fresh lifetime.
+                let mut fresh = OpenLifetime::new(tick_time, new_qty.signum());
+                fresh.entry_qty = new_qty.abs();
+                fresh.entry_value = new_qty.abs() * fill_price;
+                lifetimes.insert(order.symbol.clone(), fresh);
+            }
+        }
+    }
+
+    ctx.portfolio.apply_fill(&order.symbol, qty, fill_price);
+    ctx.portfolio.cash -= commission;
+}
+
 /// Run a backtest and return its full results without printing anything.
-pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResult {
+pub fn run_backtest<A: Algorithm>(
+    mut algo: A,
+    data_path: &str,
+) -> Result<BacktestResult, BacktestError> {
     let mut ctx = Context::default();
     algo.initialize(&mut ctx);
 
     let initial_cash = ctx.portfolio.cash;
-    let ticker_map = load_ticker_map(data_path);
+    let ticker_map = load_ticker_map(data_path)?;
     let subscribed = ctx.subscribed_symbols.clone();
 
     let mut trades: Vec<Trade> = Vec::new();
@@ -193,9 +294,13 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
     let mut last_known_prices: HashMap<String, f64> = HashMap::new();
     let mut total_commission = 0.0;
 
+    // Orders awaiting the next bar under FillTiming::NextBarOpen, one queue per
+    // symbol (empty and unused under the default CurrentBarClose).
+    let mut deferred: HashMap<String, Vec<Order>> = HashMap::new();
+
     // Splits for subscribed symbols, queued by execution date.
     let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
-    for (symbol, by_date) in load_splits(data_path, &subscribed) {
+    for (symbol, by_date) in load_splits(data_path, &subscribed)? {
         for (date, ratio) in by_date {
             pending_splits.entry(date).or_default().push((symbol.clone(), ratio));
         }
@@ -211,6 +316,9 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
     // chronologically sorted, so only a single month of subscribed bars is
     // ever resident, instead of the whole dataset.
     let files = sorted_parquet_files(data_path);
+    if files.is_empty() {
+        return Err(BacktestError::NoData { path: data_path.into() });
+    }
     let mut mask = None;
 
     'files: for file_path in &files {
@@ -234,7 +342,7 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
                 let ts = bar.time.timestamp_nanos_opt().unwrap_or(0);
                 tick_map.entry(ts).or_default().push((symbol, bar));
             }
-        });
+        })?;
 
         for (ts_ns, bars) in tick_map {
             let secs = ts_ns / 1_000_000_000;
@@ -331,6 +439,9 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
                             &symbol,
                             tick_time,
                         );
+                        // A pending next-bar order can never fill against a
+                        // symbol that stopped trading.
+                        deferred.remove(&symbol);
                         algo.on_delisted(&mut ctx, &symbol);
                     }
                 }
@@ -341,6 +452,31 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
 
             let current_prices: HashMap<String, f64> =
                 bars.iter().map(|(s, b)| (s.clone(), b.close)).collect();
+
+            // NextBarOpen: realize orders decided on a symbol's previous bar at
+            // this bar's open, before last_known_prices advances and before the
+            // strategy sees the current bar. Sizing marks the portfolio with
+            // last_known_prices, which still holds the prior closes the order
+            // was decided on — no look-ahead into the bar being filled.
+            if !deferred.is_empty() {
+                for (symbol, bar) in &bars {
+                    let Some(orders) = deferred.remove(symbol) else { continue };
+                    for order in orders {
+                        execute_order(
+                            &mut ctx,
+                            &mut lifetimes,
+                            &mut trades,
+                            &mut total_commission,
+                            &order,
+                            &last_known_prices,
+                            bar.open,
+                            bar,
+                            tick_time,
+                        );
+                    }
+                }
+            }
+
             for (s, &p) in &current_prices {
                 last_known_prices.insert(s.clone(), p);
             }
@@ -389,96 +525,35 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
 
             algo.on_data(&mut ctx, &slice);
 
-            // Process orders
+            // Route orders placed this bar according to the fill-timing model.
             let orders = std::mem::take(&mut ctx.pending_orders);
-            for order in orders {
-                let price = match current_prices.get(&order.symbol) {
-                    Some(&p) => p,
-                    None => continue,
-                };
-
-                let current_qty =
-                    ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
-
-                let qty = match order.kind {
-                    OrderKind::Market(q) => q,
-                    OrderKind::SetHoldings(pct) => {
-                        let total = ctx.portfolio.total_value(&current_prices);
-                        let desired_qty = total * pct / price;
-                        // Round the *target* (not the delta) to the lot so the
-                        // held position stays on-lot instead of drifting.
-                        let lot = ctx.lot_size;
-                        let target = (desired_qty / lot).round() * lot;
-                        target - current_qty
-                    }
-                    OrderKind::Liquidate => -current_qty,
-                };
-
-                if qty.abs() < 1e-9 {
-                    continue;
-                }
-
-                // Actual execution price after the user's slippage model.
-                // Sizing (above) uses the reference price; slippage only
-                // affects the fill.
-                let fill_ctx = FillContext {
-                    symbol: &order.symbol,
-                    quantity: qty,
-                    price,
-                    bar: &slice.bars[&order.symbol],
-                };
-                let fill_price = ctx.slippage.fill_price(&fill_ctx);
-                let commission = ctx.commission.commission(&fill_ctx);
-                total_commission += commission;
-
-                let avg_price =
-                    ctx.portfolio.positions.get(&order.symbol).map(|p| p.avg_price).unwrap_or(0.0);
-                let new_qty = current_qty + qty;
-
-                if current_qty == 0.0 {
-                    // Opened from flat: a new position lifetime begins.
-                    let mut lt = OpenLifetime::new(tick_time, qty.signum());
-                    lt.entry_qty = qty.abs();
-                    lt.entry_value = qty.abs() * fill_price;
-                    lt.realized_pnl = -commission;
-                    lifetimes.insert(order.symbol.clone(), lt);
-                } else if qty * current_qty > 0.0 {
-                    // Added in the same direction: grow the open lifetime.
-                    let lt = lifetimes
-                        .entry(order.symbol.clone())
-                        .or_insert_with(|| OpenLifetime::new(tick_time, current_qty.signum()));
-                    lt.entry_qty += qty.abs();
-                    lt.entry_value += qty.abs() * fill_price;
-                    lt.realized_pnl -= commission;
-                } else {
-                    // Reduced, closed, or flipped: realize PnL into the open
-                    // lifetime; only emit a Trade when the position is flat.
-                    let closed_now = qty.abs().min(current_qty.abs());
-                    let realized = (fill_price - avg_price) * closed_now * current_qty.signum();
-                    let lt = lifetimes
-                        .entry(order.symbol.clone())
-                        .or_insert_with(|| OpenLifetime::new(tick_time, current_qty.signum()));
-                    lt.closed_qty += closed_now;
-                    lt.close_value += closed_now * fill_price;
-                    lt.realized_pnl += realized - commission;
-
-                    let is_full_close = closed_now >= current_qty.abs() - 1e-9;
-                    if is_full_close {
-                        let lt = lifetimes.remove(&order.symbol).unwrap();
-                        trades.push(lt.into_trade(&order.symbol, tick_time, "signal"));
-                        if new_qty.abs() > 1e-9 {
-                            // A flip leaves a residual position in the new
-                            // direction; it starts a fresh lifetime.
-                            let mut fresh = OpenLifetime::new(tick_time, new_qty.signum());
-                            fresh.entry_qty = new_qty.abs();
-                            fresh.entry_value = new_qty.abs() * fill_price;
-                            lifetimes.insert(order.symbol.clone(), fresh);
-                        }
+            match ctx.fill_timing {
+                FillTiming::CurrentBarClose => {
+                    for order in orders {
+                        // Fill at this bar's close; a symbol with no bar this
+                        // tick has no price to fill against.
+                        let Some(bar) = slice.bars.get(&order.symbol) else { continue };
+                        let Some(&price) = current_prices.get(&order.symbol) else { continue };
+                        execute_order(
+                            &mut ctx,
+                            &mut lifetimes,
+                            &mut trades,
+                            &mut total_commission,
+                            &order,
+                            &current_prices,
+                            price,
+                            bar,
+                            tick_time,
+                        );
                     }
                 }
-
-                ctx.portfolio.apply_fill(&order.symbol, qty, fill_price);
-                ctx.portfolio.cash -= commission;
+                FillTiming::NextBarOpen => {
+                    // Hold each order until its symbol's next bar, where it
+                    // fills at the open (see the deferred-fill block above).
+                    for order in orders {
+                        deferred.entry(order.symbol.clone()).or_default().push(order);
+                    }
+                }
             }
         }
     }
@@ -519,7 +594,7 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
 
     let stats = compute_stats(&trades, &equity_curve);
 
-    BacktestResult {
+    Ok(BacktestResult {
         initial_cash,
         final_equity,
         total_commission,
@@ -527,19 +602,23 @@ pub fn run_backtest<A: Algorithm>(mut algo: A, data_path: &str) -> BacktestResul
         equity_curve,
         open_positions,
         trades,
-    }
+    })
 }
 
 /// Run a backtest, print a summary, and write the full result JSON
 /// (`backtest_result_<timestamp>.json`) for the `ui` dashboard.
-pub fn run<A: Algorithm>(algo: A, data_path: &str) -> BacktestResult {
-    let result = run_backtest(algo, data_path);
+pub fn run<A: Algorithm>(algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
+    let result = run_backtest(algo, data_path)?;
     let stats = &result.stats;
 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
     let out_path = format!("backtest_result_{ts}.json");
-    let file = std::fs::File::create(&out_path).unwrap();
-    serde_json::to_writer_pretty(file, &result).unwrap();
+    let file = std::fs::File::create(&out_path)
+        .map_err(|source| BacktestError::Io { path: out_path.clone().into(), source })?;
+    serde_json::to_writer_pretty(file, &result).map_err(|e| BacktestError::Json {
+        path: out_path.clone().into(),
+        message: e.to_string(),
+    })?;
 
     println!("=== Backtest Complete ===");
     println!("Result written to: {out_path}  (view it with `cargo run -p ui`)");
@@ -566,5 +645,5 @@ pub fn run<A: Algorithm>(algo: A, data_path: &str) -> BacktestResult {
         }
     }
 
-    result
+    Ok(result)
 }

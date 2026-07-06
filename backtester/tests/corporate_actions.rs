@@ -169,7 +169,7 @@ fn forward_split_adjusts_position_history_and_keeps_equity_flat() {
     let algo = BuyAndHold::new("SPLT", 10.0);
     let splits = algo.splits.clone();
     let history = algo.last_history.clone();
-    let result = run_backtest(algo, tmp.path().to_str().unwrap());
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
 
     // The callback fired exactly once with the ratio.
     assert_eq!(*splits.lock().unwrap(), vec![("SPLT".to_string(), 3.0)]);
@@ -215,7 +215,7 @@ fn reverse_split_cashes_out_a_fractional_position_in_lieu() {
     // 5 shares * 0.1 = 0.5 shares -> rounds to 0 against the whole-share lot;
     // the entire position is cashed out in lieu.
     let algo = BuyAndHold::new("TINY", 5.0);
-    let result = run_backtest(algo, tmp.path().to_str().unwrap());
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
 
     assert!(result.open_positions.iter().all(|p| p.symbol != "TINY"));
     assert_eq!(result.trades.len(), 1);
@@ -238,7 +238,7 @@ fn silent_symbol_is_force_liquidated_as_delisted() {
 
     let algo = BuyAndHold::new("GONE", 10.0);
     let delistings = algo.delistings.clone();
-    let result = run_backtest(algo, tmp.path().to_str().unwrap());
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
 
     assert_eq!(*delistings.lock().unwrap(), vec!["GONE".to_string()]);
     assert!(result.open_positions.iter().all(|p| p.symbol != "GONE"));
@@ -273,7 +273,8 @@ fn delist_scan_can_be_disabled() {
     }
 
     let result =
-        run_backtest(NoDelist(BuyAndHold::new("GONE", 10.0)), tmp.path().to_str().unwrap());
+        run_backtest(NoDelist(BuyAndHold::new("GONE", 10.0)), tmp.path().to_str().unwrap())
+            .unwrap();
     assert!(result.trades.is_empty());
     assert!(result.open_positions.iter().any(|p| p.symbol == "GONE"));
     assert!(identity_error(&result) < 1e-6);
