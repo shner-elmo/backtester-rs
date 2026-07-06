@@ -78,7 +78,8 @@ Renders a `backtest_result_<timestamp>.json` (what every `run` writes — see
 equity, return, PnL, win rate, profit factor, drawdown, Sharpe, commission),
 the daily equity curve with the starting-capital line, a drawdown chart, a
 trade-PnL histogram, monthly returns, open positions, a per-symbol summary,
-and the full trade log.
+and the full trade log. A header picker switches between all the result files
+in the directory without restarting the server.
 
 ### Run it
 
@@ -86,11 +87,11 @@ and the full trade log.
 # 1. Produce a result file:
 cargo run --example ema_cross -- backtester/tests/fixtures
 
-# 2. Serve it (picks the newest backtest_result_*.json in the current dir):
+# 2. Serve every backtest_result_*.json in the current dir (newest selected):
 cargo run -p ui
-# open http://localhost:3001
+# open http://localhost:3001 — use the header picker to switch between them
 
-# ...or point it at a specific file / different port:
+# ...or pin it to a specific file / change the port:
 cargo run -p ui -- path/to/backtest_result.json
 PORT=8080 cargo run -p ui
 ```
@@ -100,10 +101,11 @@ PORT=8080 cargo run -p ui
 | Route | Description |
 |-------|-------------|
 | `GET /` | The dashboard ([`ui/src/index.html`](../ui/src/index.html)) |
-| `GET /api/result` | The loaded result JSON, plus a `source_file` field |
+| `GET /api/results` | The selectable result filenames (newest first) and which is default |
+| `GET /api/result?file=` | One result's JSON, plus a `source_file` field (defaults to newest) |
 
 All charts and tables are computed client-side from `/api/result`, so the
-server is just a static file plus one JSON endpoint. Charts use
+server is just a static file plus two JSON endpoints. Charts use
 [TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts)
 (same as `data-viz`) for the time series and a small canvas renderer for the
 bar charts.

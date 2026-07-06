@@ -92,9 +92,13 @@ Top-level shape:
 The fastest way to look at a result:
 
 ```bash
-cargo run -p ui               # serves the newest backtest_result_*.json in CWD
+cargo run -p ui               # serves every backtest_result_*.json in CWD
 # open http://localhost:3001
 ```
+
+The header has a picker to switch between all `backtest_result_*.json` files in
+the directory (newest selected first); pass an explicit path
+(`cargo run -p ui -- result.json`) to pin the dashboard to a single file.
 
 See [visualization.md](./visualization.md#ui--the-results-dashboard).
 

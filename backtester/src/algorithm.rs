@@ -16,4 +16,11 @@ pub trait Algorithm {
     /// of trading days (see `Context::set_delist_after_days`) and the engine
     /// force-liquidated the position at its last known price.
     fn on_delisted(&mut self, _ctx: &mut Context, _symbol: &str) {}
+
+    /// Fired when a cash dividend goes ex on a subscribed symbol you hold. The
+    /// engine has already credited `quantity * amount` to portfolio cash
+    /// (debited it for a short) and attributed that income to the position's
+    /// PnL, so a round trip's PnL is its total return including dividends.
+    /// `amount` is the cash dividend per share.
+    fn on_dividend(&mut self, _ctx: &mut Context, _symbol: &str, _amount: f64) {}
 }

@@ -27,7 +27,13 @@ fn row(ticker: u16, y: i32, m: u32, d: u32, minute: u32, price: f64) -> Row {
     Row { ticker, date: NaiveDate::from_ymd_opt(y, m, d).unwrap(), minute, price }
 }
 
-fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)], splits_json: Option<&str>) {
+fn write_fixture(
+    root: &Path,
+    rows: &[Row],
+    tickers: &[(u16, &str)],
+    splits_json: Option<&str>,
+    dividends_json: Option<&str>,
+) {
     let tickers_json: String = format!(
         "{{{}}}",
         tickers
@@ -39,6 +45,9 @@ fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)], splits_json
     fs::write(root.join("encoded_tickers.json"), tickers_json).unwrap();
     if let Some(s) = splits_json {
         fs::write(root.join("get_splits.json"), s).unwrap();
+    }
+    if let Some(d) = dividends_json {
+        fs::write(root.join("get_dividends.json"), d).unwrap();
     }
 
     let schema = Arc::new(Schema::new(vec![
@@ -99,6 +108,7 @@ struct BuyAndHold {
     bought: bool,
     splits: Arc<Mutex<Vec<(String, f64)>>>,
     delistings: Arc<Mutex<Vec<String>>>,
+    dividends: Arc<Mutex<Vec<(String, f64)>>>,
     last_history: Arc<Mutex<Vec<f64>>>,
 }
 
@@ -110,6 +120,7 @@ impl BuyAndHold {
             bought: false,
             splits: Arc::new(Mutex::new(Vec::new())),
             delistings: Arc::new(Mutex::new(Vec::new())),
+            dividends: Arc::new(Mutex::new(Vec::new())),
             last_history: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -138,6 +149,10 @@ impl Algorithm for BuyAndHold {
     fn on_delisted(&mut self, _ctx: &mut Context, symbol: &str) {
         self.delistings.lock().unwrap().push(symbol.to_string());
     }
+
+    fn on_dividend(&mut self, _ctx: &mut Context, symbol: &str, amount: f64) {
+        self.dividends.lock().unwrap().push((symbol.to_string(), amount));
+    }
 }
 
 /// Weekdays 2023-06-05 (Mon) .. 2023-06-16 (Fri), two bars per day.
@@ -164,6 +179,7 @@ fn forward_split_adjusts_position_history_and_keeps_equity_flat() {
         Some(
             r#"[{"execution_date": "2023-06-07", "id": "x", "split_from": 1, "split_to": 3, "ticker": "SPLT"}]"#,
         ),
+        None,
     );
 
     let algo = BuyAndHold::new("SPLT", 10.0);
@@ -210,6 +226,7 @@ fn reverse_split_cashes_out_a_fractional_position_in_lieu() {
         Some(
             r#"[{"execution_date": "2023-06-07", "id": "x", "split_from": 10, "split_to": 1, "ticker": "TINY"}]"#,
         ),
+        None,
     );
 
     // 5 shares * 0.1 = 0.5 shares -> rounds to 0 against the whole-share lot;
@@ -234,7 +251,7 @@ fn silent_symbol_is_force_liquidated_as_delisted() {
     // running through 06-16.
     let mut rows = days_of(1, &[5, 6, 7], |_| 20.0);
     rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
-    write_fixture(tmp.path(), &rows, &[(1, "GONE"), (2, "STAY")], None);
+    write_fixture(tmp.path(), &rows, &[(1, "GONE"), (2, "STAY")], None, None);
 
     let algo = BuyAndHold::new("GONE", 10.0);
     let delistings = algo.delistings.clone();
@@ -259,7 +276,7 @@ fn delist_scan_can_be_disabled() {
     let tmp = tempfile::tempdir().unwrap();
     let mut rows = days_of(1, &[5, 6, 7], |_| 20.0);
     rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
-    write_fixture(tmp.path(), &rows, &[(1, "GONE"), (2, "STAY")], None);
+    write_fixture(tmp.path(), &rows, &[(1, "GONE"), (2, "STAY")], None, None);
 
     struct NoDelist(BuyAndHold);
     impl Algorithm for NoDelist {
@@ -277,5 +294,120 @@ fn delist_scan_can_be_disabled() {
             .unwrap();
     assert!(result.trades.is_empty());
     assert!(result.open_positions.iter().any(|p| p.symbol == "GONE"));
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn cash_dividend_credits_a_held_long_position() {
+    let tmp = tempfile::tempdir().unwrap();
+    // DIV trades flat at 100; STAY keeps the clock running. A $2.00/share
+    // dividend goes ex on 06-08, while we hold 10 shares bought on 06-05.
+    let mut rows = days_of(1, &TRADING_DAYS, |_| 100.0);
+    rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
+    write_fixture(
+        tmp.path(),
+        &rows,
+        &[(1, "DIV"), (2, "STAY")],
+        None,
+        Some(r#"[{"ex_dividend_date": "2023-06-08", "cash_amount": 2.0, "ticker": "DIV"}]"#),
+    );
+
+    let algo = BuyAndHold::new("DIV", 10.0);
+    let dividends = algo.dividends.clone();
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+
+    // The callback fired once with the per-share amount.
+    assert_eq!(*dividends.lock().unwrap(), vec![("DIV".to_string(), 2.0)]);
+    // 10 shares * $2 = $20 income, attributed to the still-open position and
+    // credited to cash, so equity rises by exactly the dividend.
+    let pos = result.open_positions.iter().find(|p| p.symbol == "DIV").unwrap();
+    assert!((pos.realized_pnl - 20.0).abs() < 1e-9);
+    assert!((result.final_equity - 100_020.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn cash_dividend_debits_a_held_short_position() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut rows = days_of(1, &TRADING_DAYS, |_| 100.0);
+    rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
+    write_fixture(
+        tmp.path(),
+        &rows,
+        &[(1, "DIV"), (2, "STAY")],
+        None,
+        Some(r#"[{"ex_dividend_date": "2023-06-08", "cash_amount": 2.0, "ticker": "DIV"}]"#),
+    );
+
+    // Short 10 shares: a dividend on a short is a cash *debit* of qty*amount.
+    let algo = BuyAndHold::new("DIV", -10.0);
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+
+    let pos = result.open_positions.iter().find(|p| p.symbol == "DIV").unwrap();
+    assert!((pos.realized_pnl - -20.0).abs() < 1e-9);
+    assert!((result.final_equity - 99_980.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn dividend_is_not_paid_when_the_symbol_is_not_held() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut rows = days_of(1, &TRADING_DAYS, |_| 100.0);
+    rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
+    write_fixture(
+        tmp.path(),
+        &rows,
+        &[(1, "DIV"), (2, "STAY")],
+        None,
+        Some(r#"[{"ex_dividend_date": "2023-06-08", "cash_amount": 2.0, "ticker": "DIV"}]"#),
+    );
+
+    // Subscribes DIV (so the dividend loads) but never opens a position in it.
+    struct Idle;
+    impl Algorithm for Idle {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("DIV");
+            ctx.add_equity("STAY");
+        }
+        fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+    }
+
+    let result = run_backtest(Idle, tmp.path().to_str().unwrap()).unwrap();
+    // No position on the ex-date means no cash flow at all.
+    assert!(result.trades.is_empty());
+    assert!(result.open_positions.is_empty());
+    assert!((result.final_equity - 100_000.0).abs() < 1e-9);
+}
+
+#[test]
+fn delist_haircut_writes_down_the_forced_liquidation() {
+    let tmp = tempfile::tempdir().unwrap();
+    // GONE trades at 20 through 06-07 then vanishes; a 25% haircut recovers
+    // 15/share on the forced liquidation instead of the last print of 20.
+    let mut rows = days_of(1, &[5, 6, 7], |_| 20.0);
+    rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
+    write_fixture(tmp.path(), &rows, &[(1, "GONE"), (2, "STAY")], None, None);
+
+    struct Haircut(BuyAndHold);
+    impl Algorithm for Haircut {
+        fn initialize(&mut self, ctx: &mut Context) {
+            self.0.initialize(ctx);
+            ctx.set_delist_haircut(0.25);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            self.0.on_data(ctx, data);
+        }
+    }
+
+    let result =
+        run_backtest(Haircut(BuyAndHold::new("GONE", 10.0)), tmp.path().to_str().unwrap()).unwrap();
+
+    assert_eq!(result.trades.len(), 1);
+    let t = &result.trades[0];
+    assert_eq!(t.exit_reason, "delisted");
+    // Filled at 20 * (1 - 0.25) = 15, a 5/share loss on the 10-share position.
+    assert!((t.exit_price - 15.0).abs() < 1e-9);
+    assert!((t.pnl - -50.0).abs() < 1e-9);
     assert!(identity_error(&result) < 1e-6);
 }

@@ -101,9 +101,10 @@ STONKS_DATA_ROOT=/path/to/data/output/minute \
 Run any of them with `cargo run -p <crate> --example <name>` (set
 `STONKS_DATA_ROOT` first for the ones that need data).
 
-## Rough edges
+## File ordering
 
-- `sorted_parquet_files` orders files by parsing the parent directory names as
-  bare numbers; it does not understand the `year=/month=` Hive names, so
-  multi-month ordering is not guaranteed yet (fine for a single file). Tracked
-  in [`TODO.md`](../TODO.md).
+`sorted_parquet_files` orders files by `(year, month)`, parsed from the parent
+directory names. It understands both bare (`year/month`, e.g. `2023/6`) and
+Hive (`year=2023/month=6`) layouts — `dir_number` takes the part after any `=`
+— so multi-month runs stream in chronological order. Files whose parents don't
+parse sort first, then by path.

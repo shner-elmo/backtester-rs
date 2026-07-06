@@ -39,12 +39,16 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
   indicator resets. Synthetic-fixture tests in
   `backtester/tests/corporate_actions.rs`; validated on real data across
   CELH's 2023-11-15 1→3 split (equity moved −0.10% on split day, not −67%).
-- [ ] **Cash dividends** — `get_dividends.json` (526 MB) is there; on
-  `ex_dividend_date` credit `qty * cash_amount` (debit shorts) in the same
-  day-boundary hook splits use. Needs a streaming/filtered parse.
-- [ ] **Delist fill haircut** — forced liquidation fills at the last traded
-  price, which is optimistic for bankruptcies; make the fill price/haircut
-  configurable.
+- [x] **Cash dividends** — done 2026-07-06: `load_dividends` streams
+  `get_dividends.json` (Polygon format) filtering to subscribed symbols as it
+  parses; on `ex_dividend_date` the engine credits `qty * cash_amount` (debits
+  shorts) in the same day-boundary hook splits use, attributes the income to
+  the position's PnL (round trips report total return), and fires
+  `on_dividend`. Synthetic-fixture tests in `tests/corporate_actions.rs`
+  (long credit, short debit, not-held no-op) hold the accounting identity.
+- [x] **Delist fill haircut** — done 2026-07-06: `set_delist_haircut(fraction)`
+  writes the forced-liquidation fill down to `last_price * (1 - fraction)`
+  (default `0.0`). Tested in `tests/corporate_actions.rs`.
 - [ ] **Ticker rename chains** — with Polygon's ticker-events data, upgrade
   renames from forced liquidation to a seamless position transfer.
 - [ ] **Margin/borrow accounting** — shorts and >100% allocations just drive
@@ -63,7 +67,12 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
   month files, accounting identity exact to 7e-12 over 3673 trades. A
   full-ticker OHLC invariant sweep of June 2023 (31.9M bars, 11,453
   symbols; `examples/data_invariants_check.rs`) found zero violations.
-- [ ] **`ui` niceties** — compare two result files side by side; serve a list
-  of all `backtest_result_*.json` and switch between them.
+- [x] **`ui` result switching** — done 2026-07-06: the dashboard serves every
+  `backtest_result_*.json` in the directory (`GET /api/results`) and a header
+  picker switches between them without a restart (`GET /api/result?file=`,
+  validated against the scanned names). An explicit path argument still pins it
+  to one file.
+- [ ] **`ui` side-by-side compare** — render two result files in adjacent
+  columns to diff strategies (the switcher above already lists them).
 - [ ] **Per-bar equity marks** — the equity curve is daily; intraday drawdown
   inside a single day is invisible.

@@ -9,7 +9,8 @@ use crate::{
     bar::Bar,
     context::{Context, FillTiming, Order, OrderKind},
     data::{
-        file_year_month, load_splits, load_ticker_map, read_bars_from_file, sorted_parquet_files,
+        file_year_month, load_dividends, load_splits, load_ticker_map, read_bars_from_file,
+        sorted_parquet_files,
     },
     error::BacktestError,
     slice::Slice,
@@ -150,9 +151,29 @@ fn apply_split(
     }
 }
 
+/// Apply a cash dividend that went ex on `symbol`: credit `quantity * amount`
+/// to cash (a debit for shorts) and attribute that income to the open
+/// position's PnL, so the eventual round trip reports its total return. Symbols
+/// not held on the ex-date pay nothing. Returns whether a dividend was paid, so
+/// the caller only fires `on_dividend` when it actually was.
+fn apply_dividend(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    symbol: &str,
+    amount: f64,
+) -> bool {
+    let Some(qty) = ctx.portfolio.positions.get(symbol).map(|p| p.quantity) else { return false };
+    let cash_flow = qty * amount;
+    ctx.portfolio.cash += cash_flow;
+    if let Some(lt) = lifetimes.get_mut(symbol) {
+        lt.realized_pnl += cash_flow;
+    }
+    true
+}
+
 /// Force-close a position in a symbol that stopped trading: fill the whole
-/// quantity at the last known price with no commission, and emit the closing
-/// trade with `exit_reason: "delisted"`.
+/// quantity at the last known price (less the configured delist haircut) with
+/// no commission, and emit the closing trade with `exit_reason: "delisted"`.
 fn force_close_delisted(
     ctx: &mut Context,
     lifetimes: &mut HashMap<String, OpenLifetime>,
@@ -164,7 +185,9 @@ fn force_close_delisted(
     let Some(pos) = ctx.portfolio.positions.get(symbol) else { return };
     let qty = pos.quantity;
     let avg = pos.avg_price;
-    let price = last_known_prices.get(symbol).copied().unwrap_or(avg);
+    // Recover the last print less the haircut, so a bankruptcy writes down the
+    // position instead of liquidating at an optimistic final quote.
+    let price = last_known_prices.get(symbol).copied().unwrap_or(avg) * (1.0 - ctx.delist_haircut);
 
     let lt = lifetimes
         .entry(symbol.to_string())
@@ -306,6 +329,14 @@ pub fn run_backtest<A: Algorithm>(
         }
     }
 
+    // Cash dividends for subscribed symbols, queued by ex-dividend date.
+    let mut pending_dividends: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
+    for (symbol, by_date) in load_dividends(data_path, &subscribed)? {
+        for (date, amount) in by_date {
+            pending_dividends.entry(date).or_default().push((symbol.clone(), amount));
+        }
+    }
+
     // Delist detection: which trading day (by index) each symbol last had a
     // bar on.
     let mut global_last_date: Option<NaiveDate> = None;
@@ -415,6 +446,25 @@ pub fn run_backtest<A: Algorithm>(
                             tick_time,
                         );
                         algo.on_split(&mut ctx, &symbol, ratio);
+                    }
+                }
+
+                // Cash dividends going ex on or before today, credited to any
+                // position held on the ex-date. Same day-boundary timing as
+                // splits: after the previous day's equity mark, before today's
+                // bars move prices.
+                while let Some((&date, _)) = pending_dividends.first_key_value() {
+                    if date > tick_date {
+                        break;
+                    }
+                    let (_, actions) = pending_dividends.pop_first().unwrap();
+                    if is_first_tick {
+                        continue;
+                    }
+                    for (symbol, amount) in actions {
+                        if apply_dividend(&mut ctx, &mut lifetimes, &symbol, amount) {
+                            algo.on_dividend(&mut ctx, &symbol, amount);
+                        }
                     }
                 }
 

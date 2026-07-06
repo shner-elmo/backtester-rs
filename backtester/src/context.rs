@@ -58,6 +58,7 @@ pub struct Context {
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) lot_size: f64,
     pub(crate) delist_after_days: usize,
+    pub(crate) delist_haircut: f64,
     pub(crate) fill_timing: FillTiming,
 }
 
@@ -78,6 +79,7 @@ impl Default for Context {
             commission: Box::new(NoCommission),
             lot_size: 1.0,
             delist_after_days: 5,
+            delist_haircut: 0.0,
             fill_timing: FillTiming::default(),
         }
     }
@@ -128,6 +130,16 @@ impl Context {
     /// `0` to disable.
     pub fn set_delist_after_days(&mut self, days: usize) {
         self.delist_after_days = days;
+    }
+
+    /// Fraction knocked off the last known price when a delisted position is
+    /// force-liquidated, modeling the gap between the last print and what you
+    /// actually recover (a bankruptcy rarely liquidates at its final quote).
+    /// `0.0` (the default) fills at the last price; `1.0` writes the position
+    /// off entirely. Must be in `0.0..=1.0`.
+    pub fn set_delist_haircut(&mut self, haircut: f64) {
+        assert!((0.0..=1.0).contains(&haircut), "delist haircut must be in 0.0..=1.0");
+        self.delist_haircut = haircut;
     }
 
     /// Choose when orders fill: at the current bar's close (the default,

@@ -13,6 +13,7 @@ pub trait Algorithm {
     fn on_end_of_day(&mut self, _ctx: &mut Context) {}     // optional, default no-op
     fn on_split(&mut self, _ctx: &mut Context, _symbol: &str, _ratio: f64) {} // optional
     fn on_delisted(&mut self, _ctx: &mut Context, _symbol: &str) {}           // optional
+    fn on_dividend(&mut self, _ctx: &mut Context, _symbol: &str, _amount: f64) {} // optional
 }
 ```
 
@@ -84,6 +85,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_fill_timing(timing)` | When orders fill — see [Fill timing](#fill-timing) |
 | `set_lot_size(lot)` | Share rounding for `set_holdings` (default `1.0` = whole shares) |
 | `set_delist_after_days(n)` | Force-close positions in symbols silent for `n` trading days (default 5, `0` = off) |
+| `set_delist_haircut(fraction)` | Write-down applied to the forced-liquidation price (default `0.0`) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling 500-bar window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
@@ -220,10 +222,31 @@ uniformly: a **held** symbol with no bars for `set_delist_after_days` (default
 no commission. The closing trade carries `exit_reason: "delisted"` and
 `on_delisted(ctx, symbol)` fires. This is approximately right for cash
 buyouts, realizes the correct PnL for renames (only the position lifetime
-resets), and closes the book on true delistings — note the last traded price
-of a bankruptcy delisting is usually optimistic.
+resets), and closes the book on true delistings.
 
-Cash dividends are **not** applied yet (see `TODO.md`).
+The last traded price of a bankruptcy delisting is usually optimistic, so
+`set_delist_haircut(fraction)` knocks a fraction off the forced-liquidation
+price (`0.0` by default, `1.0` writes the position off entirely) — the fill
+prints at `last_price * (1 - fraction)`.
+
+### Cash dividends
+
+If a `get_dividends.json` (Polygon format) sits next to `encoded_tickers.json`,
+the engine credits cash dividends for subscribed symbols on their
+**ex-dividend date**, using the same day-boundary timing as splits (after the
+prior day's equity mark, before the day's bars move prices):
+
+- A position held on the ex-date is credited `quantity * cash_amount`; a
+  **short** is debited the same (you owe the dividend). Symbols you don't hold
+  on the ex-date pay nothing.
+- The income is added to cash **and** attributed to the open position's PnL, so
+  an eventual round trip reports its **total return** (price change plus
+  dividends), and the equity curve stays continuous through the ex-date drop.
+- `on_dividend(ctx, symbol, amount)` fires after the credit, for logging or a
+  DRIP-style reinvestment.
+
+The dividends file is large across the whole market, so it is streamed and
+filtered to the subscribed symbols as it parses, rather than loaded whole.
 
 ## Bars, slices, and sessions
 
@@ -260,6 +283,32 @@ ctx.consolidate("AAPL", ConsolidatorPeriod::Hours(1), |bar| {
 
 Consolidated bars aggregate high/low/volume across the period. The callback is
 an `FnMut`, so it can own and mutate captured state (e.g. an indicator).
+
+## Example strategies
+
+The [`backtester/examples/`](../backtester/examples) directory has runnable
+strategies, smallest first. Run any of them against the committed fixture
+(AAPL, Jan 2023) — no external data needed:
+
+```bash
+cargo run --example <name> -- backtester/tests/fixtures
+```
+
+| Example | What it shows |
+|---------|---------------|
+| [`buy_and_hold`](../backtester/examples/buy_and_hold.rs) | The baseline: buy on the first bar, hold to the end |
+| [`ema_cross`](../backtester/examples/ema_cross.rs) | Fast/slow EMA crossover — the canonical trend strategy |
+| [`rsi_mean_reversion`](../backtester/examples/rsi_mean_reversion.rs) | Buy an oversold RSI, exit on reversion toward neutral |
+| [`bollinger_bands`](../backtester/examples/bollinger_bands.rs) | Buy below the lower band, exit at the middle band |
+| [`macd_trend`](../backtester/examples/macd_trend.rs) | Hold long while the MACD histogram is positive |
+| [`slippage_demo`](../backtester/examples/slippage_demo.rs) | `ema_cross` with slippage and commission applied |
+| [`kitchen_sink`](../backtester/examples/kitchen_sink.rs) | Every configurable knob at once |
+
+`kitchen_sink` is the guided tour of the whole API: warm-up, a slippage and a
+commission model, next-bar-open fills, a custom lot size and delist threshold,
+an hourly consolidator feeding a trend SMA, a scheduled pre-close flatten,
+`ctx.history()` lookbacks, and the `on_split` / `on_delisted` / `on_end_of_day`
+hooks.
 
 ## Running it
 

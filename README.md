@@ -82,6 +82,7 @@ cargo test                           # run all tests (uses the committed fixture
 cargo fmt                            # format (max width 100)
 cargo clippy                         # lint
 cargo run --example ema_cross -- backtester/tests/fixtures   # run a backtest
+cargo run --example kitchen_sink -- backtester/tests/fixtures  # every feature at once
 cargo run -p ui                                              # results dashboard at :3001
 DATA_PATH=/path/to/data/output cargo run -p data-viz         # chart explorer at :3000
 ```
@@ -154,10 +155,12 @@ are much worse than the print. Check `bar.market_session` and skip
 - **Delistings/renames/buyouts** are indistinguishable in this dataset (the
   symbol just stops printing bars). A held symbol silent for 5 trading days
   (configurable) is force-liquidated at its last known price
-  (`exit_reason: "delisted"`). **Warning:** for bankruptcies the last traded
-  price is optimistic.
-- **Dividends are NOT applied.** Long dividend-payers are understated,
-  shorts overstated, by the yield. (`TODO.md`.)
+  (`exit_reason: "delisted"`). For bankruptcies the last print is optimistic,
+  so `set_delist_haircut(fraction)` writes the fill down.
+- **Cash dividends** are credited on the ex-date from `get_dividends.json`
+  (Polygon format) for symbols you hold — a debit for shorts — and attributed
+  to the position's PnL, so round trips report total return. `on_dividend`
+  fires for reinvestment.
 - **No margin or borrow costs**: shorts and >100% allocations just drive cash
   negative, free. Leverage looks better here than in reality.
 
@@ -186,4 +189,4 @@ date. History and consolidators fill during warm-up; `on_data`,
 
 Data streams one month-file at a time (a full year over the 44 GB dataset
 runs in ~74 s at ~42 MB RSS). See [TODO.md](TODO.md) for what's next:
-dividends, delist-fill haircuts, margin/borrow costs, intrabar execution.
+margin/borrow costs, intrabar execution, and a k-way merge for wide universes.
