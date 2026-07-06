@@ -11,6 +11,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Supersede in-flight runs on the same ref so pushes don't pile up.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -42,7 +47,19 @@ jobs:
       # `bencher` output (ns/iter, lower is better) is what the tracker parses.
       - name: Run benchmarks
         run: cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
+      # The tracker hard-fails trying to fetch a gh-pages baseline that doesn't
+      # exist yet. Push events create it; PRs must skip the comparison until it
+      # does, or they'd red-fail on a missing branch rather than a regression.
+      - name: Check for benchmark baseline
+        id: baseline
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Track benchmark results
+        if: github.event_name == 'push' || steps.baseline.outputs.exists == 'true'
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: Backtester throughput
