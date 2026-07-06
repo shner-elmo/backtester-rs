@@ -23,3 +23,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Throughput numbers (Melem/s for the loader and the full backtest) print
+      # to the run log; compare across runs to spot regressions. Runs on a
+      # synthetic dataset since the real data isn't available in CI.
+      - name: Benchmarks
+        run: cargo bench -p backtester --bench engine -- --noplot
