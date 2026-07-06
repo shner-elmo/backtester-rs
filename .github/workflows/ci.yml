@@ -26,12 +26,33 @@ jobs:
 
   bench:
     runs-on: ubuntu-latest
+    # Push a new baseline to the gh-pages branch (contents) and comment on a PR
+    # when it regresses (pull-requests).
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Throughput numbers (Melem/s for the loader and the full backtest) print
-      # to the run log; compare across runs to spot regressions. Runs on a
-      # synthetic dataset since the real data isn't available in CI.
-      - name: Benchmarks
-        run: cargo bench -p backtester --bench engine -- --noplot
+      # Runs on a synthetic dataset since the real data isn't available in CI.
+      # `bencher` output (ns/iter, lower is better) is what the tracker parses.
+      - name: Run benchmarks
+        run: cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
+      - name: Track benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Backtester throughput
+          tool: cargo
+          output-file-path: bench-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Alert (and fail) when a run is more than 2x slower than the stored
+          # baseline. 2x is deliberately loose to ride out GitHub runner
+          # variance; tighten once the baseline proves stable.
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: true
+          # Publish a new baseline only from master; PRs compare without writing
+          # so they can't clobber the baseline or need push access from a fork.
+          auto-push: ${{ github.event_name == 'push' }}
+          save-data-file: ${{ github.event_name == 'push' }}
