@@ -14,7 +14,7 @@ pub mod stats;
 
 pub use algorithm::Algorithm;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
-pub use context::Context;
+pub use context::{Context, FillTiming};
 pub use engine::{run, run_backtest, BacktestResult};
 pub use error::BacktestError;
 pub use slice::Slice;

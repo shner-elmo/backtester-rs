@@ -50,8 +50,10 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
 - [ ] **Margin/borrow accounting** — shorts and >100% allocations just drive
   cash negative, cost-free. Add a margin-interest / borrow-fee model next to
   slippage & commission.
-- [ ] **Intrabar execution** — fills happen only at bar close; no limit/stop
-  orders or partial fills.
+- [ ] **Intrabar execution** — no limit/stop orders or partial fills. Fill
+  *timing* is now configurable (`set_fill_timing`: `CurrentBarClose` default,
+  or `NextBarOpen` to fill at the next bar's open and drop the same-bar
+  look-ahead), but a fill is still a single all-or-nothing print at one price.
 - [ ] **True k-way merge streaming** — data now streams one month-file at a
   time (memory = one month of *subscribed* bars, so wide-universe runs are
   still heavy). A k-way merge across per-symbol readers would flatten that.

@@ -17,6 +17,20 @@ pub(crate) enum OrderKind {
     Liquidate,
 }
 
+/// When an order placed during `on_data` actually fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillTiming {
+    /// Fill at the close of the same bar the order was placed on. Simple, but
+    /// optimistic: the strategy transacts at a price it has already seen.
+    /// This is the default.
+    #[default]
+    CurrentBarClose,
+    /// Fill at the open of the symbol's *next* bar. Removes the same-bar
+    /// look-ahead; orders placed on a symbol's final bar never fill. Sizing
+    /// for `set_holdings` uses prices known when the order was placed.
+    NextBarOpen,
+}
+
 pub(crate) struct Order {
     pub symbol: String,
     pub kind: OrderKind,
@@ -44,6 +58,7 @@ pub struct Context {
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) lot_size: f64,
     pub(crate) delist_after_days: usize,
+    pub(crate) fill_timing: FillTiming,
 }
 
 impl Default for Context {
@@ -63,6 +78,7 @@ impl Default for Context {
             commission: Box::new(NoCommission),
             lot_size: 1.0,
             delist_after_days: 5,
+            fill_timing: FillTiming::default(),
         }
     }
 }
@@ -112,6 +128,15 @@ impl Context {
     /// `0` to disable.
     pub fn set_delist_after_days(&mut self, days: usize) {
         self.delist_after_days = days;
+    }
+
+    /// Choose when orders fill: at the current bar's close (the default,
+    /// [`FillTiming::CurrentBarClose`]) or at the open of the symbol's next bar
+    /// ([`FillTiming::NextBarOpen`]). Next-bar-open removes the same-bar
+    /// look-ahead that inflates results for strategies reacting to the very
+    /// bar they trade on.
+    pub fn set_fill_timing(&mut self, timing: FillTiming) {
+        self.fill_timing = timing;
     }
 
     /// Set the share lot `set_holdings` rounds order quantities to. Defaults

@@ -119,11 +119,15 @@ things it deliberately does **not** model.
 
 ### Execution
 
-- Orders are queued during `on_data` / `on_end_of_day` and fill at the
-  **close of the bar they were placed on**, adjusted by your slippage model
-  and charged your commission model (both default to zero — configure them,
-  or results are optimistic; see
-  [docs/backtesting.md](docs/backtesting.md#slippage)).
+- Orders are queued during `on_data` / `on_end_of_day` and, by default, fill
+  at the **close of the bar they were placed on**, adjusted by your slippage
+  model and charged your commission model (both default to zero — configure
+  them, or results are optimistic; see
+  [docs/backtesting.md](docs/backtesting.md#slippage)). A same-bar close fill
+  is optimistic — you trade on a price you have already seen — so for a more
+  conservative model call `ctx.set_fill_timing(FillTiming::NextBarOpen)` to
+  fill at the **next bar's open** instead (see
+  [Fill timing](docs/backtesting.md#fill-timing)).
 - There are **no limit/stop orders, no intrabar fills, no partial fills, and
   no liquidity constraints** — you can notionally trade any size at the
   close. Be skeptical of strategies that trade large size in illiquid names.
