@@ -556,6 +556,65 @@ fn short_borrow_fee_accrues_daily_on_a_held_short() {
 }
 
 #[test]
+fn margin_interest_falls_back_to_the_short_book_when_there_are_no_longs() {
+    let tmp = tempfile::tempdir().unwrap();
+    // CRSH is bought on margin and dumped at a loss within day one, leaving
+    // cash at -7,000 with only the SHRT short on the book. The day-two
+    // boundary must still charge interest, attributed to the short.
+    let rows = vec![
+        row(1, 2023, 6, 5, 0, 100.0),
+        row(1, 2023, 6, 5, 1, 10.0),
+        row(2, 2023, 6, 5, 0, 100.0),
+        row(2, 2023, 6, 5, 1, 100.0),
+        row(2, 2023, 6, 6, 0, 100.0),
+        row(2, 2023, 6, 6, 1, 100.0),
+    ];
+    write_fixture(tmp.path(), &rows, &[(1, "CRSH"), (2, "SHRT")], None, None);
+
+    struct AllShortMargin {
+        bars_seen: usize,
+    }
+    impl Algorithm for AllShortMargin {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(1_000.0);
+            ctx.add_equity("CRSH");
+            ctx.add_equity("SHRT");
+            // 25.2% annual => 0.1%/day => $7 on the $7,000 debit.
+            ctx.set_margin_interest_rate(0.252);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !data.bars.contains_key("SHRT") {
+                return;
+            }
+            self.bars_seen += 1;
+            match self.bars_seen {
+                // Cash: 1,000 - 10,000 (buy) + 1,000 (short proceeds) = -8,000.
+                1 => {
+                    ctx.market_order("CRSH", 100.0);
+                    ctx.market_order("SHRT", -10.0);
+                }
+                // Dump CRSH at 10: cash -8,000 + 1,000 = -7,000, no longs left.
+                2 => ctx.liquidate("CRSH"),
+                _ => {}
+            }
+        }
+    }
+
+    let result =
+        run_backtest(AllShortMargin { bars_seen: 0 }, tmp.path().to_str().unwrap()).unwrap();
+
+    assert_eq!(result.trades.len(), 1); // the CRSH round trip, pnl -9,000
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SHRT").unwrap();
+    assert!(
+        (pos.realized_pnl - -7.0).abs() < 1e-9,
+        "expected $7 margin interest on the short, got {}",
+        pos.realized_pnl
+    );
+    assert!((result.final_equity - -8_007.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
 fn margin_interest_accrues_on_a_negative_cash_balance() {
     let tmp = tempfile::tempdir().unwrap();
     // Two trading days => a single day boundary. Buying 1,500 shares @ 100 with

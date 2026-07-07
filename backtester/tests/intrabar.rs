@@ -12,7 +12,7 @@ use arrow::record_batch::RecordBatch;
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
 
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
+use backtester::{run_backtest, Algorithm, BacktestResult, Context, PercentSlippage, Slice};
 
 /// One synthetic minute bar with explicit OHLCV.
 struct Ohlc {
@@ -191,6 +191,115 @@ fn stop_loss_sell_triggers_when_the_low_breaches_it() {
     assert!((t.exit_price - 90.0).abs() < 1e-9, "expected stop fill at 90, got {}", t.exit_price);
     assert!((t.pnl - -1000.0).abs() < 1e-6);
     assert!(result.open_positions.is_empty());
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn limit_fill_is_never_worse_than_the_limit_even_with_slippage() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_fixture(
+        tmp.path(),
+        &[
+            bar(0, 100.0, 101.0, 99.0, 100.0, 1_000),
+            bar(1, 100.0, 101.0, 94.0, 100.0, 1_000), // dips through the 95 limit
+        ],
+    );
+
+    /// Same as RestOnce::limit but with 10 bps of slippage configured.
+    struct SlippedLimit {
+        placed: bool,
+    }
+    impl Algorithm for SlippedLimit {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("SYM");
+            ctx.set_slippage(PercentSlippage::bps(10.0));
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !self.placed && data.bars.contains_key("SYM") {
+                self.placed = true;
+                ctx.limit_order("SYM", 100.0, 95.0);
+            }
+        }
+    }
+
+    let result =
+        run_backtest(SlippedLimit { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
+    // Slippage would push the buy to 95.095; a limit clamps it at 95.
+    assert!(
+        (pos.avg_price - 95.0).abs() < 1e-9,
+        "limit buy filled through its limit: {}",
+        pos.avg_price
+    );
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn volume_participation_cap_rounds_down_to_the_lot() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 3.33% of a 1,000-share bar is 33.3 shares; the fill must round down to
+    // the whole-share lot, not print a fractional position.
+    write_fixture(tmp.path(), &[bar(0, 100.0, 101.0, 99.0, 100.0, 1_000)]);
+
+    let algo = RestOnce {
+        limit: None,
+        stop: None,
+        market_first: Some(250.0),
+        participation: 0.0333,
+        placed: false,
+    };
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
+    assert!(
+        (pos.quantity - 33.0).abs() < 1e-9,
+        "expected the cap rounded to 33 whole shares, got {}",
+        pos.quantity
+    );
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn volume_participation_is_shared_across_orders_on_the_same_bar() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Cap is 10% of 1,000 = 100 shares per bar *in aggregate*. Three resting
+    // 100-share limits against two touching bars can fill at most 200 shares,
+    // not 300.
+    write_fixture(
+        tmp.path(),
+        &[
+            bar(0, 100.0, 101.0, 99.0, 100.0, 1_000),
+            bar(1, 100.0, 101.0, 94.0, 100.0, 1_000),
+            bar(2, 100.0, 101.0, 94.0, 100.0, 1_000),
+        ],
+    );
+
+    struct ThreeLimits {
+        placed: bool,
+    }
+    impl Algorithm for ThreeLimits {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("SYM");
+            ctx.set_max_volume_participation(0.1);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !self.placed && data.bars.contains_key("SYM") {
+                self.placed = true;
+                ctx.limit_order("SYM", 100.0, 95.0);
+                ctx.limit_order("SYM", 100.0, 95.0);
+                ctx.limit_order("SYM", 100.0, 95.0);
+            }
+        }
+    }
+
+    let result = run_backtest(ThreeLimits { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
+    assert!(
+        (pos.quantity - 200.0).abs() < 1e-9,
+        "expected 100 shares per touching bar in aggregate (200), got {}",
+        pos.quantity
+    );
     assert!(identity_error(&result) < 1e-6);
 }
 

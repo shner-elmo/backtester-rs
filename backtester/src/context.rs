@@ -127,6 +127,9 @@ impl Context {
         self.portfolio.cash = cash;
     }
 
+    /// Skip the first `bars` time steps before `on_data` fires. History and
+    /// consolidators still fill during warm-up. Counts *ticks*, not per-symbol
+    /// bars: several symbols sharing one timestamp consume a single step.
     pub fn set_warm_up(&mut self, bars: usize) {
         self.warm_up_remaining = bars;
         if bars > self.max_history {

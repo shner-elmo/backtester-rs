@@ -106,7 +106,10 @@ pub fn compute_stats(trades: &[Trade], equity_curve: &[EquityPoint]) -> Backtest
         0.0
     } else {
         let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-        let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+        // Sample variance (n - 1): the daily returns are a sample of the
+        // strategy's return distribution, not the population.
+        let var =
+            returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
         let std = var.sqrt();
         if std == 0.0 {
             0.0
@@ -168,6 +171,16 @@ mod tests {
         // Peak 110, trough 88 -> 20% drawdown, even with no losing trades.
         let s = compute_stats(&[trade(10.0)], &curve(&[100.0, 110.0, 88.0, 120.0]));
         assert!((s.max_drawdown - 0.2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sharpe_uses_sample_variance() {
+        let s = compute_stats(&[], &curve(&[100.0, 110.0, 104.5]));
+        let (r1, r2): (f64, f64) = (0.1, 104.5 / 110.0 - 1.0);
+        let mean = (r1 + r2) / 2.0;
+        let var = ((r1 - mean).powi(2) + (r2 - mean).powi(2)) / 1.0; // n - 1 = 1
+        let expected = mean / var.sqrt() * 252.0_f64.sqrt();
+        assert!((s.sharpe_ratio - expected).abs() < 1e-12, "got {}", s.sharpe_ratio);
     }
 
     #[test]
