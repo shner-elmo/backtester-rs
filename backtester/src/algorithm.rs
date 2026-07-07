@@ -23,4 +23,11 @@ pub trait Algorithm {
     /// PnL, so a round trip's PnL is its total return including dividends.
     /// `amount` is the cash dividend per share.
     fn on_dividend(&mut self, _ctx: &mut Context, _symbol: &str, _amount: f64) {}
+
+    /// Fired when a subscribed symbol is renamed (e.g. FB → META). The engine
+    /// has already transferred any held position, PnL ledger, and history from
+    /// `old` to `new`, and subscribed `new` so its bars flow — but your own
+    /// state still refers to `old`. Update any symbol strings and indicators
+    /// you key on it here.
+    fn on_rename(&mut self, _ctx: &mut Context, _old: &str, _new: &str) {}
 }

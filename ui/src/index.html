@@ -44,7 +44,17 @@
   <header>
     <h1>Backtest Results</h1>
     <select class="src" id="result-picker" title="Switch result file"></select>
+    <span class="src">vs</span>
+    <select class="src" id="compare-picker" title="Compare against another result"></select>
   </header>
+
+  <div class="panel" id="compare-panel" style="display:none">
+    <h2>Comparison</h2>
+    <table id="compare-table">
+      <thead><tr><th>Metric</th><th id="cmp-a">A</th><th id="cmp-b">B</th><th>Δ</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <div class="cards" id="cards"></div>
 
@@ -155,7 +165,38 @@
 
     let liveCharts = [];
 
-    function render(r) {
+    function renderCompare(r, cmp) {
+      const panel = document.getElementById('compare-panel');
+      if (!cmp) { panel.style.display = 'none'; return; }
+      panel.style.display = '';
+      document.getElementById('cmp-a').textContent = r.source_file || 'A';
+      document.getElementById('cmp-b').textContent = cmp.source_file || 'B';
+      const retOf = x => (x.final_equity / x.initial_cash - 1) * 100;
+      const rows = [
+        ['Final Equity', usd(r.final_equity), usd(cmp.final_equity), true],
+        ['Total Return', `${fmt(retOf(r))}%`, `${fmt(retOf(cmp))}%`, false],
+        ['Realized PnL', usd(r.stats.total_pnl), usd(cmp.stats.total_pnl), true],
+        ['Trades', r.stats.trade_count, cmp.stats.trade_count, false],
+        ['Win Rate', `${fmt(r.stats.win_rate * 100, 1)}%`, `${fmt(cmp.stats.win_rate * 100, 1)}%`, false],
+        ['Profit Factor', fmt(r.stats.profit_factor), fmt(cmp.stats.profit_factor), false],
+        ['Max Drawdown', `${fmt(r.stats.max_drawdown * 100, 1)}%`, `${fmt(cmp.stats.max_drawdown * 100, 1)}%`, false],
+        ['Sharpe', fmt(r.stats.sharpe_ratio), fmt(cmp.stats.sharpe_ratio), false],
+      ];
+      const raw = { 'Final Equity': [r.final_equity, cmp.final_equity], 'Total Return': [retOf(r), retOf(cmp)],
+        'Realized PnL': [r.stats.total_pnl, cmp.stats.total_pnl], 'Trades': [r.stats.trade_count, cmp.stats.trade_count],
+        'Win Rate': [r.stats.win_rate, cmp.stats.win_rate], 'Profit Factor': [r.stats.profit_factor, cmp.stats.profit_factor],
+        'Max Drawdown': [r.stats.max_drawdown, cmp.stats.max_drawdown], 'Sharpe': [r.stats.sharpe_ratio, cmp.stats.sharpe_ratio] };
+      document.querySelector('#compare-table tbody').innerHTML = rows.map(([label, a, b, money]) => {
+        const [ra, rb] = raw[label];
+        const delta = rb - ra;
+        const good = label === 'Max Drawdown' ? delta < 0 : delta > 0; // lower drawdown is better
+        const deltaStr = money ? usd(delta) : (label === 'Trades' ? delta : fmt(delta));
+        const cls = delta === 0 ? '' : (good ? 'pos' : 'neg');
+        return `<tr><td>${label}</td><td>${a}</td><td>${b}</td><td class="${cls}">${delta >= 0 ? '+' : ''}${deltaStr}</td></tr>`;
+      }).join('');
+    }
+
+    function render(r, cmp) {
       const s = r.stats;
 
       // Dispose charts and reset panels from any previous render before redraw.
@@ -165,6 +206,8 @@
       document.getElementById('dd-chart').innerHTML = '';
       document.getElementById('open-panel').style.display = 'none';
       document.querySelector('#open-table tbody').innerHTML = '';
+
+      renderCompare(r, cmp);
 
       const ret = (r.final_equity / r.initial_cash - 1) * 100;
       document.getElementById('cards').innerHTML = [
@@ -189,6 +232,12 @@
       });
       eqSeries.setData(curve);
       eqSeries.createPriceLine({ price: r.initial_cash, color: css('--muted'), lineStyle: 2, title: 'start' });
+      // Overlay the comparison equity curve as a second line.
+      if (cmp) {
+        const cmpSeries = eqChart.addLineSeries({ color: css('--muted'), lineWidth: 2, lineStyle: 0,
+          priceFormat: { type: 'price', precision: 0, minMove: 1 } });
+        cmpSeries.setData(cmp.equity_curve.map(p => ({ time: p.time, value: p.equity })));
+      }
       eqChart.timeScale().fitContent();
 
       // ── Drawdown (computed from the curve) ──
@@ -271,18 +320,28 @@
         || '<tr><td colspan="9" id="empty">no completed trades</td></tr>';
     }
 
-    async function loadAndRender(file) {
-      const url = file ? `/api/result?file=${encodeURIComponent(file)}` : '/api/result';
-      render(await (await fetch(url)).json());
+    const fetchResult = f =>
+      fetch(f ? `/api/result?file=${encodeURIComponent(f)}` : '/api/result').then(r => r.json());
+
+    async function loadAndRender() {
+      const primary = document.getElementById('result-picker').value;
+      const compare = document.getElementById('compare-picker').value;
+      const r = await fetchResult(primary);
+      const cmp = compare && compare !== primary ? await fetchResult(compare) : null;
+      render(r, cmp);
     }
 
     async function boot() {
       const picker = document.getElementById('result-picker');
+      const cmpPicker = document.getElementById('compare-picker');
       const { files, selected } = await (await fetch('/api/results')).json();
       picker.innerHTML = files.map(f => `<option value="${f}">${f}</option>`).join('');
+      cmpPicker.innerHTML =
+        '<option value="">— none —</option>' + files.map(f => `<option value="${f}">${f}</option>`).join('');
       if (selected) picker.value = selected;
-      picker.onchange = () => loadAndRender(picker.value);
-      await loadAndRender(picker.value || undefined);
+      picker.onchange = loadAndRender;
+      cmpPicker.onchange = loadAndRender;
+      await loadAndRender();
     }
 
     boot().catch(e => document.body.insertAdjacentHTML('afterbegin',

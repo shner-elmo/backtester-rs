@@ -411,3 +411,117 @@ fn delist_haircut_writes_down_the_forced_liquidation() {
     assert!((t.pnl - -50.0).abs() < 1e-9);
     assert!(identity_error(&result) < 1e-6);
 }
+
+#[test]
+fn ticker_rename_transfers_the_position_without_a_trade() {
+    let tmp = tempfile::tempdir().unwrap();
+    // OLD trades 06-05..06-07, then becomes NEW from 06-08 (both flat at 100).
+    let mut rows = days_of(1, &[5, 6, 7], |_| 100.0);
+    rows.extend(days_of(2, &[8, 9, 12, 13, 14, 15, 16], |_| 100.0));
+    write_fixture(tmp.path(), &rows, &[(1, "OLD"), (2, "NEW")], None, None);
+    fs::write(
+        tmp.path().join("ticker_renames.json"),
+        r#"[{"date": "2023-06-08", "old": "OLD", "new": "NEW"}]"#,
+    )
+    .unwrap();
+
+    struct Rename {
+        symbol: String,
+        bought: bool,
+        renames: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl Algorithm for Rename {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity(&self.symbol.clone());
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !self.bought && data.bars.contains_key(&self.symbol) {
+                self.bought = true;
+                ctx.market_order(&self.symbol.clone(), 10.0);
+            }
+        }
+        fn on_rename(&mut self, _ctx: &mut Context, old: &str, new: &str) {
+            self.renames.lock().unwrap().push((old.to_string(), new.to_string()));
+            if self.symbol == old {
+                self.symbol = new.to_string();
+            }
+        }
+    }
+
+    let renames = Arc::new(Mutex::new(Vec::new()));
+    let algo = Rename { symbol: "OLD".into(), bought: false, renames: renames.clone() };
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+
+    assert_eq!(*renames.lock().unwrap(), vec![("OLD".to_string(), "NEW".to_string())]);
+    // No round trip and no forced liquidation — the position just moved symbols.
+    assert!(result.trades.is_empty(), "rename must not emit a trade: {:?}", result.trades);
+    assert!(result.open_positions.iter().all(|p| p.symbol != "OLD"));
+    let pos = result.open_positions.iter().find(|p| p.symbol == "NEW").unwrap();
+    assert!((pos.quantity - 10.0).abs() < 1e-9);
+    assert!((pos.avg_price - 100.0).abs() < 1e-9);
+    assert!((result.final_equity - 100_000.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn short_borrow_fee_accrues_daily_on_a_held_short() {
+    let tmp = tempfile::tempdir().unwrap();
+    // SHRT flat at 100; a short of 10 shares carried through all 10 trading
+    // days is charged a borrow fee at each of the 9 day boundaries after entry.
+    let mut rows = days_of(1, &TRADING_DAYS, |_| 100.0);
+    rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
+    write_fixture(tmp.path(), &rows, &[(1, "SHRT"), (2, "STAY")], None, None);
+
+    struct Borrow(BuyAndHold);
+    impl Algorithm for Borrow {
+        fn initialize(&mut self, ctx: &mut Context) {
+            self.0.initialize(ctx);
+            // 25.2% annual => 0.1%/day => $1/day on a $1,000 short.
+            ctx.set_short_borrow_rate(0.252);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            self.0.on_data(ctx, data);
+        }
+    }
+
+    let result =
+        run_backtest(Borrow(BuyAndHold::new("SHRT", -10.0)), tmp.path().to_str().unwrap()).unwrap();
+
+    // 9 boundaries * $1 = $9 in borrow fees, attributed to the short's PnL.
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SHRT").unwrap();
+    assert!((pos.realized_pnl - -9.0).abs() < 1e-9, "borrow fee was {}", pos.realized_pnl);
+    assert!((result.final_equity - 99_991.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
+fn margin_interest_accrues_on_a_negative_cash_balance() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Two trading days => a single day boundary. Buying 1,500 shares @ 100 with
+    // 100k cash drives cash to -50k; margin interest is charged once.
+    let rows = days_of(1, &[5, 6], |_| 100.0);
+    write_fixture(tmp.path(), &rows, &[(1, "LEVR")], None, None);
+
+    struct Margin(BuyAndHold);
+    impl Algorithm for Margin {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("LEVR");
+            // 25.2% annual => 0.1%/day => $50 on a $50k debit.
+            ctx.set_margin_interest_rate(0.252);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            self.0.on_data(ctx, data);
+        }
+    }
+
+    let result =
+        run_backtest(Margin(BuyAndHold::new("LEVR", 1500.0)), tmp.path().to_str().unwrap())
+            .unwrap();
+
+    let pos = result.open_positions.iter().find(|p| p.symbol == "LEVR").unwrap();
+    assert!((pos.realized_pnl - -50.0).abs() < 1e-9, "margin interest was {}", pos.realized_pnl);
+    assert!((result.final_equity - 99_950.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}

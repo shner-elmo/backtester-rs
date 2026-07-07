@@ -2,7 +2,7 @@
 
 ## Continuation context (read this first)
 
-Snapshot for picking the work back up in a fresh chat. Updated 2026-07-05.
+Snapshot for picking the work back up in a fresh chat. Updated 2026-07-06.
 
 **What the project is:** an event-driven Rust backtesting engine (QuantConnect-
 style ergonomics). Cargo workspace: `backtester` (core lib), `data-viz`
@@ -30,7 +30,12 @@ per-file streaming data load with month skipping, volume in `Bar`, Hive dir
 sorting, ET trading dates, EOD-timing fix, FnMut consolidator callbacks, lot
 rounding. All prior "Bugs" and "Missing Features" sections are resolved.
 
-## Remaining ideas (none blocking a demo)
+## Roadmap (all shipped or evaluated)
+
+Every item below is checked off — either implemented and tested, or explicitly
+evaluated and decided against with a recorded rationale. Nothing here is
+outstanding; new ideas go under a fresh heading.
+
 
 - [x] **Splits & delistings** — done 2026-07-05: splits from `get_splits.json`
   adjust position/basis/history on execution date (bar prices stay raw);
@@ -49,18 +54,26 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
 - [x] **Delist fill haircut** — done 2026-07-06: `set_delist_haircut(fraction)`
   writes the forced-liquidation fill down to `last_price * (1 - fraction)`
   (default `0.0`). Tested in `tests/corporate_actions.rs`.
-- [ ] **Ticker rename chains** — with Polygon's ticker-events data, upgrade
-  renames from forced liquidation to a seamless position transfer.
-- [ ] **Margin/borrow accounting** — shorts and >100% allocations just drive
-  cash negative, cost-free. Add a margin-interest / borrow-fee model next to
-  slippage & commission.
-- [ ] **Intrabar execution** — no limit/stop orders or partial fills. Fill
-  *timing* is now configurable (`set_fill_timing`: `CurrentBarClose` default,
-  or `NextBarOpen` to fill at the next bar's open and drop the same-bar
-  look-ahead), but a fill is still a single all-or-nothing print at one price.
-- [ ] **True k-way merge streaming** — data now streams one month-file at a
-  time (memory = one month of *subscribed* bars, so wide-universe runs are
-  still heavy). A k-way merge across per-symbol readers would flatten that.
+- [x] **Ticker rename chains** — done 2026-07-06: `load_renames` reads
+  `ticker_renames.json` (`{date, old, new}`); on the effective date the engine
+  transfers the position, PnL ledger, history, resting orders, and last price
+  from old→new (no trade emitted), subscribes the successor up front so its
+  bars stream, and fires `on_rename`. Tested in `tests/corporate_actions.rs`.
+- [x] **Margin/borrow accounting** — done 2026-07-06:
+  `set_margin_interest_rate` charges interest on a negative cash balance
+  (spread across the long book) and `set_short_borrow_rate` charges a borrow
+  fee on shorts, both at `rate / 252` per trading day, attributed to position
+  PnL so the accounting identity holds. Tested in `tests/corporate_actions.rs`.
+- [x] **Intrabar execution** — done 2026-07-06: `limit_order` / `stop_order`
+  rest across bars and fill intrabar off the bar's range (limit at its price or
+  the better open; a triggered stop at its price or the worse open).
+  `set_max_volume_participation` caps a fill at a fraction of bar volume, so a
+  resting order's remainder carries to the next bar. Tested in `tests/intrabar.rs`.
+- [x] **True k-way merge streaming** — evaluated 2026-07-06, keeping per-month
+  buffering. It already bounds memory to the *subscribed* universe (filtered
+  before buffering, ~42 MB RSS over a full year), and a streaming k-way merge
+  would need a guaranteed intra-file time sort the Polygon feed doesn't provide
+  (rows are grouped by ticker). See the rationale comment in `engine.rs`.
 - [x] **Benchmark run on the full 44 GB dataset** — done 2026-07-05:
   `ema_cross` over all of 2023 (AAPL, minute bars) ran in **74 s with a
   41.8 MB peak RSS**; equity-curve dates strictly increasing across all 12
@@ -72,7 +85,11 @@ rounding. All prior "Bugs" and "Missing Features" sections are resolved.
   picker switches between them without a restart (`GET /api/result?file=`,
   validated against the scanned names). An explicit path argument still pins it
   to one file.
-- [ ] **`ui` side-by-side compare** — render two result files in adjacent
-  columns to diff strategies (the switcher above already lists them).
-- [ ] **Per-bar equity marks** — the equity curve is daily; intraday drawdown
-  inside a single day is invisible.
+- [x] **`ui` side-by-side compare** — done 2026-07-06: a second header picker
+  overlays a comparison result's equity curve on the chart and shows a
+  metric-by-metric table (A, B, Δ) above the dashboard.
+- [x] **Per-bar equity marks** — done 2026-07-06:
+  `set_track_intraday_equity(true)` records a mark-to-market point on every bar
+  into `BacktestResult::intraday_equity` (empty by default to stay cheap),
+  exposing intraday drawdown the daily `equity_curve` can't show. Tested in
+  `tests/engine.rs`.

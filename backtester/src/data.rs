@@ -146,6 +146,48 @@ pub fn load_dividends(
     })
 }
 
+/// Ticker renames keyed by effective date → list of `(old, new)` symbol pairs.
+/// Reads `ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
+/// `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` records; returns an
+/// empty map when the file doesn't exist. Only renames whose `old` symbol is
+/// subscribed are kept.
+pub fn load_renames(
+    data_root: &str,
+    symbols: &std::collections::HashSet<String>,
+) -> Result<std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>>, BacktestError> {
+    #[derive(serde::Deserialize)]
+    struct RenameRecord {
+        date: String,
+        old: String,
+        new: String,
+    }
+
+    let path = PathBuf::from(format!("{}/ticker_renames.json", data_root));
+    let content = match read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(std::collections::BTreeMap::new())
+        }
+        Err(source) => return Err(BacktestError::Io { path, source }),
+    };
+    let records: Vec<RenameRecord> = serde_json::from_str(&content).map_err(|e| {
+        BacktestError::Json { path, message: format!("not valid renames JSON: {e}") }
+    })?;
+
+    let mut renames: std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for r in records {
+        if !symbols.contains(&r.old) {
+            continue;
+        }
+        let Ok(date) = r.date.parse::<chrono::NaiveDate>() else {
+            continue;
+        };
+        renames.entry(date).or_default().push((r.old, r.new));
+    }
+    Ok(renames)
+}
+
 /// Parse a directory name that is either a bare number (`2023`) or a Hive
 /// partition (`year=2023`), returning the numeric part.
 fn dir_number(component: &std::ffi::OsStr) -> Option<u32> {

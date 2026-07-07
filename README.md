@@ -152,17 +152,20 @@ are much worse than the print. Check `bar.market_session` and skip
   invariant — the equity curve shows only market moves across a split
   (validated on CELH's 2023 1→3 split). **Warning:** indicators you own are
   *not* reset for you — do it in `on_split`.
-- **Delistings/renames/buyouts** are indistinguishable in this dataset (the
-  symbol just stops printing bars). A held symbol silent for 5 trading days
+- **Delistings/buyouts**: a held symbol silent for 5 trading days
   (configurable) is force-liquidated at its last known price
   (`exit_reason: "delisted"`). For bankruptcies the last print is optimistic,
   so `set_delist_haircut(fraction)` writes the fill down.
+- **Ticker renames** (from `ticker_renames.json`) transfer the position,
+  ledger, and history from old → new on the effective date with no trade
+  emitted; `on_rename` fires so you can retarget your strategy.
 - **Cash dividends** are credited on the ex-date from `get_dividends.json`
   (Polygon format) for symbols you hold — a debit for shorts — and attributed
   to the position's PnL, so round trips report total return. `on_dividend`
   fires for reinvestment.
-- **No margin or borrow costs**: shorts and >100% allocations just drive cash
-  negative, free. Leverage looks better here than in reality.
+- **Financing** is opt-in: `set_short_borrow_rate` charges a borrow fee on
+  shorts and `set_margin_interest_rate` charges interest on a negative cash
+  balance, both accruing daily and attributed to position PnL.
 
 ### Accounting & stats
 
@@ -173,8 +176,9 @@ are much worse than the print. Check `bar.market_session` and skip
   real-data run).
 - **Drawdown and Sharpe come from the daily mark-to-market equity curve**
   (ET trading dates), not per-trade PnL — open-position pain counts. Sharpe
-  assumes a zero risk-free rate and √252 scaling. The curve is **daily**:
-  intraday drawdown inside a single day is invisible.
+  assumes a zero risk-free rate and √252 scaling. The curve is **daily** by
+  default; `set_track_intraday_equity(true)` also records a per-bar curve
+  (`intraday_equity`) so intraday drawdown is visible.
 - **Survivorship bias is yours to manage**: the engine only sees symbols you
   subscribe to. Hand-picking today's winners (the AAPLs) biases results up —
   delisted losers never make it into the universe.
@@ -185,8 +189,11 @@ are much worse than the print. Check `bar.market_session` and skip
 date. History and consolidators fill during warm-up; `on_data`,
 `on_end_of_day`, and the equity curve begin after it.
 
-## Status & roadmap
+## Status
 
-Data streams one month-file at a time (a full year over the 44 GB dataset
-runs in ~74 s at ~42 MB RSS). See [TODO.md](TODO.md) for what's next:
-margin/borrow costs, intrabar execution, and a k-way merge for wide universes.
+Data streams one month-file at a time (a full year over the 44 GB dataset runs
+in ~74 s at ~42 MB RSS). The [TODO.md](TODO.md) roadmap — corporate actions,
+financing, intrabar limit/stop orders, partial fills, ticker renames, per-bar
+equity, and the dashboard's result switcher/compare — is fully shipped; the
+one perf idea left (a streaming k-way merge) was evaluated and deliberately
+deferred, since buffering already scales with the subscribed universe.

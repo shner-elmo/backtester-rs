@@ -130,6 +130,39 @@ fn equity_curve_starts_at_initial_cash_and_ends_at_final_equity() {
 }
 
 #[test]
+fn intraday_equity_is_opt_in_and_finer_than_the_daily_curve() {
+    struct HoldWithIntraday {
+        bought: bool,
+    }
+    impl Algorithm for HoldWithIntraday {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("AAPL");
+            ctx.set_track_intraday_equity(true);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !self.bought && data.bars.contains_key("AAPL") {
+                self.bought = true;
+                ctx.set_holdings("AAPL", 1.0);
+            }
+        }
+    }
+
+    let on = run_backtest(HoldWithIntraday { bought: false }, FIXTURE).unwrap();
+    // Per-bar marks are recorded and far outnumber the daily points.
+    assert!(!on.intraday_equity.is_empty());
+    assert!(on.intraday_equity.len() > on.equity_curve.len());
+    for w in on.intraday_equity.windows(2) {
+        assert!(w[0].time < w[1].time, "intraday marks not sorted");
+    }
+    assert!((on.intraday_equity.last().unwrap().equity - on.final_equity).abs() < 1e-6);
+
+    // Off by default — no per-bar marks recorded.
+    let off = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
+    assert!(off.intraday_equity.is_empty());
+}
+
+#[test]
 fn set_holdings_rounds_to_whole_shares_by_default() {
     let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
     let qty = result.open_positions[0].quantity;
