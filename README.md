@@ -138,6 +138,12 @@ things it deliberately does **not** model.
   names.
 - `set_holdings` sizes at the pre-slippage reference price and rounds to the
   lot (default: whole shares).
+- **Buying power is unlimited by default** — cash can go arbitrarily negative
+  (free leverage unless you also set a financing rate). Set a margin model to
+  constrain it: `ctx.set_margin_model(MaxLeverage::new(2.0))` caps gross
+  exposure at 2× equity, trimming (or rejecting) orders that would exceed it
+  while always letting an over-levered book reduce. Pluggable like slippage —
+  see [Margin](docs/backtesting.md#margin--buying-power).
 
 ### Sessions
 

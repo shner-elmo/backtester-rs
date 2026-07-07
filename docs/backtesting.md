@@ -85,6 +85,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `stop_order(symbol, qty, price)` | Resting stop order — see [Order types](#order-types) |
 | `set_slippage(model)` | Fill-price friction — see [Slippage](#slippage) |
 | `set_commission(model)` | Cash charge per fill — see [Commission](#commission) |
+| `set_margin_model(model)` | Buying-power limit — see [Margin](#margin--buying-power) |
 | `set_fill_timing(timing)` | When market orders fill — see [Fill timing](#fill-timing) |
 | `set_max_volume_participation(f)` | Cap each fill at fraction `f` of bar volume (partial fills; default `0.0` = off) |
 | `set_lot_size(lot)` | Share rounding for `set_holdings` (default `1.0` = whole shares) |
@@ -160,8 +161,47 @@ ctx.set_margin_interest_rate(0.06);   // 6%/yr interest on a negative cash balan
 ```
 
 The borrow fee is charged per short position; margin interest is charged on any
-negative cash and spread across the long book by market value. Both default to
-`0.0` — shorts and leverage are free unless you set a rate.
+negative cash and spread across the long book by market value (falling back to
+the short book when there are no longs). Both default to `0.0` — shorts and
+leverage are free unless you set a rate.
+
+## Margin / buying power
+
+By default buying power is **unlimited**: any order fills in full and cash may
+go arbitrarily negative (financing above only prices that leverage, it doesn't
+limit it). Set a margin model to constrain what the account can carry:
+
+```rust
+use backtester::margin::MaxLeverage;
+
+ctx.set_margin_model(MaxLeverage::new(1.0)); // cash account
+ctx.set_margin_model(MaxLeverage::new(2.0)); // Reg-T-style 2x gross exposure
+```
+
+`MaxLeverage(n)` caps gross exposure (Σ |position market value|) at `n` ×
+equity. An order that would exceed the cap is **trimmed** to the quantity that
+fits (rounded down to the lot size) and rejected outright once nothing fits.
+Orders that *reduce* exposure always pass, so a book that became over-levered
+through a losing move can still close out — there is no forced margin call;
+de-risking is the strategy's job.
+
+Like slippage and commission, the model is pluggable: implement `MarginModel`
+or pass a closure over `MarginContext` (the proposed signed quantity and
+price, the current position, cash, equity, and the rest of the book's gross
+exposure) returning the allowed signed quantity:
+
+```rust
+use backtester::margin::MarginContext;
+
+// A long-only account: sells may only reduce an existing long.
+ctx.set_margin_model(|m: &MarginContext| {
+    if m.quantity < 0.0 {
+        m.quantity.max(-m.current_qty.max(0.0))
+    } else {
+        m.quantity
+    }
+});
+```
 
 ## Slippage
 

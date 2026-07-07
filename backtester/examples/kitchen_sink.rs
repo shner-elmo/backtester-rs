@@ -3,7 +3,7 @@
 //! see how the pieces fit together:
 //!
 //!   - run window, starting cash, and warm-up
-//!   - a slippage model and a commission model
+//!   - a slippage model, a commission model, and a margin model
 //!   - next-bar-open fills (no same-bar look-ahead)
 //!   - a custom lot size, a delisting threshold + haircut
 //!   - financing: a short-borrow rate and a margin-interest rate
@@ -26,6 +26,7 @@ use backtester::{
     commission::PerShareCommission,
     consolidator::ConsolidatorPeriod,
     indicators::{Next, Rsi, Sma},
+    margin::MaxLeverage,
     run,
     slippage::PercentSlippage,
     Algorithm, Context, FillTiming, Slice,
@@ -63,9 +64,10 @@ impl Algorithm for KitchenSink {
         ctx.set_delist_after_days(5); // force-close a symbol silent for 5 trading days
         ctx.set_delist_haircut(0.30); // recover only 70% of the last print on a delist
 
-        // --- Financing (opt-in; free by default) ---
+        // --- Financing & buying power (opt-in; free and unlimited by default) ---
         ctx.set_short_borrow_rate(0.03); // 3%/yr to borrow a short
         ctx.set_margin_interest_rate(0.06); // 6%/yr on a negative cash balance
+        ctx.set_margin_model(MaxLeverage::new(2.0)); // gross exposure capped at 2x equity
 
         // --- Reporting ---
         ctx.set_track_intraday_equity(true); // per-bar equity marks for intraday drawdown

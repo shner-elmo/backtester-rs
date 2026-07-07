@@ -14,6 +14,7 @@ use crate::{
         read_bars_from_file, sorted_parquet_files,
     },
     error::BacktestError,
+    margin::MarginContext,
     slice::Slice,
     slippage::FillContext,
     stats::{compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade},
@@ -406,6 +407,38 @@ fn execute_order(
         qty.signum() * qty.abs().min(cap)
     } else {
         qty
+    };
+
+    // Buying-power cap from the margin model: shrink (or reject) the fill.
+    // The allowed quantity is clamped to the order's own direction and size —
+    // a model can only trim, never grow or reverse — and a trimmed fill is
+    // rounded down to the lot.
+    let qty = if ctx.margin.unlimited() {
+        qty
+    } else {
+        let equity = ctx.portfolio.total_value(mark_prices);
+        let other_exposure: f64 = ctx
+            .portfolio
+            .positions
+            .values()
+            .filter(|p| p.symbol != order.symbol)
+            .map(|p| p.quantity.abs() * mark_prices.get(&p.symbol).copied().unwrap_or(p.avg_price))
+            .sum();
+        let allowed = ctx.margin.allowed_quantity(&MarginContext {
+            symbol: &order.symbol,
+            quantity: qty,
+            price: exec_price,
+            current_qty,
+            cash: ctx.portfolio.cash,
+            equity,
+            other_exposure,
+        });
+        let allowed = if qty > 0.0 { allowed.clamp(0.0, qty) } else { allowed.clamp(qty, 0.0) };
+        if (allowed - qty).abs() < 1e-9 {
+            qty
+        } else {
+            qty.signum() * (allowed.abs() / ctx.lot_size).trunc() * ctx.lot_size
+        }
     };
 
     if qty.abs() < 1e-9 {

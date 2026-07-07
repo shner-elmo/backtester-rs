@@ -8,6 +8,7 @@ pub mod data;
 pub mod engine;
 pub mod error;
 pub mod indicators;
+pub mod margin;
 pub mod slice;
 pub mod slippage;
 pub mod stats;
@@ -17,6 +18,7 @@ pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentC
 pub use context::{Context, FillTiming};
 pub use engine::{run, run_backtest, BacktestResult};
 pub use error::BacktestError;
+pub use margin::{MarginContext, MarginModel, MaxLeverage, NoMargin};
 pub use slice::Slice;
 pub use slippage::{FillContext, FixedSlippage, NoSlippage, PercentSlippage, SlippageModel};
 pub use stats::{BacktestStats, EquityPoint, Trade};
