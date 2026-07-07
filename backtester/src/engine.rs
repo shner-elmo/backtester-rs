@@ -15,6 +15,7 @@ use crate::{
         RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
     },
     error::BacktestError,
+    logging::LogConfig,
     margin::MarginContext,
     slice::Slice,
     slippage::FillContext,
@@ -97,6 +98,25 @@ impl OpenLifetime {
     }
 }
 
+/// Log a completed round-trip trade (under the `trades` flag) at the moment
+/// it is recorded, whatever closed it — a signal, a delisting, or a split
+/// cash-out.
+fn log_trade(cfg: &LogConfig, t: &Trade) {
+    if cfg.trades {
+        eprintln!(
+            "[trade] {} {} {} qty {:.2}: {:.4} -> {:.4}, pnl {:+.2} ({})",
+            t.exit_time,
+            t.symbol,
+            t.direction,
+            t.quantity,
+            t.entry_price,
+            t.exit_price,
+            t.pnl,
+            t.exit_reason
+        );
+    }
+}
+
 /// Apply a split that executed on `symbol`: rescale the held position
 /// (quantity × ratio, basis ÷ ratio — value invariant), the open-lifetime
 /// ledger, the stored history, and the last known price into post-split
@@ -158,7 +178,9 @@ fn apply_split(
         // holding): the lifetime is over.
         ctx.portfolio.positions.remove(symbol);
         if let Some(lt) = lifetimes.remove(symbol) {
-            trades.push(lt.into_trade(symbol, tick_time, "split"));
+            let trade = lt.into_trade(symbol, tick_time, "split");
+            log_trade(&ctx.log_config, &trade);
+            trades.push(trade);
         }
     }
 }
@@ -348,7 +370,9 @@ fn force_close_delisted(
     lt.close_value += qty.abs() * price;
     lt.realized_pnl += (price - avg) * qty.abs() * qty.signum();
     let lt = lifetimes.remove(symbol).unwrap();
-    trades.push(lt.into_trade(symbol, tick_time, "delisted"));
+    let trade = lt.into_trade(symbol, tick_time, "delisted");
+    log_trade(&ctx.log_config, &trade);
+    trades.push(trade);
 
     ctx.portfolio.apply_fill(symbol, -qty, price);
 }
@@ -466,6 +490,16 @@ fn execute_order(
     };
     let commission = ctx.commission.commission(&fill_ctx);
     *total_commission += commission;
+    if ctx.log_config.trades {
+        eprintln!(
+            "[fill] {} {} {:+.2} @ {:.4}, commission {:.2}",
+            tick_time.to_rfc3339(),
+            order.symbol,
+            qty,
+            fill_price,
+            commission
+        );
+    }
 
     let avg_price = ctx.portfolio.positions.get(&order.symbol).map(|p| p.avg_price).unwrap_or(0.0);
     let new_qty = current_qty + qty;
@@ -500,7 +534,9 @@ fn execute_order(
         let is_full_close = closed_now >= current_qty.abs() - EPSILON;
         if is_full_close {
             let lt = lifetimes.remove(&order.symbol).unwrap();
-            trades.push(lt.into_trade(&order.symbol, tick_time, "signal"));
+            let trade = lt.into_trade(&order.symbol, tick_time, "signal");
+            log_trade(&ctx.log_config, &trade);
+            trades.push(trade);
             if new_qty.abs() > EPSILON {
                 // A flip leaves a residual position in the new direction; it
                 // starts a fresh lifetime.
@@ -578,6 +614,14 @@ fn run_prepared<A: Algorithm>(
     mut ctx: Context,
     data_path: &str,
 ) -> Result<BacktestResult, BacktestError> {
+    // An inverted date range is a configuration mistake, not a data problem:
+    // fail up front instead of silently producing an empty backtest.
+    if let (Some(start), Some(end)) = (ctx.start_date, ctx.end_date) {
+        if start > end {
+            return Err(BacktestError::InvalidDateRange { start, end });
+        }
+    }
+
     let initial_cash = ctx.portfolio.cash;
     let (ticker_map_path, _) = resolve_data_file(data_path, &ctx.ticker_map_file, TICKER_MAP_FILE);
     let ticker_map = load_ticker_map_from(&ticker_map_path)?;
@@ -651,7 +695,53 @@ fn run_prepared<A: Algorithm>(
     if files.is_empty() {
         return Err(BacktestError::NoData { path: data_path.into() });
     }
+
+    // A date range extending beyond the months the data source has is worth
+    // flagging but not fatal: the backtest simply runs over the overlap.
+    // `files` is sorted by (year, month), so the coverage is first..=last.
+    if ctx.log_config.warnings {
+        let months: Vec<(u32, u32)> = files.iter().filter_map(|p| file_year_month(p)).collect();
+        if let (Some(&first), Some(&last)) = (months.first(), months.last()) {
+            if let Some(start) = ctx.start_date {
+                if (start.year() as u32, start.month()) < first {
+                    eprintln!(
+                        "[warn] start date {start} predates the data (first month \
+                         {}-{:02}); the backtest will begin where the data does",
+                        first.0, first.1
+                    );
+                }
+            }
+            if let Some(end) = ctx.end_date {
+                if (end.year() as u32, end.month()) > last {
+                    eprintln!(
+                        "[warn] end date {end} is beyond the data (last month {}-{:02}); \
+                         the backtest will stop where the data does",
+                        last.0, last.1
+                    );
+                }
+            }
+        }
+    }
+
+    if ctx.log_config.run_summary {
+        let mut symbols: Vec<&String> = subscribed.iter().collect();
+        symbols.sort();
+        let fmt = |d: Option<NaiveDate>| d.map_or("open".to_string(), |d| d.to_string());
+        eprintln!(
+            "[backtest] start: {} -> {}, cash {:.2}, warm-up {} bars, symbols {:?}",
+            fmt(ctx.start_date),
+            fmt(ctx.end_date),
+            initial_cash,
+            ctx.warm_up_remaining,
+            symbols
+        );
+    }
+
     let mut mask = None;
+
+    // The last tick processed, across files: the stream must never move
+    // backwards in time (see the check at the top of the tick loop).
+    let mut last_tick_time: Option<DateTime<Utc>> = None;
 
     'files: for file_path in &files {
         // Skip whole months outside the configured date range.
@@ -693,6 +783,29 @@ fn run_prepared<A: Algorithm>(
             let secs = ts_ns / 1_000_000_000;
             let nanos = (ts_ns % 1_000_000_000) as u32;
             let Some(tick_time) = Utc.timestamp_opt(secs, nanos).single() else { continue };
+
+            // Order validation: ticks must be non-decreasing in time. Within a
+            // file the BTreeMap guarantees it, so a violation means a bar was
+            // filed under the wrong month partition. Time can't run backwards
+            // mid-backtest (day-boundary and fill logic would corrupt), so the
+            // offending bars are dropped with a warning.
+            if let Some(prev) = last_tick_time {
+                if tick_time < prev {
+                    if ctx.log_config.warnings {
+                        eprintln!(
+                            "[warn] dropping {} out-of-order bar(s) at {} (stream already at \
+                             {}) in {}",
+                            bars.len(),
+                            tick_time.to_rfc3339(),
+                            prev.to_rfc3339(),
+                            file_path.display()
+                        );
+                    }
+                    continue;
+                }
+            }
+            last_tick_time = Some(tick_time);
+
             participation_used.clear();
             // Trading date in US Eastern, so after-market bars (which cross
             // midnight UTC) stay on the day they belong to.
@@ -718,10 +831,16 @@ fn run_prepared<A: Algorithm>(
             if ctx.warm_up_remaining == 0 {
                 if let Some(prev) = last_date {
                     if tick_date != prev {
-                        equity_curve.push(EquityPoint {
-                            time: prev.to_string(),
-                            equity: ctx.portfolio.total_value(&last_known_prices),
-                        });
+                        let equity = ctx.portfolio.total_value(&last_known_prices);
+                        equity_curve.push(EquityPoint { time: prev.to_string(), equity });
+                        if ctx.log_config.daily_recap {
+                            eprintln!(
+                                "[recap] {prev}: equity {:.2}, cash {:.2}, {} open position(s)",
+                                equity,
+                                ctx.portfolio.cash,
+                                ctx.portfolio.positions.len()
+                            );
+                        }
                         algo.on_end_of_day(&mut ctx);
                     }
                 }
@@ -751,6 +870,9 @@ fn run_prepared<A: Algorithm>(
                         continue;
                     }
                     for (symbol, ratio) in actions {
+                        if ctx.log_config.corporate_events {
+                            eprintln!("[event] {tick_date}: split {symbol}, ratio {ratio}");
+                        }
                         apply_split(
                             &mut ctx,
                             &mut lifetimes,
@@ -798,6 +920,11 @@ fn run_prepared<A: Algorithm>(
                     }
                     for (symbol, amount) in actions {
                         if apply_dividend(&mut ctx, &mut lifetimes, &symbol, amount) {
+                            if ctx.log_config.corporate_events {
+                                eprintln!(
+                                    "[event] {tick_date}: dividend {symbol}, {amount:.4}/share"
+                                );
+                            }
                             algo.on_dividend(&mut ctx, &symbol, amount);
                         }
                     }
@@ -815,6 +942,9 @@ fn run_prepared<A: Algorithm>(
                         continue;
                     }
                     for (old, new) in pairs {
+                        if ctx.log_config.corporate_events {
+                            eprintln!("[event] {tick_date}: rename {old} -> {new}");
+                        }
                         apply_rename(
                             &mut ctx,
                             &mut lifetimes,
@@ -854,6 +984,12 @@ fn run_prepared<A: Algorithm>(
                         .cloned()
                         .collect();
                     for symbol in stale {
+                        if ctx.log_config.corporate_events {
+                            eprintln!(
+                                "[event] {tick_date}: {symbol} delisted (no bars for \
+                                 {delist_after} trading days); position force-closed"
+                            );
+                        }
                         force_close_delisted(
                             &mut ctx,
                             &mut lifetimes,
@@ -973,6 +1109,12 @@ fn run_prepared<A: Algorithm>(
 
             if ctx.warm_up_remaining > 0 {
                 ctx.warm_up_remaining -= 1;
+                if ctx.warm_up_remaining == 0 && ctx.log_config.run_summary {
+                    eprintln!(
+                        "[backtest] warm-up complete after bar at {}",
+                        tick_time.to_rfc3339()
+                    );
+                }
                 continue;
             }
 
@@ -1059,14 +1201,28 @@ fn run_prepared<A: Algorithm>(
     // bar, which the last day doesn't have). Orders placed here have no bar
     // left to fill against and are dropped.
     if let Some(prev) = last_date {
-        equity_curve.push(EquityPoint {
-            time: prev.to_string(),
-            equity: ctx.portfolio.total_value(&last_known_prices),
-        });
+        let equity = ctx.portfolio.total_value(&last_known_prices);
+        equity_curve.push(EquityPoint { time: prev.to_string(), equity });
+        if ctx.log_config.daily_recap {
+            eprintln!(
+                "[recap] {prev}: equity {:.2}, cash {:.2}, {} open position(s)",
+                equity,
+                ctx.portfolio.cash,
+                ctx.portfolio.positions.len()
+            );
+        }
         algo.on_end_of_day(&mut ctx);
     }
 
     let final_equity = ctx.portfolio.total_value(&last_known_prices);
+    if ctx.log_config.run_summary {
+        eprintln!(
+            "[backtest] done: {} completed trade(s), {} open position(s), final equity {:.2}",
+            trades.len(),
+            ctx.portfolio.positions.len(),
+            final_equity
+        );
+    }
 
     let mut open_positions: Vec<OpenPositionSummary> = ctx
         .portfolio
