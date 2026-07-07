@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     algorithm::Algorithm,
     bar::Bar,
-    context::{Context, FillTiming, Order, OrderKind},
+    broker::Position,
+    context::{Context, FillTiming, Order, OrderKind, RestingKind, RestingOrder},
     data::{
-        file_year_month, load_splits, load_ticker_map, read_bars_from_file, sorted_parquet_files,
+        file_year_month, load_dividends, load_renames, load_splits, load_ticker_map,
+        read_bars_from_file, sorted_parquet_files,
     },
     error::BacktestError,
     slice::Slice,
@@ -29,6 +31,11 @@ pub struct BacktestResult {
     pub stats: BacktestStats,
     /// Daily mark-to-market equity, one point per trading day.
     pub equity_curve: Vec<EquityPoint>,
+    /// Per-bar mark-to-market equity (RFC 3339 timestamps), empty unless
+    /// `Context::set_track_intraday_equity(true)` was set. Exposes intraday
+    /// drawdown the daily `equity_curve` can't show.
+    #[serde(default)]
+    pub intraday_equity: Vec<EquityPoint>,
     /// Positions still open at the end, marked at the last known price.
     pub open_positions: Vec<OpenPositionSummary>,
     /// Completed round trips (rebalance fills netted per position lifetime).
@@ -150,9 +157,160 @@ fn apply_split(
     }
 }
 
+/// Apply a cash dividend that went ex on `symbol`: credit `quantity * amount`
+/// to cash (a debit for shorts) and attribute that income to the open
+/// position's PnL, so the eventual round trip reports its total return. Symbols
+/// not held on the ex-date pay nothing. Returns whether a dividend was paid, so
+/// the caller only fires `on_dividend` when it actually was.
+fn apply_dividend(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    symbol: &str,
+    amount: f64,
+) -> bool {
+    let Some(qty) = ctx.portfolio.positions.get(symbol).map(|p| p.quantity) else { return false };
+    let cash_flow = qty * amount;
+    ctx.portfolio.cash += cash_flow;
+    if let Some(lt) = lifetimes.get_mut(symbol) {
+        lt.realized_pnl += cash_flow;
+    }
+    true
+}
+
+/// Accrue one trading day of financing on positions carried into a new day: a
+/// borrow fee on shorts and margin interest on any negative cash balance, both
+/// at `annual_rate / 252`. Charges are deducted from cash and attributed to
+/// position PnL — shorts bear their own borrow fee; margin interest is spread
+/// across the long book by market value — so the accounting identity holds.
+/// No-op unless a financing rate is set.
+fn apply_financing(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    last_known_prices: &HashMap<String, f64>,
+) {
+    if ctx.short_borrow_rate <= 0.0 && ctx.margin_interest_rate <= 0.0 {
+        return;
+    }
+    let price_of = |sym: &String, avg: f64| last_known_prices.get(sym).copied().unwrap_or(avg);
+
+    // Borrow fee on each short position's market value.
+    if ctx.short_borrow_rate > 0.0 {
+        let daily = ctx.short_borrow_rate / 252.0;
+        let shorts: Vec<(String, f64)> = ctx
+            .portfolio
+            .positions
+            .values()
+            .filter(|p| p.quantity < 0.0)
+            .map(|p| (p.symbol.clone(), p.quantity.abs() * price_of(&p.symbol, p.avg_price)))
+            .collect();
+        for (sym, market_value) in shorts {
+            let fee = daily * market_value;
+            ctx.portfolio.cash -= fee;
+            if let Some(lt) = lifetimes.get_mut(&sym) {
+                lt.realized_pnl -= fee;
+            }
+        }
+    }
+
+    // Margin interest on a negative cash balance, spread across long positions
+    // by market value (they are what the borrowing funds).
+    if ctx.margin_interest_rate > 0.0 && ctx.portfolio.cash < 0.0 {
+        let interest = ctx.margin_interest_rate / 252.0 * (-ctx.portfolio.cash);
+        let longs: Vec<(String, f64)> = ctx
+            .portfolio
+            .positions
+            .values()
+            .filter(|p| p.quantity > 0.0)
+            .map(|p| (p.symbol.clone(), p.quantity * price_of(&p.symbol, p.avg_price)))
+            .collect();
+        let total_mv: f64 = longs.iter().map(|(_, mv)| mv).sum();
+        if total_mv > 0.0 {
+            ctx.portfolio.cash -= interest;
+            for (sym, market_value) in longs {
+                let share = interest * (market_value / total_mv);
+                if let Some(lt) = lifetimes.get_mut(&sym) {
+                    lt.realized_pnl -= share;
+                }
+            }
+        }
+    }
+}
+
+/// Transfer all state for a renamed symbol from `old` to `new`: the held
+/// position, the PnL ledger, the stored history, and the last known price. No
+/// cash moves and no trade is emitted — a rename is a relabeling, not a round
+/// trip. `new` is already subscribed (all rename targets are subscribed up
+/// front so their bars stream), so this only has to move the bookkeeping.
+/// Renames target a fresh ticker in practice; the merge branches are defensive
+/// for the rare case the destination is already held.
+fn apply_rename(
+    ctx: &mut Context,
+    lifetimes: &mut HashMap<String, OpenLifetime>,
+    last_known_prices: &mut HashMap<String, f64>,
+    last_seen_day: &mut HashMap<String, u64>,
+    old: &str,
+    new: &str,
+) {
+    if old == new {
+        return;
+    }
+
+    if let Some(hist) = ctx.history_store.remove(old) {
+        ctx.history_store.entry(new.to_string()).or_insert(hist);
+    }
+    if let Some(price) = last_known_prices.remove(old) {
+        last_known_prices.entry(new.to_string()).or_insert(price);
+    }
+    if let Some(day) = last_seen_day.remove(old) {
+        let entry = last_seen_day.entry(new.to_string()).or_insert(day);
+        *entry = (*entry).max(day);
+    }
+
+    // Position: move to `new`, weight-averaging the basis if it is somehow
+    // already held in the same direction (preserves total unrealized PnL).
+    if let Some(mut pos) = ctx.portfolio.positions.remove(old) {
+        pos.symbol = new.to_string();
+        let merged = match ctx.portfolio.positions.remove(new) {
+            None => pos,
+            Some(existing) => {
+                let qty = existing.quantity + pos.quantity;
+                let avg = if qty.abs() < 1e-9 {
+                    0.0
+                } else if existing.quantity.signum() == pos.quantity.signum() {
+                    (existing.quantity * existing.avg_price + pos.quantity * pos.avg_price) / qty
+                } else if existing.quantity.abs() >= pos.quantity.abs() {
+                    existing.avg_price
+                } else {
+                    pos.avg_price
+                };
+                Position { symbol: new.to_string(), quantity: qty, avg_price: avg }
+            }
+        };
+        if merged.quantity.abs() > 1e-9 {
+            ctx.portfolio.positions.insert(new.to_string(), merged);
+        }
+    }
+
+    // PnL ledger: move (or fold) the open lifetime so realized PnL is preserved.
+    if let Some(lt_old) = lifetimes.remove(old) {
+        match lifetimes.get_mut(new) {
+            None => {
+                lifetimes.insert(new.to_string(), lt_old);
+            }
+            Some(lt_new) => {
+                lt_new.entry_qty += lt_old.entry_qty;
+                lt_new.entry_value += lt_old.entry_value;
+                lt_new.closed_qty += lt_old.closed_qty;
+                lt_new.close_value += lt_old.close_value;
+                lt_new.realized_pnl += lt_old.realized_pnl;
+            }
+        }
+    }
+}
+
 /// Force-close a position in a symbol that stopped trading: fill the whole
-/// quantity at the last known price with no commission, and emit the closing
-/// trade with `exit_reason: "delisted"`.
+/// quantity at the last known price (less the configured delist haircut) with
+/// no commission, and emit the closing trade with `exit_reason: "delisted"`.
 fn force_close_delisted(
     ctx: &mut Context,
     lifetimes: &mut HashMap<String, OpenLifetime>,
@@ -164,7 +322,9 @@ fn force_close_delisted(
     let Some(pos) = ctx.portfolio.positions.get(symbol) else { return };
     let qty = pos.quantity;
     let avg = pos.avg_price;
-    let price = last_known_prices.get(symbol).copied().unwrap_or(avg);
+    // Recover the last print less the haircut, so a bankruptcy writes down the
+    // position instead of liquidating at an optimistic final quote.
+    let price = last_known_prices.get(symbol).copied().unwrap_or(avg) * (1.0 - ctx.delist_haircut);
 
     let lt = lifetimes
         .entry(symbol.to_string())
@@ -186,6 +346,10 @@ fn force_close_delisted(
 /// the pre-slippage reference/fill price for this order's symbol (the current
 /// bar's close under [`FillTiming::CurrentBarClose`], the next bar's open under
 /// [`FillTiming::NextBarOpen`]). `fill_bar` is the bar the fill prints against.
+///
+/// Returns the signed quantity actually filled (0.0 if none), which is less
+/// than requested when the volume-participation cap bites — the caller uses it
+/// to shrink a partially filled resting order.
 #[allow(clippy::too_many_arguments)]
 fn execute_order(
     ctx: &mut Context,
@@ -197,7 +361,7 @@ fn execute_order(
     exec_price: f64,
     fill_bar: &Bar,
     tick_time: DateTime<Utc>,
-) {
+) -> f64 {
     let current_qty = ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
 
     let qty = match order.kind {
@@ -214,8 +378,17 @@ fn execute_order(
         OrderKind::Liquidate => -current_qty,
     };
 
+    // Volume-participation cap: a single fill can't take more than the
+    // configured fraction of the bar's volume. Unlimited when the fraction is 0.
+    let qty = if ctx.max_volume_participation > 0.0 {
+        let cap = ctx.max_volume_participation * fill_bar.volume as f64;
+        qty.signum() * qty.abs().min(cap)
+    } else {
+        qty
+    };
+
     if qty.abs() < 1e-9 {
-        return;
+        return 0.0;
     }
 
     // Actual execution price after the user's slippage model. Sizing (above)
@@ -273,6 +446,34 @@ fn execute_order(
 
     ctx.portfolio.apply_fill(&order.symbol, qty, fill_price);
     ctx.portfolio.cash -= commission;
+    qty
+}
+
+/// Given a resting order and the bar it is being tested against, return the
+/// pre-slippage fill price if the bar's range triggers it, else `None`. A limit
+/// fills at its price or the (better) bar open; a triggered stop fills at its
+/// price or the (worse) bar open, modeling a gap through the stop.
+fn resting_fill_price(kind: &RestingKind, qty: f64, bar: &Bar) -> Option<f64> {
+    match *kind {
+        RestingKind::Limit(price) => {
+            if qty > 0.0 && bar.low <= price {
+                Some(price.min(bar.open))
+            } else if qty < 0.0 && bar.high >= price {
+                Some(price.max(bar.open))
+            } else {
+                None
+            }
+        }
+        RestingKind::Stop(price) => {
+            if qty > 0.0 && bar.high >= price {
+                Some(price.max(bar.open))
+            } else if qty < 0.0 && bar.low <= price {
+                Some(price.min(bar.open))
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Run a backtest and return its full results without printing anything.
@@ -285,11 +486,24 @@ pub fn run_backtest<A: Algorithm>(
 
     let initial_cash = ctx.portfolio.cash;
     let ticker_map = load_ticker_map(data_path)?;
-    let subscribed = ctx.subscribed_symbols.clone();
+    let mut subscribed = ctx.subscribed_symbols.clone();
+
+    // Ticker renames, queued by effective date. Subscribe every rename target
+    // up front so its bars stream from the start (the position is only
+    // transferred on the effective date); this also covers a successor that
+    // begins trading in the same month-file as the rename.
+    let mut pending_renames: BTreeMap<NaiveDate, Vec<(String, String)>> = BTreeMap::new();
+    for (date, pairs) in load_renames(data_path, &subscribed)? {
+        for (old, new) in pairs {
+            subscribed.insert(new.clone());
+            pending_renames.entry(date).or_default().push((old, new));
+        }
+    }
 
     let mut trades: Vec<Trade> = Vec::new();
     let mut lifetimes: HashMap<String, OpenLifetime> = HashMap::new();
     let mut equity_curve: Vec<EquityPoint> = Vec::new();
+    let mut intraday_equity: Vec<EquityPoint> = Vec::new();
     let mut last_date: Option<NaiveDate> = None;
     let mut last_known_prices: HashMap<String, f64> = HashMap::new();
     let mut total_commission = 0.0;
@@ -298,11 +512,23 @@ pub fn run_backtest<A: Algorithm>(
     // symbol (empty and unused under the default CurrentBarClose).
     let mut deferred: HashMap<String, Vec<Order>> = HashMap::new();
 
+    // Resting limit/stop orders, one queue per symbol, filled intrabar off the
+    // bar's range until triggered or the backtest ends.
+    let mut resting_book: HashMap<String, Vec<RestingOrder>> = HashMap::new();
+
     // Splits for subscribed symbols, queued by execution date.
     let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
     for (symbol, by_date) in load_splits(data_path, &subscribed)? {
         for (date, ratio) in by_date {
             pending_splits.entry(date).or_default().push((symbol.clone(), ratio));
+        }
+    }
+
+    // Cash dividends for subscribed symbols, queued by ex-dividend date.
+    let mut pending_dividends: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
+    for (symbol, by_date) in load_dividends(data_path, &subscribed)? {
+        for (date, amount) in by_date {
+            pending_dividends.entry(date).or_default().push((symbol.clone(), amount));
         }
     }
 
@@ -336,6 +562,15 @@ pub fn run_backtest<A: Algorithm>(
             }
         }
 
+        // Buffer one month's *subscribed* bars into a timestamp-ordered map.
+        // This is intentionally order-agnostic: the map re-sorts whatever order
+        // the file yields rows in (Polygon flat files are grouped by ticker,
+        // not globally by time), so it is correct without any sort guarantee.
+        // A k-way merge that streamed instead of buffering would only pay off
+        // for a very wide subscribed universe *and* would need a guaranteed
+        // intra-file time sort; measured peak RSS is ~42 MB over a full year of
+        // one symbol, so the buffer stays. Memory scales with the subscribed
+        // set, not the whole dataset, because the filter runs before the push.
         let mut tick_map: BTreeMap<i64, Vec<(String, Bar)>> = BTreeMap::new();
         read_bars_from_file(file_path, &ticker_map, &mut mask, |symbol, bar| {
             if subscribed.contains(&symbol) {
@@ -418,6 +653,63 @@ pub fn run_backtest<A: Algorithm>(
                     }
                 }
 
+                // Cash dividends going ex on or before today, credited to any
+                // position held on the ex-date. Same day-boundary timing as
+                // splits: after the previous day's equity mark, before today's
+                // bars move prices.
+                while let Some((&date, _)) = pending_dividends.first_key_value() {
+                    if date > tick_date {
+                        break;
+                    }
+                    let (_, actions) = pending_dividends.pop_first().unwrap();
+                    if is_first_tick {
+                        continue;
+                    }
+                    for (symbol, amount) in actions {
+                        if apply_dividend(&mut ctx, &mut lifetimes, &symbol, amount) {
+                            algo.on_dividend(&mut ctx, &symbol, amount);
+                        }
+                    }
+                }
+
+                // Ticker renames effective on or before today: transfer the
+                // position and ledger from the old symbol to the new one before
+                // the delist scan would otherwise force-liquidate the old.
+                while let Some((&date, _)) = pending_renames.first_key_value() {
+                    if date > tick_date {
+                        break;
+                    }
+                    let (_, pairs) = pending_renames.pop_first().unwrap();
+                    if is_first_tick {
+                        continue;
+                    }
+                    for (old, new) in pairs {
+                        apply_rename(
+                            &mut ctx,
+                            &mut lifetimes,
+                            &mut last_known_prices,
+                            &mut last_seen_day,
+                            &old,
+                            &new,
+                        );
+                        // Carry resting orders over to the new ticker, retagging
+                        // their symbol so they still fill.
+                        if let Some(mut orders) = resting_book.remove(&old) {
+                            for o in &mut orders {
+                                o.symbol = new.clone();
+                            }
+                            resting_book.entry(new.clone()).or_default().extend(orders);
+                        }
+                        algo.on_rename(&mut ctx, &old, &new);
+                    }
+                }
+
+                // Accrue a day of financing on positions carried into today
+                // (borrow fees on shorts, margin interest on negative cash).
+                if !is_first_tick {
+                    apply_financing(&mut ctx, &mut lifetimes, &last_known_prices);
+                }
+
                 let delist_after = ctx.delist_after_days as u64;
                 if delist_after > 0 && !ctx.portfolio.positions.is_empty() {
                     let stale: Vec<String> = ctx
@@ -439,9 +731,10 @@ pub fn run_backtest<A: Algorithm>(
                             &symbol,
                             tick_time,
                         );
-                        // A pending next-bar order can never fill against a
-                        // symbol that stopped trading.
+                        // Pending next-bar and resting orders can never fill
+                        // against a symbol that stopped trading.
                         deferred.remove(&symbol);
+                        resting_book.remove(&symbol);
                         algo.on_delisted(&mut ctx, &symbol);
                     }
                 }
@@ -473,6 +766,45 @@ pub fn run_backtest<A: Algorithm>(
                             bar,
                             tick_time,
                         );
+                    }
+                }
+            }
+
+            // Resting limit/stop orders: fill (possibly partially) any whose
+            // trigger this bar's range trades through; keep the remainder
+            // resting. Decided on prior bars, so filling here is not look-ahead.
+            if !resting_book.is_empty() {
+                for (symbol, bar) in &bars {
+                    let Some(orders) = resting_book.remove(symbol) else { continue };
+                    let mut still_resting = Vec::new();
+                    for mut ro in orders {
+                        match resting_fill_price(&ro.kind, ro.qty, bar) {
+                            Some(price) => {
+                                let mkt = Order {
+                                    symbol: symbol.clone(),
+                                    kind: OrderKind::Market(ro.qty),
+                                };
+                                let filled = execute_order(
+                                    &mut ctx,
+                                    &mut lifetimes,
+                                    &mut trades,
+                                    &mut total_commission,
+                                    &mkt,
+                                    &last_known_prices,
+                                    price,
+                                    bar,
+                                    tick_time,
+                                );
+                                ro.qty -= filled;
+                                if ro.qty.abs() > 1e-9 {
+                                    still_resting.push(ro);
+                                }
+                            }
+                            None => still_resting.push(ro),
+                        }
+                    }
+                    if !still_resting.is_empty() {
+                        resting_book.insert(symbol.clone(), still_resting);
                     }
                 }
             }
@@ -555,6 +887,20 @@ pub fn run_backtest<A: Algorithm>(
                     }
                 }
             }
+
+            // Book any resting limit/stop orders placed this bar; they start
+            // filling from the symbol's next bar (checked at the top of the loop).
+            for ro in std::mem::take(&mut ctx.resting_orders) {
+                resting_book.entry(ro.symbol.clone()).or_default().push(ro);
+            }
+
+            // Optional per-bar equity mark, after this bar's fills.
+            if ctx.track_intraday_equity {
+                intraday_equity.push(EquityPoint {
+                    time: tick_time.to_rfc3339(),
+                    equity: ctx.portfolio.total_value(&last_known_prices),
+                });
+            }
         }
     }
 
@@ -600,6 +946,7 @@ pub fn run_backtest<A: Algorithm>(
         total_commission,
         stats,
         equity_curve,
+        intraday_equity,
         open_positions,
         trades,
     })

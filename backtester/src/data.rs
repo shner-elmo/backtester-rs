@@ -78,6 +78,116 @@ pub fn load_splits(
     Ok(splits)
 }
 
+/// Cash dividends per symbol: ex-dividend date → cash amount per share. Reads
+/// the Polygon-format `get_dividends.json` next to `encoded_tickers.json`;
+/// returns an empty map when the file doesn't exist (e.g. the test fixture).
+/// Only dividends for `symbols` are kept.
+///
+/// The real dividends file is large (hundreds of MB across the whole market),
+/// so this streams the JSON array one record at a time and keeps only the
+/// matches, rather than deserializing the entire file into a `Vec` first.
+pub fn load_dividends(
+    data_root: &str,
+    symbols: &std::collections::HashSet<String>,
+) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
+    use std::fmt;
+
+    use serde::de::{Deserializer, SeqAccess, Visitor};
+
+    #[derive(serde::Deserialize)]
+    struct DividendRecord {
+        ex_dividend_date: String,
+        ticker: String,
+        cash_amount: f64,
+    }
+
+    type DividendMap = HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>;
+
+    let path = PathBuf::from(format!("{}/get_dividends.json", data_root));
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(source) => return Err(BacktestError::Io { path, source }),
+    };
+
+    // A seq visitor that filters records as they stream in, so peak memory is
+    // the matched dividends, not the whole file.
+    struct FilterVisitor<'a> {
+        symbols: &'a std::collections::HashSet<String>,
+    }
+    impl<'de> Visitor<'de> for FilterVisitor<'_> {
+        type Value = DividendMap;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("an array of dividend records")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<DividendMap, A::Error> {
+            let mut divs: DividendMap = HashMap::new();
+            while let Some(r) = seq.next_element::<DividendRecord>()? {
+                if !self.symbols.contains(&r.ticker) || r.cash_amount == 0.0 {
+                    continue;
+                }
+                let Ok(date) = r.ex_dividend_date.parse::<chrono::NaiveDate>() else {
+                    continue;
+                };
+                // Same-day duplicate records sum together (defensive).
+                *divs.entry(r.ticker).or_default().entry(date).or_insert(0.0) += r.cash_amount;
+            }
+            Ok(divs)
+        }
+    }
+
+    let reader = std::io::BufReader::new(file);
+    let mut de = serde_json::Deserializer::from_reader(reader);
+    de.deserialize_seq(FilterVisitor { symbols }).map_err(|e| BacktestError::Json {
+        path,
+        message: format!("not valid dividends JSON: {e}"),
+    })
+}
+
+/// Ticker renames keyed by effective date → list of `(old, new)` symbol pairs.
+/// Reads `ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
+/// `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` records; returns an
+/// empty map when the file doesn't exist. Only renames whose `old` symbol is
+/// subscribed are kept.
+pub fn load_renames(
+    data_root: &str,
+    symbols: &std::collections::HashSet<String>,
+) -> Result<std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>>, BacktestError> {
+    #[derive(serde::Deserialize)]
+    struct RenameRecord {
+        date: String,
+        old: String,
+        new: String,
+    }
+
+    let path = PathBuf::from(format!("{}/ticker_renames.json", data_root));
+    let content = match read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(std::collections::BTreeMap::new())
+        }
+        Err(source) => return Err(BacktestError::Io { path, source }),
+    };
+    let records: Vec<RenameRecord> = serde_json::from_str(&content).map_err(|e| {
+        BacktestError::Json { path, message: format!("not valid renames JSON: {e}") }
+    })?;
+
+    let mut renames: std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for r in records {
+        if !symbols.contains(&r.old) {
+            continue;
+        }
+        let Ok(date) = r.date.parse::<chrono::NaiveDate>() else {
+            continue;
+        };
+        renames.entry(date).or_default().push((r.old, r.new));
+    }
+    Ok(renames)
+}
+
 /// Parse a directory name that is either a bare number (`2023`) or a Hive
 /// partition (`year=2023`), returning the numeric part.
 fn dir_number(component: &std::ffi::OsStr) -> Option<u32> {

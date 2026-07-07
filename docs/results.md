@@ -61,6 +61,7 @@ Top-level shape:
   "stats": { "trade_count": 92, "win_rate": 0.24, "total_pnl": -1402.1,
              "profit_factor": 0.88, "max_drawdown": 0.036, "sharpe_ratio": -2.01 },
   "equity_curve": [ { "time": "2023-01-02", "equity": 100000.0 }, ... ],
+  "intraday_equity": [ ],
   "open_positions": [ { "symbol": "AAPL", "quantity": 754.0, "avg_price": 130.73,
                         "last_price": 130.9, "market_value": 98698.6,
                         "unrealized_pnl": 128.2, "realized_pnl": -1402.1 }, ... ],
@@ -75,6 +76,9 @@ Top-level shape:
 
 - `equity_curve` — one point per trading day (US Eastern dates), starting at
   the initial cash and ending at the final equity.
+- `intraday_equity` — a per-bar mark-to-market curve (RFC 3339 timestamps),
+  empty unless `set_track_intraday_equity(true)` was set. Exposes intraday
+  drawdown the daily curve can't show; stats stay computed from the daily curve.
 - `open_positions` — positions still held when the run ended, marked at the
   last known price. `realized_pnl` is PnL already realized by partial unwinds
   during the *still-open* lifetime — it isn't part of any completed trade, so
@@ -92,9 +96,13 @@ Top-level shape:
 The fastest way to look at a result:
 
 ```bash
-cargo run -p ui               # serves the newest backtest_result_*.json in CWD
+cargo run -p ui               # serves every backtest_result_*.json in CWD
 # open http://localhost:3001
 ```
+
+The header has a picker to switch between all `backtest_result_*.json` files in
+the directory (newest selected first); pass an explicit path
+(`cargo run -p ui -- result.json`) to pin the dashboard to a single file.
 
 See [visualization.md](./visualization.md#ui--the-results-dashboard).
 
@@ -116,8 +124,10 @@ jq -r '.equity_curve[] | "\(.time),\(.equity)"' backtest_result_*.json
 
 ## Caveats
 
-- Fills happen at the bar **close** (plus slippage); there is no intrabar
-  execution, order book, or partial-fill modeling.
+- Market fills happen at the bar **close** (or the next open under
+  `NextBarOpen`), plus slippage; resting limit/stop orders fill intrabar off the
+  bar's range, and `set_max_volume_participation` models partial fills. There is
+  no order-book depth or queue modeling.
 - With no slippage/commission configured, results are optimistic relative to
   live trading — see [backtesting.md](./backtesting.md#slippage) and
   [backtesting.md](./backtesting.md#commission).

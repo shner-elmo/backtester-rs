@@ -36,6 +36,25 @@ pub(crate) struct Order {
     pub kind: OrderKind,
 }
 
+/// A resting order that fills intrabar when the price trades through its
+/// trigger, rather than at the bar close/open like a market order.
+pub(crate) struct RestingOrder {
+    pub symbol: String,
+    /// Remaining signed quantity (shrinks as partial fills chip away at it).
+    pub qty: f64,
+    pub kind: RestingKind,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RestingKind {
+    /// Fill at this price or better: a buy needs `bar.low <= price`, a sell
+    /// needs `bar.high >= price`.
+    Limit(f64),
+    /// Trigger to a market fill when the price reaches this level: a buy needs
+    /// `bar.high >= price`, a sell needs `bar.low <= price`.
+    Stop(f64),
+}
+
 pub(crate) struct ScheduledTimeEntry {
     /// Target time as minutes since midnight ET, precomputed at registration.
     pub target_min: u32,
@@ -53,11 +72,17 @@ pub struct Context {
     pub(crate) end_date: Option<NaiveDate>,
     pub(crate) subscribed_symbols: HashSet<String>,
     pub(crate) pending_orders: Vec<Order>,
+    pub(crate) resting_orders: Vec<RestingOrder>,
+    pub(crate) max_volume_participation: f64,
     pub(crate) max_history: usize,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) lot_size: f64,
     pub(crate) delist_after_days: usize,
+    pub(crate) delist_haircut: f64,
+    pub(crate) margin_interest_rate: f64,
+    pub(crate) short_borrow_rate: f64,
+    pub(crate) track_intraday_equity: bool,
     pub(crate) fill_timing: FillTiming,
 }
 
@@ -73,11 +98,17 @@ impl Default for Context {
             end_date: None,
             subscribed_symbols: HashSet::new(),
             pending_orders: Vec::new(),
+            resting_orders: Vec::new(),
+            max_volume_participation: 0.0,
             max_history: 500,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             lot_size: 1.0,
             delist_after_days: 5,
+            delist_haircut: 0.0,
+            margin_interest_rate: 0.0,
+            short_borrow_rate: 0.0,
+            track_intraday_equity: false,
             fill_timing: FillTiming::default(),
         }
     }
@@ -128,6 +159,43 @@ impl Context {
     /// `0` to disable.
     pub fn set_delist_after_days(&mut self, days: usize) {
         self.delist_after_days = days;
+    }
+
+    /// Fraction knocked off the last known price when a delisted position is
+    /// force-liquidated, modeling the gap between the last print and what you
+    /// actually recover (a bankruptcy rarely liquidates at its final quote).
+    /// `0.0` (the default) fills at the last price; `1.0` writes the position
+    /// off entirely. Must be in `0.0..=1.0`.
+    pub fn set_delist_haircut(&mut self, haircut: f64) {
+        assert!((0.0..=1.0).contains(&haircut), "delist haircut must be in 0.0..=1.0");
+        self.delist_haircut = haircut;
+    }
+
+    /// Annual interest rate charged on a negative cash balance (buying on
+    /// margin). Accrues at `rate / 252` per trading day on any positions
+    /// carried into a new day, spread across the long book by market value.
+    /// Defaults to `0.0` (free leverage). Must be non-negative.
+    pub fn set_margin_interest_rate(&mut self, annual_rate: f64) {
+        assert!(annual_rate >= 0.0, "margin interest rate must be non-negative");
+        self.margin_interest_rate = annual_rate;
+    }
+
+    /// Annual borrow fee charged on the market value of short positions.
+    /// Accrues at `rate / 252` per trading day on any short carried into a new
+    /// day and is attributed to that short's PnL. Defaults to `0.0` (free to
+    /// borrow). Must be non-negative.
+    pub fn set_short_borrow_rate(&mut self, annual_rate: f64) {
+        assert!(annual_rate >= 0.0, "short borrow rate must be non-negative");
+        self.short_borrow_rate = annual_rate;
+    }
+
+    /// Record a mark-to-market equity point on **every bar** (into
+    /// `BacktestResult::intraday_equity`), not just at day boundaries, so
+    /// drawdown that opens and recovers within a single day is visible. Off by
+    /// default because it can add a lot of points on minute data; the headline
+    /// `equity_curve` and its stats stay daily either way.
+    pub fn set_track_intraday_equity(&mut self, enabled: bool) {
+        self.track_intraday_equity = enabled;
     }
 
     /// Choose when orders fill: at the current bar's close (the default,
@@ -212,6 +280,39 @@ impl Context {
 
     pub fn liquidate(&mut self, symbol: &str) {
         self.pending_orders.push(Order { symbol: symbol.to_string(), kind: OrderKind::Liquidate });
+    }
+
+    /// Place a resting **limit** order: a buy (`qty > 0`) fills only at
+    /// `limit_price` or lower, a sell (`qty < 0`) at `limit_price` or higher.
+    /// It rests across bars until the price trades through the limit (or the
+    /// backtest ends), filling intrabar off the bar's range — independent of
+    /// `set_fill_timing`.
+    pub fn limit_order(&mut self, symbol: &str, qty: f64, limit_price: f64) {
+        self.resting_orders.push(RestingOrder {
+            symbol: symbol.to_string(),
+            qty,
+            kind: RestingKind::Limit(limit_price),
+        });
+    }
+
+    /// Place a resting **stop** order: a buy (`qty > 0`) triggers to a market
+    /// fill when the price rises to `stop_price`, a sell (`qty < 0`) when it
+    /// falls to it. Rests across bars until triggered (or the backtest ends).
+    pub fn stop_order(&mut self, symbol: &str, qty: f64, stop_price: f64) {
+        self.resting_orders.push(RestingOrder {
+            symbol: symbol.to_string(),
+            qty,
+            kind: RestingKind::Stop(stop_price),
+        });
+    }
+
+    /// Cap every fill at this fraction of the filling bar's volume, modeling
+    /// partial fills — a resting order's unfilled remainder carries to the next
+    /// bar; a market order's remainder is dropped. `0.0` (the default) means
+    /// unlimited: fills ignore bar volume. Must be non-negative.
+    pub fn set_max_volume_participation(&mut self, fraction: f64) {
+        assert!(fraction >= 0.0, "volume participation must be non-negative");
+        self.max_volume_participation = fraction;
     }
 }
 

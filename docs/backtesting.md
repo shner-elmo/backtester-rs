@@ -13,6 +13,8 @@ pub trait Algorithm {
     fn on_end_of_day(&mut self, _ctx: &mut Context) {}     // optional, default no-op
     fn on_split(&mut self, _ctx: &mut Context, _symbol: &str, _ratio: f64) {} // optional
     fn on_delisted(&mut self, _ctx: &mut Context, _symbol: &str) {}           // optional
+    fn on_dividend(&mut self, _ctx: &mut Context, _symbol: &str, _amount: f64) {} // optional
+    fn on_rename(&mut self, _ctx: &mut Context, _old: &str, _new: &str) {}    // optional
 }
 ```
 
@@ -79,11 +81,18 @@ Configure the run and interact with the portfolio through `ctx`:
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |
+| `limit_order(symbol, qty, price)` | Resting limit order — see [Order types](#order-types) |
+| `stop_order(symbol, qty, price)` | Resting stop order — see [Order types](#order-types) |
 | `set_slippage(model)` | Fill-price friction — see [Slippage](#slippage) |
 | `set_commission(model)` | Cash charge per fill — see [Commission](#commission) |
-| `set_fill_timing(timing)` | When orders fill — see [Fill timing](#fill-timing) |
+| `set_fill_timing(timing)` | When market orders fill — see [Fill timing](#fill-timing) |
+| `set_max_volume_participation(f)` | Cap each fill at fraction `f` of bar volume (partial fills; default `0.0` = off) |
 | `set_lot_size(lot)` | Share rounding for `set_holdings` (default `1.0` = whole shares) |
+| `set_margin_interest_rate(annual)` | Interest on a negative cash balance — see [Financing](#financing) |
+| `set_short_borrow_rate(annual)` | Borrow fee on short market value — see [Financing](#financing) |
 | `set_delist_after_days(n)` | Force-close positions in symbols silent for `n` trading days (default 5, `0` = off) |
+| `set_delist_haircut(fraction)` | Write-down applied to the forced-liquidation price (default `0.0`) |
+| `set_track_intraday_equity(b)` | Record a per-bar equity mark into `intraday_equity` (default off) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling 500-bar window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
@@ -114,6 +123,45 @@ no next bar), and pending orders are dropped if the symbol is delisted first.
 `set_holdings` sizes against prices known when the order was placed, so no
 information from the fill bar leaks into the decision. Slippage and commission
 apply to the open fill exactly as they do to a close fill.
+
+## Order types
+
+Alongside the market orders (`market_order`, `set_holdings`, `liquidate`) that
+follow the [fill-timing](#fill-timing) model, two order types rest across bars
+and fill **intrabar** off the bar's range, independent of `set_fill_timing`:
+
+```rust
+ctx.limit_order("AAPL", 100.0, 180.0);  // buy 100 at 180 or better
+ctx.stop_order("AAPL", -100.0, 170.0);  // stop-loss: sell 100 if it trades down to 170
+```
+
+- **Limit** — a buy (`qty > 0`) fills only when `bar.low <= price`, a sell when
+  `bar.high >= price`, at the limit price (or the better bar open if it gapped
+  through). It rests until touched or the backtest ends.
+- **Stop** — a buy triggers to a market fill when `bar.high >= price`, a sell
+  when `bar.low <= price`, filling at the stop (or the worse bar open on a gap).
+
+### Partial fills
+
+`set_max_volume_participation(fraction)` caps every fill at that fraction of the
+filling bar's volume. A resting order's unfilled remainder carries to the next
+bar; a market order's remainder is dropped. The default `0.0` means unlimited
+(fills ignore bar volume).
+
+## Financing
+
+Two optional financing costs accrue at `annual_rate / 252` per trading day on
+positions carried into a new day, deducted from cash and attributed to position
+PnL (so the accounting identity holds):
+
+```rust
+ctx.set_short_borrow_rate(0.03);      // 3%/yr borrow fee on short market value
+ctx.set_margin_interest_rate(0.06);   // 6%/yr interest on a negative cash balance
+```
+
+The borrow fee is charged per short position; margin interest is charged on any
+negative cash and spread across the long book by market value. Both default to
+`0.0` — shorts and leverage are free unless you set a rate.
 
 ## Slippage
 
@@ -211,19 +259,49 @@ The daily equity curve stays continuous across a split (only real market
 moves show), which is locked in by tests and was validated on the real
 dataset across CELH's 2023-11-15 split.
 
-### Delistings & ticker changes
+### Delistings
 
-The dataset can't distinguish a delisting from a ticker rename or a buyout —
-in all three the old symbol just stops producing bars. The engine treats them
-uniformly: a **held** symbol with no bars for `set_delist_after_days` (default
-5) consecutive trading days is force-liquidated at its last known price, with
-no commission. The closing trade carries `exit_reason: "delisted"` and
-`on_delisted(ctx, symbol)` fires. This is approximately right for cash
-buyouts, realizes the correct PnL for renames (only the position lifetime
-resets), and closes the book on true delistings — note the last traded price
-of a bankruptcy delisting is usually optimistic.
+By default the price feed can't distinguish a delisting from a buyout — the
+symbol just stops producing bars. A **held** symbol with no bars for
+`set_delist_after_days` (default 5) consecutive trading days is force-liquidated
+at its last known price, with no commission. The closing trade carries
+`exit_reason: "delisted"` and `on_delisted(ctx, symbol)` fires. This is
+approximately right for cash buyouts and closes the book on true delistings.
 
-Cash dividends are **not** applied yet (see `TODO.md`).
+The last traded price of a bankruptcy delisting is usually optimistic, so
+`set_delist_haircut(fraction)` knocks a fraction off the forced-liquidation
+price (`0.0` by default, `1.0` writes the position off entirely) — the fill
+prints at `last_price * (1 - fraction)`.
+
+### Ticker renames
+
+A rename (FB → META) also looks like a delisting in the raw feed. Provide a
+`ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
+`{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` — and the engine transfers
+the position, PnL ledger, history, resting orders, and last price from the old
+symbol to the new one on the effective date, with **no trade emitted** (a
+rename is a relabeling, not a round trip). The successor is subscribed up front
+so its bars stream, and `on_rename(ctx, old, new)` fires so you can update the
+symbols and indicators your strategy keys on.
+
+### Cash dividends
+
+If a `get_dividends.json` (Polygon format) sits next to `encoded_tickers.json`,
+the engine credits cash dividends for subscribed symbols on their
+**ex-dividend date**, using the same day-boundary timing as splits (after the
+prior day's equity mark, before the day's bars move prices):
+
+- A position held on the ex-date is credited `quantity * cash_amount`; a
+  **short** is debited the same (you owe the dividend). Symbols you don't hold
+  on the ex-date pay nothing.
+- The income is added to cash **and** attributed to the open position's PnL, so
+  an eventual round trip reports its **total return** (price change plus
+  dividends), and the equity curve stays continuous through the ex-date drop.
+- `on_dividend(ctx, symbol, amount)` fires after the credit, for logging or a
+  DRIP-style reinvestment.
+
+The dividends file is large across the whole market, so it is streamed and
+filtered to the subscribed symbols as it parses, rather than loaded whole.
 
 ## Bars, slices, and sessions
 
@@ -261,6 +339,32 @@ ctx.consolidate("AAPL", ConsolidatorPeriod::Hours(1), |bar| {
 Consolidated bars aggregate high/low/volume across the period. The callback is
 an `FnMut`, so it can own and mutate captured state (e.g. an indicator).
 
+## Example strategies
+
+The [`backtester/examples/`](../backtester/examples) directory has runnable
+strategies, smallest first. Run any of them against the committed fixture
+(AAPL, Jan 2023) — no external data needed:
+
+```bash
+cargo run --example <name> -- backtester/tests/fixtures
+```
+
+| Example | What it shows |
+|---------|---------------|
+| [`buy_and_hold`](../backtester/examples/buy_and_hold.rs) | The baseline: buy on the first bar, hold to the end |
+| [`ema_cross`](../backtester/examples/ema_cross.rs) | Fast/slow EMA crossover — the canonical trend strategy |
+| [`rsi_mean_reversion`](../backtester/examples/rsi_mean_reversion.rs) | Buy an oversold RSI, exit on reversion toward neutral |
+| [`bollinger_bands`](../backtester/examples/bollinger_bands.rs) | Buy below the lower band, exit at the middle band |
+| [`macd_trend`](../backtester/examples/macd_trend.rs) | Hold long while the MACD histogram is positive |
+| [`slippage_demo`](../backtester/examples/slippage_demo.rs) | `ema_cross` with slippage and commission applied |
+| [`kitchen_sink`](../backtester/examples/kitchen_sink.rs) | Every configurable knob at once |
+
+`kitchen_sink` is the guided tour of the whole API: warm-up, a slippage and a
+commission model, next-bar-open fills, a custom lot size and delist threshold,
+an hourly consolidator feeding a trend SMA, a scheduled pre-close flatten,
+`ctx.history()` lookbacks, and the `on_split` / `on_delisted` / `on_end_of_day`
+hooks.
+
 ## Running it
 
 ```bash
@@ -276,13 +380,12 @@ The `data_path` argument must be a directory that contains
 [data-setup.md](./data-setup.md) for the expected layout, and
 [results.md](./results.md) for what the run produces.
 
-## Known limitations
+## Modeling notes
 
-These are tracked in [`TODO.md`](../TODO.md):
-
-- Fills happen at the bar close only — no intrabar execution, limit/stop
-  orders, or partial fills.
-- No margin/borrow accounting: shorts and >100% allocations are allowed and
-  simply drive cash negative, cost-free.
-- Data is streamed one month-file at a time; subscribing to a very large
-  symbol set still holds one month of their bars in memory.
+- Market fills print at a single price (bar close or next open); resting
+  limit/stop orders and volume-participation partial fills add intrabar
+  execution, but there is no order-book depth or queue modeling.
+- A month of *subscribed* bars is buffered in memory at a time (filtered before
+  buffering, so it scales with your universe, not the dataset); measured peak
+  RSS is ~42 MB over a full year of one symbol. See [`TODO.md`](../TODO.md) for
+  the reasoning behind keeping this over a streaming k-way merge.
