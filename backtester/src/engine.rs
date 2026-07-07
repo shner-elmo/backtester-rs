@@ -649,6 +649,26 @@ pub fn run_backtest<A: Algorithm>(
                             ratio,
                             tick_time,
                         );
+                        // Orders decided pre-split are expressed in pre-split
+                        // terms; rescale them (qty × ratio, trigger ÷ ratio)
+                        // so they don't spuriously fire — or silently die —
+                        // against the post-split tape.
+                        if let Some(orders) = resting_book.get_mut(&symbol) {
+                            for ro in orders {
+                                ro.qty *= ratio;
+                                ro.kind = match ro.kind {
+                                    RestingKind::Limit(p) => RestingKind::Limit(p / ratio),
+                                    RestingKind::Stop(p) => RestingKind::Stop(p / ratio),
+                                };
+                            }
+                        }
+                        if let Some(orders) = deferred.get_mut(&symbol) {
+                            for o in orders {
+                                if let OrderKind::Market(q) = &mut o.kind {
+                                    *q *= ratio;
+                                }
+                            }
+                        }
                         algo.on_split(&mut ctx, &symbol, ratio);
                     }
                 }
@@ -863,7 +883,11 @@ pub fn run_backtest<A: Algorithm>(
                 FillTiming::CurrentBarClose => {
                     for order in orders {
                         // Fill at this bar's close; a symbol with no bar this
-                        // tick has no price to fill against.
+                        // tick has no price to fill against. Sizing marks the
+                        // portfolio with last_known_prices — already advanced
+                        // to this tick's closes — so held symbols *without* a
+                        // bar this tick are valued at their latest market
+                        // price, not their cost basis.
                         let Some(bar) = slice.bars.get(&order.symbol) else { continue };
                         let Some(&price) = current_prices.get(&order.symbol) else { continue };
                         execute_order(
@@ -872,7 +896,7 @@ pub fn run_backtest<A: Algorithm>(
                             &mut trades,
                             &mut total_commission,
                             &order,
-                            &current_prices,
+                            &last_known_prices,
                             price,
                             bar,
                             tick_time,

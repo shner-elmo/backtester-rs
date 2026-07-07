@@ -298,6 +298,66 @@ fn delist_scan_can_be_disabled() {
 }
 
 #[test]
+fn resting_orders_are_rescaled_across_a_split() {
+    let tmp = tempfile::tempdir().unwrap();
+    // SPLT trades at 90, splits 1->3 on 06-07 (the tape moves to 30), then
+    // dips to 18 from 06-09. A pre-split limit buy of 10 @ 60 must become
+    // 30 @ 20 on the split: the 30-tape must NOT trigger it (a stale 60
+    // would fire instantly), while the 18 dip fills the rescaled quantity.
+    let price = |d: u32| {
+        if d < 7 {
+            90.0
+        } else if d < 9 {
+            30.0
+        } else {
+            18.0
+        }
+    };
+    let rows = days_of(1, &TRADING_DAYS, price);
+    write_fixture(
+        tmp.path(),
+        &rows,
+        &[(1, "SPLT")],
+        Some(
+            r#"[{"execution_date": "2023-06-07", "id": "x", "split_from": 1, "split_to": 3, "ticker": "SPLT"}]"#,
+        ),
+        None,
+    );
+
+    struct LimitOnce {
+        placed: bool,
+    }
+    impl Algorithm for LimitOnce {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("SPLT");
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !self.placed && data.bars.contains_key("SPLT") {
+                self.placed = true;
+                ctx.limit_order("SPLT", 10.0, 60.0);
+            }
+        }
+    }
+
+    let result = run_backtest(LimitOnce { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+
+    assert!(result.trades.is_empty(), "unexpected trades: {:?}", result.trades);
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SPLT").unwrap();
+    assert!(
+        (pos.quantity - 30.0).abs() < 1e-9,
+        "expected the rescaled post-split quantity (30), got {}",
+        pos.quantity
+    );
+    assert!(
+        (pos.avg_price - 18.0).abs() < 1e-9,
+        "expected a fill at the 18 dip, got {}",
+        pos.avg_price
+    );
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
 fn cash_dividend_credits_a_held_long_position() {
     let tmp = tempfile::tempdir().unwrap();
     // DIV trades flat at 100; STAY keeps the clock running. A $2.00/share
