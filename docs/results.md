@@ -51,8 +51,10 @@ therefore reports *zero* trades until it actually exits.
 
 Written to the **current working directory** as
 `backtest_result_<timestamp>.json` (the path is printed at the end of the run).
-Set `BACKTEST_OUTPUT_DIR=/some/dir` to write it elsewhere (the directory is
-created if missing).
+To write it elsewhere, call `ctx.set_output_dir("results/")` in `initialize`,
+or set `BACKTEST_OUTPUT_DIR=/some/dir` to redirect a run without recompiling
+(the code setting wins when both are present; the directory is created if
+missing).
 Top-level shape:
 
 ```json

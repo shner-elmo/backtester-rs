@@ -106,8 +106,9 @@ Full details and the `STONKS_DATA_ROOT` env var are in
 
 - **`backtest_result_<timestamp>.json`** — the full result: stats, daily
   equity curve, open positions, and completed trades (rebalance fills netted
-  per position lifetime). Written to the working directory (or
-  `$BACKTEST_OUTPUT_DIR` when set); render it with `cargo run -p ui`.
+  per position lifetime). Written to the working directory (or the directory
+  set via `ctx.set_output_dir` / `$BACKTEST_OUTPUT_DIR`); render it with
+  `cargo run -p ui`.
 - **Stdout** — trade count, win rate, total PnL, final equity, profit factor,
   max drawdown, Sharpe, commission. See [docs/results.md](docs/results.md).
 - **In code** — `run` returns the `BacktestResult`; `run_backtest` returns it

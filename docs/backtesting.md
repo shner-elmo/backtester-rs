@@ -95,6 +95,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_delist_haircut(fraction)` | Write-down applied to the forced-liquidation price (default `0.0`) |
 | `set_risk_free_rate(annual)` | Annual rate the Sharpe ratio is computed in excess of (default `0.0`) |
 | `set_track_intraday_equity(b)` | Record a per-bar equity mark into `intraday_equity` (default off) |
+| `set_output_dir(dir)` | Where `run` writes the result JSON (default CWD; beats `$BACKTEST_OUTPUT_DIR`) |
 | `set_max_history(n)` | Bars per symbol `history()` retains (default 500) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |

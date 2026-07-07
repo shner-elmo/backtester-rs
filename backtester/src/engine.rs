@@ -550,7 +550,16 @@ pub fn run_backtest<A: Algorithm>(
 ) -> Result<BacktestResult, BacktestError> {
     let mut ctx = Context::default();
     algo.initialize(&mut ctx);
+    run_prepared(algo, ctx, data_path)
+}
 
+/// The engine body shared by [`run_backtest`] and [`run`]: `ctx` has already
+/// been through the algorithm's `initialize`.
+fn run_prepared<A: Algorithm>(
+    mut algo: A,
+    mut ctx: Context,
+    data_path: &str,
+) -> Result<BacktestResult, BacktestError> {
     let initial_cash = ctx.portfolio.cash;
     let ticker_map = load_ticker_map(data_path)?;
     let mut subscribed = ctx.subscribed_symbols.clone();
@@ -1068,21 +1077,30 @@ pub fn run_backtest<A: Algorithm>(
 
 /// Run a backtest, print a summary, and write the full result JSON
 /// (`backtest_result_<timestamp>.json`) for the `ui` dashboard. The file goes
-/// to the current directory, or to `$BACKTEST_OUTPUT_DIR` when that is set
-/// (created if missing).
-pub fn run<A: Algorithm>(algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
-    let result = run_backtest(algo, data_path)?;
+/// to the directory set via `Context::set_output_dir`, else to
+/// `$BACKTEST_OUTPUT_DIR` when that is set, else to the current directory
+/// (the directory is created if missing).
+pub fn run<A: Algorithm>(mut algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
+    let mut ctx = Context::default();
+    algo.initialize(&mut ctx);
+    // set_output_dir wins over the env var: the strategy author's explicit
+    // choice shouldn't be silently redirected by the environment.
+    let out_dir = ctx.output_dir.clone().or_else(|| {
+        std::env::var("BACKTEST_OUTPUT_DIR").ok().filter(|d| !d.is_empty()).map(Into::into)
+    });
+
+    let result = run_prepared(algo, ctx, data_path)?;
     let stats = &result.stats;
 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
     let file_name = format!("backtest_result_{ts}.json");
-    let out_path = match std::env::var("BACKTEST_OUTPUT_DIR") {
-        Ok(dir) if !dir.is_empty() => {
+    let out_path = match out_dir {
+        Some(dir) => {
             std::fs::create_dir_all(&dir)
-                .map_err(|source| BacktestError::Io { path: dir.clone().into(), source })?;
-            std::path::Path::new(&dir).join(file_name)
+                .map_err(|source| BacktestError::Io { path: dir.clone(), source })?;
+            dir.join(file_name)
         }
-        _ => std::path::PathBuf::from(file_name),
+        None => std::path::PathBuf::from(file_name),
     };
     let file = std::fs::File::create(&out_path)
         .map_err(|source| BacktestError::Io { path: out_path.clone(), source })?;

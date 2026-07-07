@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
+};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -87,6 +90,7 @@ pub struct Context {
     pub(crate) risk_free_rate: f64,
     pub(crate) track_intraday_equity: bool,
     pub(crate) fill_timing: FillTiming,
+    pub(crate) output_dir: Option<PathBuf>,
 }
 
 impl Default for Context {
@@ -115,6 +119,7 @@ impl Default for Context {
             risk_free_rate: 0.0,
             track_intraday_equity: false,
             fill_timing: FillTiming::default(),
+            output_dir: None,
         }
     }
 }
@@ -207,6 +212,14 @@ impl Context {
     pub fn set_short_borrow_rate(&mut self, annual_rate: f64) {
         assert!(annual_rate >= 0.0, "short borrow rate must be non-negative");
         self.short_borrow_rate = annual_rate;
+    }
+
+    /// Directory `run` writes `backtest_result_<timestamp>.json` into
+    /// (created if missing). Takes precedence over the `BACKTEST_OUTPUT_DIR`
+    /// env var; when neither is set the file goes to the current working
+    /// directory. Ignored by `run_backtest`, which never writes a file.
+    pub fn set_output_dir(&mut self, dir: impl Into<PathBuf>) {
+        self.output_dir = Some(dir.into());
     }
 
     /// Annual risk-free rate the Sharpe ratio is computed in excess of
