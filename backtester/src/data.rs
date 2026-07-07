@@ -20,16 +20,28 @@ use crate::{
 pub const COLUMNS: [&str; 8] =
     ["ticker", "volume", "open", "high", "low", "close", "window_start", "market_session"];
 
+/// Metadata files the loaders expect inside the data root, next to the
+/// Parquet tree. Only `TICKER_MAP_FILE` is required; the rest are optional.
+pub const TICKER_MAP_FILE: &str = "encoded_tickers.json";
+pub const SPLITS_FILE: &str = "get_splits.json";
+pub const DIVIDENDS_FILE: &str = "get_dividends.json";
+pub const RENAMES_FILE: &str = "ticker_renames.json";
+
 pub fn load_ticker_map(data_root: &str) -> Result<HashMap<u16, String>, BacktestError> {
-    let path = PathBuf::from(format!("{}/encoded_tickers.json", data_root));
-    let content =
-        read_to_string(&path).map_err(|source| BacktestError::Io { path: path.clone(), source })?;
+    load_ticker_map_from(&PathBuf::from(format!("{data_root}/{TICKER_MAP_FILE}")))
+}
+
+/// Like [`load_ticker_map`], but from an explicit file path instead of the
+/// default name inside the data root.
+pub fn load_ticker_map_from(path: &Path) -> Result<HashMap<u16, String>, BacktestError> {
+    let content = read_to_string(path)
+        .map_err(|source| BacktestError::Io { path: path.to_path_buf(), source })?;
     let temp: HashMap<String, String> = serde_json::from_str(&content)
-        .map_err(|e| BacktestError::Json { path: path.clone(), message: e.to_string() })?;
+        .map_err(|e| BacktestError::Json { path: path.to_path_buf(), message: e.to_string() })?;
     temp.into_iter()
         .map(|(k, v)| match k.parse::<u16>() {
             Ok(id) => Ok((id, v)),
-            Err(_) => Err(BacktestError::InvalidTickerKey { path: path.clone(), key: k }),
+            Err(_) => Err(BacktestError::InvalidTickerKey { path: path.to_path_buf(), key: k }),
         })
         .collect()
 }
@@ -43,6 +55,17 @@ pub fn load_splits(
     data_root: &str,
     symbols: &std::collections::HashSet<String>,
 ) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
+    load_splits_from(&PathBuf::from(format!("{data_root}/{SPLITS_FILE}")), symbols, false)
+}
+
+/// Like [`load_splits`], but from an explicit file path. With `required`,
+/// a missing file is an error instead of an empty map — used when the caller
+/// configured the path on purpose and silence would hide a typo.
+pub fn load_splits_from(
+    path: &Path,
+    symbols: &std::collections::HashSet<String>,
+    required: bool,
+) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
     #[derive(serde::Deserialize)]
     struct SplitRecord {
         execution_date: String,
@@ -51,15 +74,18 @@ pub fn load_splits(
         split_to: f64,
     }
 
-    let path = PathBuf::from(format!("{}/get_splits.json", data_root));
-    let content = match read_to_string(&path) {
+    let content = match read_to_string(path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(source) => return Err(BacktestError::Io { path, source }),
+        Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HashMap::new())
+        }
+        Err(source) => return Err(BacktestError::Io { path: path.to_path_buf(), source }),
     };
-    let records: Vec<SplitRecord> = serde_json::from_str(&content).map_err(|e| {
-        BacktestError::Json { path, message: format!("not valid splits JSON: {e}") }
-    })?;
+    let records: Vec<SplitRecord> =
+        serde_json::from_str(&content).map_err(|e| BacktestError::Json {
+            path: path.to_path_buf(),
+            message: format!("not valid splits JSON: {e}"),
+        })?;
 
     let mut splits: HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>> =
         HashMap::new();
@@ -90,6 +116,16 @@ pub fn load_dividends(
     data_root: &str,
     symbols: &std::collections::HashSet<String>,
 ) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
+    load_dividends_from(&PathBuf::from(format!("{data_root}/{DIVIDENDS_FILE}")), symbols, false)
+}
+
+/// Like [`load_dividends`], but from an explicit file path. With `required`,
+/// a missing file is an error instead of an empty map.
+pub fn load_dividends_from(
+    path: &Path,
+    symbols: &std::collections::HashSet<String>,
+    required: bool,
+) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
     use std::fmt;
 
     use serde::de::{Deserializer, SeqAccess, Visitor};
@@ -103,11 +139,12 @@ pub fn load_dividends(
 
     type DividendMap = HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>;
 
-    let path = PathBuf::from(format!("{}/get_dividends.json", data_root));
-    let file = match File::open(&path) {
+    let file = match File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(source) => return Err(BacktestError::Io { path, source }),
+        Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HashMap::new())
+        }
+        Err(source) => return Err(BacktestError::Io { path: path.to_path_buf(), source }),
     };
 
     // A seq visitor that filters records as they stream in, so peak memory is
@@ -141,7 +178,7 @@ pub fn load_dividends(
     let reader = std::io::BufReader::new(file);
     let mut de = serde_json::Deserializer::from_reader(reader);
     de.deserialize_seq(FilterVisitor { symbols }).map_err(|e| BacktestError::Json {
-        path,
+        path: path.to_path_buf(),
         message: format!("not valid dividends JSON: {e}"),
     })
 }
@@ -155,6 +192,16 @@ pub fn load_renames(
     data_root: &str,
     symbols: &std::collections::HashSet<String>,
 ) -> Result<std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>>, BacktestError> {
+    load_renames_from(&PathBuf::from(format!("{data_root}/{RENAMES_FILE}")), symbols, false)
+}
+
+/// Like [`load_renames`], but from an explicit file path. With `required`,
+/// a missing file is an error instead of an empty map.
+pub fn load_renames_from(
+    path: &Path,
+    symbols: &std::collections::HashSet<String>,
+    required: bool,
+) -> Result<std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>>, BacktestError> {
     #[derive(serde::Deserialize)]
     struct RenameRecord {
         date: String,
@@ -162,17 +209,18 @@ pub fn load_renames(
         new: String,
     }
 
-    let path = PathBuf::from(format!("{}/ticker_renames.json", data_root));
-    let content = match read_to_string(&path) {
+    let content = match read_to_string(path) {
         Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(std::collections::BTreeMap::new())
         }
-        Err(source) => return Err(BacktestError::Io { path, source }),
+        Err(source) => return Err(BacktestError::Io { path: path.to_path_buf(), source }),
     };
-    let records: Vec<RenameRecord> = serde_json::from_str(&content).map_err(|e| {
-        BacktestError::Json { path, message: format!("not valid renames JSON: {e}") }
-    })?;
+    let records: Vec<RenameRecord> =
+        serde_json::from_str(&content).map_err(|e| BacktestError::Json {
+            path: path.to_path_buf(),
+            message: format!("not valid renames JSON: {e}"),
+        })?;
 
     let mut renames: std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>> =
         std::collections::BTreeMap::new();

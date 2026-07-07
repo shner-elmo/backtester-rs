@@ -22,7 +22,7 @@ frontend.
 # Point DATA_PATH at the directory that contains encoded_tickers.json and a
 # minute/ subdirectory (defaults to ../../data/output):
 DATA_PATH=/path/to/data/output cargo run -p data-viz
-# open http://localhost:3000
+# open http://localhost:3000   (override the port with PORT=8080)
 ```
 
 The server expects `DATA_PATH` to be a **data root** laid out as:
@@ -47,6 +47,11 @@ The frontend is driven by three endpoints, which you can also hit directly:
 Supported `type` values: `ema`, `sma`, `rsi`, `macd`, `bbands`. `macd` returns
 `macd`/`signal`/`histogram` series; `bbands` returns `upper`/`middle`/`lower`;
 the rest return a single series under a key named after the type.
+
+Optional parameters: `period` for `ema`/`sma`/`bbands` (default 20) and `rsi`
+(default 14); `fast`/`slow`/`signal` for `macd` (defaults 12/26/9); `mult` for
+the `bbands` width in standard deviations (default 2.0). Invalid values (e.g.
+`period=0`) return `{"error": "invalid indicator parameters"}`.
 
 ```bash
 curl 'http://localhost:3000/api/bars?symbol=AAPL&start=2023-01-01&end=2023-01-05'

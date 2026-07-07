@@ -227,45 +227,70 @@ struct IndicatorParams {
     symbol: Option<String>,
     #[serde(rename = "type")]
     indicator_type: Option<String>,
+    /// Lookback for `ema`/`sma` (default 20), `rsi` (14), and `bbands` (20).
     period: Option<usize>,
+    /// MACD periods (defaults 12 / 26 / 9).
+    fast: Option<usize>,
+    slow: Option<usize>,
+    signal: Option<usize>,
+    /// Bollinger band width in standard deviations (default 2.0).
+    mult: Option<f64>,
 }
 
 async fn indicators(
     Query(params): Query<IndicatorParams>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let Some(symbol) = params.symbol else {
+    let Some(symbol) = params.symbol.as_deref() else {
         return (StatusCode::BAD_REQUEST, "missing required query param: symbol").into_response();
     };
-    let Some(indicator_type) = params.indicator_type else {
+    let Some(indicator_type) = params.indicator_type.as_deref() else {
         return (StatusCode::BAD_REQUEST, "missing required query param: type").into_response();
     };
-    let bars = query_bars(&state.ctx, &state.ticker_map, &symbol, None, None).await;
-    Json(compute_indicator(&bars, &indicator_type, params.period)).into_response()
+    let bars = query_bars(&state.ctx, &state.ticker_map, symbol, None, None).await;
+    Json(compute_indicator(&bars, indicator_type, &params)).into_response()
 }
 
-fn compute_indicator(bars: &[OhlcBar], indicator_type: &str, period: Option<usize>) -> Value {
+/// A rejected parameter set (e.g. `period=0`) returns this payload instead of
+/// panicking the handler.
+fn invalid_params() -> Value {
+    json!({ "error": "invalid indicator parameters" })
+}
+
+fn compute_indicator(bars: &[OhlcBar], indicator_type: &str, p: &IndicatorParams) -> Value {
     match indicator_type {
         "ema" => {
-            let mut ind = ExponentialMovingAverage::new(period.unwrap_or(20)).unwrap();
+            let Ok(mut ind) = ExponentialMovingAverage::new(p.period.unwrap_or(20)) else {
+                return invalid_params();
+            };
             let pts: Vec<Value> =
                 bars.iter().map(|b| json!({"time": b.time, "value": ind.next(b.close)})).collect();
             json!({ "ema": pts })
         }
         "sma" => {
-            let mut ind = SimpleMovingAverage::new(period.unwrap_or(20)).unwrap();
+            let Ok(mut ind) = SimpleMovingAverage::new(p.period.unwrap_or(20)) else {
+                return invalid_params();
+            };
             let pts: Vec<Value> =
                 bars.iter().map(|b| json!({"time": b.time, "value": ind.next(b.close)})).collect();
             json!({ "sma": pts })
         }
         "rsi" => {
-            let mut ind = RelativeStrengthIndex::new(period.unwrap_or(14)).unwrap();
+            let Ok(mut ind) = RelativeStrengthIndex::new(p.period.unwrap_or(14)) else {
+                return invalid_params();
+            };
             let pts: Vec<Value> =
                 bars.iter().map(|b| json!({"time": b.time, "value": ind.next(b.close)})).collect();
             json!({ "rsi": pts })
         }
         "macd" => {
-            let mut ind = MovingAverageConvergenceDivergence::new(12, 26, 9).unwrap();
+            let Ok(mut ind) = MovingAverageConvergenceDivergence::new(
+                p.fast.unwrap_or(12),
+                p.slow.unwrap_or(26),
+                p.signal.unwrap_or(9),
+            ) else {
+                return invalid_params();
+            };
             let (mut macd_pts, mut sig_pts, mut hist_pts) = (vec![], vec![], vec![]);
             for b in bars {
                 let out = ind.next(b.close);
@@ -276,7 +301,10 @@ fn compute_indicator(bars: &[OhlcBar], indicator_type: &str, period: Option<usiz
             json!({ "macd": macd_pts, "signal": sig_pts, "histogram": hist_pts })
         }
         "bbands" => {
-            let mut ind = BollingerBands::new(period.unwrap_or(20), 2.0).unwrap();
+            let Ok(mut ind) = BollingerBands::new(p.period.unwrap_or(20), p.mult.unwrap_or(2.0))
+            else {
+                return invalid_params();
+            };
             let (mut upper, mut middle, mut lower) = (vec![], vec![], vec![]);
             for b in bars {
                 let out = ind.next(b.close);

@@ -10,14 +10,19 @@ use crate::{
     broker::Position,
     context::{Context, FillTiming, Order, OrderKind, RestingKind, RestingOrder},
     data::{
-        file_year_month, load_dividends, load_renames, load_splits, load_ticker_map,
-        read_bars_from_file, sorted_parquet_files,
+        file_year_month, load_dividends_from, load_renames_from, load_splits_from,
+        load_ticker_map_from, read_bars_from_file, sorted_parquet_files, DIVIDENDS_FILE,
+        RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
     },
     error::BacktestError,
     margin::MarginContext,
     slice::Slice,
     slippage::FillContext,
-    stats::{compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade},
+    stats::{
+        compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade,
+        TRADING_DAYS_PER_YEAR,
+    },
+    EPSILON,
 };
 
 /// Everything a finished backtest produced. `run` prints a summary of this and
@@ -136,7 +141,7 @@ fn apply_split(
     let lot = ctx.lot_size;
     let rounded = (pos.quantity / lot).trunc() * lot;
     let residual = pos.quantity - rounded;
-    if residual.abs() < 1e-9 {
+    if residual.abs() < EPSILON {
         return;
     }
     let price = last_known_prices.get(symbol).copied().unwrap_or(pos.avg_price);
@@ -148,7 +153,7 @@ fn apply_split(
         lt.close_value += residual.abs() * price;
         lt.realized_pnl += (price - avg) * residual.abs() * residual.signum();
     }
-    if rounded.abs() < 1e-9 {
+    if rounded.abs() < EPSILON {
         // The whole position was cashed out (deep reverse split of a tiny
         // holding): the lifetime is over.
         ctx.portfolio.positions.remove(symbol);
@@ -196,7 +201,7 @@ fn apply_financing(
 
     // Borrow fee on each short position's market value.
     if ctx.short_borrow_rate > 0.0 {
-        let daily = ctx.short_borrow_rate / 252.0;
+        let daily = ctx.short_borrow_rate / TRADING_DAYS_PER_YEAR;
         let shorts: Vec<(String, f64)> = ctx
             .portfolio
             .positions
@@ -220,7 +225,7 @@ fn apply_financing(
     // the charge is skipped: there is no open lifetime to attribute it to, and
     // an unattributed debit would break the accounting identity.
     if ctx.margin_interest_rate > 0.0 && ctx.portfolio.cash < 0.0 {
-        let interest = ctx.margin_interest_rate / 252.0 * (-ctx.portfolio.cash);
+        let interest = ctx.margin_interest_rate / TRADING_DAYS_PER_YEAR * (-ctx.portfolio.cash);
         let book = |longs_only: bool| -> Vec<(String, f64)> {
             ctx.portfolio
                 .positions
@@ -284,7 +289,7 @@ fn apply_rename(
             None => pos,
             Some(existing) => {
                 let qty = existing.quantity + pos.quantity;
-                let avg = if qty.abs() < 1e-9 {
+                let avg = if qty.abs() < EPSILON {
                     0.0
                 } else if existing.quantity.signum() == pos.quantity.signum() {
                     (existing.quantity * existing.avg_price + pos.quantity * pos.avg_price) / qty
@@ -296,7 +301,7 @@ fn apply_rename(
                 Position { symbol: new.to_string(), quantity: qty, avg_price: avg }
             }
         };
-        if merged.quantity.abs() > 1e-9 {
+        if merged.quantity.abs() > EPSILON {
             ctx.portfolio.positions.insert(new.to_string(), merged);
         }
     }
@@ -434,14 +439,14 @@ fn execute_order(
             other_exposure,
         });
         let allowed = if qty > 0.0 { allowed.clamp(0.0, qty) } else { allowed.clamp(qty, 0.0) };
-        if (allowed - qty).abs() < 1e-9 {
+        if (allowed - qty).abs() < EPSILON {
             qty
         } else {
             qty.signum() * (allowed.abs() / ctx.lot_size).trunc() * ctx.lot_size
         }
     };
 
-    if qty.abs() < 1e-9 {
+    if qty.abs() < EPSILON {
         return 0.0;
     }
     if ctx.max_volume_participation > 0.0 {
@@ -492,11 +497,11 @@ fn execute_order(
         lt.close_value += closed_now * fill_price;
         lt.realized_pnl += realized - commission;
 
-        let is_full_close = closed_now >= current_qty.abs() - 1e-9;
+        let is_full_close = closed_now >= current_qty.abs() - EPSILON;
         if is_full_close {
             let lt = lifetimes.remove(&order.symbol).unwrap();
             trades.push(lt.into_trade(&order.symbol, tick_time, "signal"));
-            if new_qty.abs() > 1e-9 {
+            if new_qty.abs() > EPSILON {
                 // A flip leaves a residual position in the new direction; it
                 // starts a fresh lifetime.
                 let mut fresh = OpenLifetime::new(tick_time, new_qty.signum());
@@ -546,9 +551,36 @@ pub fn run_backtest<A: Algorithm>(
 ) -> Result<BacktestResult, BacktestError> {
     let mut ctx = Context::default();
     algo.initialize(&mut ctx);
+    run_prepared(algo, ctx, data_path)
+}
 
+/// Resolve a metadata file location: an explicitly configured absolute path
+/// is used as-is, a relative one is joined to the data root, and `None`
+/// falls back to `default_name` in the data root. The bool reports whether
+/// the path was explicitly configured — missing *optional* files are only
+/// tolerated at the defaults; an explicitly set file must exist.
+fn resolve_data_file(
+    data_root: &str,
+    custom: &Option<std::path::PathBuf>,
+    default_name: &str,
+) -> (std::path::PathBuf, bool) {
+    match custom {
+        Some(p) if p.is_absolute() => (p.clone(), true),
+        Some(p) => (std::path::Path::new(data_root).join(p), true),
+        None => (std::path::Path::new(data_root).join(default_name), false),
+    }
+}
+
+/// The engine body shared by [`run_backtest`] and [`run`]: `ctx` has already
+/// been through the algorithm's `initialize`.
+fn run_prepared<A: Algorithm>(
+    mut algo: A,
+    mut ctx: Context,
+    data_path: &str,
+) -> Result<BacktestResult, BacktestError> {
     let initial_cash = ctx.portfolio.cash;
-    let ticker_map = load_ticker_map(data_path)?;
+    let (ticker_map_path, _) = resolve_data_file(data_path, &ctx.ticker_map_file, TICKER_MAP_FILE);
+    let ticker_map = load_ticker_map_from(&ticker_map_path)?;
     let mut subscribed = ctx.subscribed_symbols.clone();
 
     // Ticker renames, queued by effective date. Subscribe every rename target
@@ -556,7 +588,9 @@ pub fn run_backtest<A: Algorithm>(
     // transferred on the effective date); this also covers a successor that
     // begins trading in the same month-file as the rename.
     let mut pending_renames: BTreeMap<NaiveDate, Vec<(String, String)>> = BTreeMap::new();
-    for (date, pairs) in load_renames(data_path, &subscribed)? {
+    let (renames_path, renames_required) =
+        resolve_data_file(data_path, &ctx.renames_file, RENAMES_FILE);
+    for (date, pairs) in load_renames_from(&renames_path, &subscribed, renames_required)? {
         for (old, new) in pairs {
             subscribed.insert(new.clone());
             pending_renames.entry(date).or_default().push((old, new));
@@ -585,7 +619,9 @@ pub fn run_backtest<A: Algorithm>(
 
     // Splits for subscribed symbols, queued by execution date.
     let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
-    for (symbol, by_date) in load_splits(data_path, &subscribed)? {
+    let (splits_path, splits_required) =
+        resolve_data_file(data_path, &ctx.splits_file, SPLITS_FILE);
+    for (symbol, by_date) in load_splits_from(&splits_path, &subscribed, splits_required)? {
         for (date, ratio) in by_date {
             pending_splits.entry(date).or_default().push((symbol.clone(), ratio));
         }
@@ -593,7 +629,10 @@ pub fn run_backtest<A: Algorithm>(
 
     // Cash dividends for subscribed symbols, queued by ex-dividend date.
     let mut pending_dividends: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
-    for (symbol, by_date) in load_dividends(data_path, &subscribed)? {
+    let (dividends_path, dividends_required) =
+        resolve_data_file(data_path, &ctx.dividends_file, DIVIDENDS_FILE);
+    for (symbol, by_date) in load_dividends_from(&dividends_path, &subscribed, dividends_required)?
+    {
         for (date, amount) in by_date {
             pending_dividends.entry(date).or_default().push((symbol.clone(), amount));
         }
@@ -896,7 +935,7 @@ pub fn run_backtest<A: Algorithm>(
                                     &mut participation_used,
                                 );
                                 ro.qty -= filled;
-                                if ro.qty.abs() > 1e-9 {
+                                if ro.qty.abs() > EPSILON {
                                     still_resting.push(ro);
                                 }
                             }
@@ -1048,7 +1087,7 @@ pub fn run_backtest<A: Algorithm>(
         .collect();
     open_positions.sort_by(|a, b| a.symbol.cmp(&b.symbol));
 
-    let stats = compute_stats(&trades, &equity_curve);
+    let stats = compute_stats(&trades, &equity_curve, ctx.risk_free_rate);
 
     Ok(BacktestResult {
         initial_cash,
@@ -1063,22 +1102,39 @@ pub fn run_backtest<A: Algorithm>(
 }
 
 /// Run a backtest, print a summary, and write the full result JSON
-/// (`backtest_result_<timestamp>.json`) for the `ui` dashboard.
-pub fn run<A: Algorithm>(algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
-    let result = run_backtest(algo, data_path)?;
+/// (`backtest_result_<timestamp>.json`) for the `ui` dashboard. The file goes
+/// to the directory set via `Context::set_output_dir`, else to
+/// `$BACKTEST_OUTPUT_DIR` when that is set, else to the current directory
+/// (the directory is created if missing).
+pub fn run<A: Algorithm>(mut algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
+    let mut ctx = Context::default();
+    algo.initialize(&mut ctx);
+    // set_output_dir wins over the env var: the strategy author's explicit
+    // choice shouldn't be silently redirected by the environment.
+    let out_dir = ctx.output_dir.clone().or_else(|| {
+        std::env::var("BACKTEST_OUTPUT_DIR").ok().filter(|d| !d.is_empty()).map(Into::into)
+    });
+
+    let result = run_prepared(algo, ctx, data_path)?;
     let stats = &result.stats;
 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
-    let out_path = format!("backtest_result_{ts}.json");
+    let file_name = format!("backtest_result_{ts}.json");
+    let out_path = match out_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir)
+                .map_err(|source| BacktestError::Io { path: dir.clone(), source })?;
+            dir.join(file_name)
+        }
+        None => std::path::PathBuf::from(file_name),
+    };
     let file = std::fs::File::create(&out_path)
-        .map_err(|source| BacktestError::Io { path: out_path.clone().into(), source })?;
-    serde_json::to_writer_pretty(file, &result).map_err(|e| BacktestError::Json {
-        path: out_path.clone().into(),
-        message: e.to_string(),
-    })?;
+        .map_err(|source| BacktestError::Io { path: out_path.clone(), source })?;
+    serde_json::to_writer_pretty(file, &result)
+        .map_err(|e| BacktestError::Json { path: out_path.clone(), message: e.to_string() })?;
 
     println!("=== Backtest Complete ===");
-    println!("Result written to: {out_path}  (view it with `cargo run -p ui`)");
+    println!("Result written to: {}  (view it with `cargo run -p ui`)", out_path.display());
     println!(
         "Trades: {}  |  Win Rate: {:.0}%  |  Total PnL: ${:.0}  |  Final Equity: ${:.0}",
         stats.trade_count,

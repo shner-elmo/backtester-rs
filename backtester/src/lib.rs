@@ -1,3 +1,7 @@
+/// Tolerance for float comparisons on share quantities: anything smaller is
+/// rounding noise, not a position.
+pub(crate) const EPSILON: f64 = 1e-9;
+
 pub mod algorithm;
 pub mod bar;
 pub mod broker;

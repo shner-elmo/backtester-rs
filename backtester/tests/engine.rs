@@ -2,7 +2,7 @@
 //! netting, equity-curve consistency, commission accounting.
 
 use backtester::{
-    commission::PerShareCommission, run_backtest, Algorithm, BacktestResult, Context, Slice,
+    commission::PerShareCommission, run, run_backtest, Algorithm, BacktestResult, Context, Slice,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -193,6 +193,39 @@ fn set_holdings_rounds_to_whole_shares_by_default() {
     let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
     let qty = result.open_positions[0].quantity;
     assert!((qty - qty.round()).abs() < 1e-9, "expected whole-share position, got {qty}");
+}
+
+#[test]
+fn run_writes_the_result_json_into_the_configured_output_dir() {
+    struct WithOutputDir {
+        dir: std::path::PathBuf,
+    }
+    impl Algorithm for WithOutputDir {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("AAPL");
+            ctx.set_output_dir(&self.dir);
+        }
+        fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+    }
+
+    // A unique, not-yet-existing directory: proves run() creates it. The
+    // set_output_dir value must also win over any BACKTEST_OUTPUT_DIR in the
+    // environment (run this test with the var set to verify by hand).
+    let dir = std::env::temp_dir().join(format!("backtester_out_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    run(WithOutputDir { dir: dir.clone() }, FIXTURE).unwrap();
+
+    let results: Vec<_> = std::fs::read_dir(&dir)
+        .expect("output dir was not created")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("backtest_result_") && n.ends_with(".json"))
+        .collect();
+    assert_eq!(results.len(), 1, "expected exactly one result file, got {results:?}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

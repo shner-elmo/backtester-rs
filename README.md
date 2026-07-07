@@ -106,7 +106,8 @@ Full details and the `STONKS_DATA_ROOT` env var are in
 
 - **`backtest_result_<timestamp>.json`** — the full result: stats, daily
   equity curve, open positions, and completed trades (rebalance fills netted
-  per position lifetime). Written to the working directory; render it with
+  per position lifetime). Written to the working directory (or the directory
+  set via `ctx.set_output_dir` / `$BACKTEST_OUTPUT_DIR`); render it with
   `cargo run -p ui`.
 - **Stdout** — trade count, win rate, total PnL, final equity, profit factor,
   max drawdown, Sharpe, commission. See [docs/results.md](docs/results.md).
@@ -188,7 +189,8 @@ are much worse than the print. Check `bar.market_session` and skip
   real-data run).
 - **Drawdown and Sharpe come from the daily mark-to-market equity curve**
   (ET trading dates), not per-trade PnL — open-position pain counts. Sharpe
-  assumes a zero risk-free rate, sample (n−1) variance, and √252 scaling. The
+  uses sample (n−1) variance, √252 scaling, and a zero risk-free rate unless
+  you `set_risk_free_rate(annual)`. The
   curve is **daily** by
   default; `set_track_intraday_equity(true)` also records a per-bar curve
   (`intraday_equity`) so intraday drawdown is visible.

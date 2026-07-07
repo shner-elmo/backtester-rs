@@ -93,8 +93,15 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_short_borrow_rate(annual)` | Borrow fee on short market value — see [Financing](#financing) |
 | `set_delist_after_days(n)` | Force-close positions in symbols silent for `n` trading days (default 5, `0` = off) |
 | `set_delist_haircut(fraction)` | Write-down applied to the forced-liquidation price (default `0.0`) |
+| `set_risk_free_rate(annual)` | Annual rate the Sharpe ratio is computed in excess of (default `0.0`) |
 | `set_track_intraday_equity(b)` | Record a per-bar equity mark into `intraday_equity` (default off) |
-| `history(symbol, n)` | Last `n` bars for a symbol (rolling 500-bar window) |
+| `set_output_dir(dir)` | Where `run` writes the result JSON (default CWD; beats `$BACKTEST_OUTPUT_DIR`) |
+| `set_ticker_map_file(path)` | Ticker-encoding map location (default `encoded_tickers.json` in the data root) |
+| `set_splits_file(path)` | Splits JSON location (default `get_splits.json`; explicit path must exist) |
+| `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
+| `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
+| `set_max_history(n)` | Bars per symbol `history()` retains (default 500) |
+| `history(symbol, n)` | Last `n` bars for a symbol (rolling window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |

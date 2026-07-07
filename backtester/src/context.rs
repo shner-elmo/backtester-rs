@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
+};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -84,8 +87,14 @@ pub struct Context {
     pub(crate) delist_haircut: f64,
     pub(crate) margin_interest_rate: f64,
     pub(crate) short_borrow_rate: f64,
+    pub(crate) risk_free_rate: f64,
     pub(crate) track_intraday_equity: bool,
     pub(crate) fill_timing: FillTiming,
+    pub(crate) output_dir: Option<PathBuf>,
+    pub(crate) ticker_map_file: Option<PathBuf>,
+    pub(crate) splits_file: Option<PathBuf>,
+    pub(crate) dividends_file: Option<PathBuf>,
+    pub(crate) renames_file: Option<PathBuf>,
 }
 
 impl Default for Context {
@@ -111,8 +120,14 @@ impl Default for Context {
             delist_haircut: 0.0,
             margin_interest_rate: 0.0,
             short_borrow_rate: 0.0,
+            risk_free_rate: 0.0,
             track_intraday_equity: false,
             fill_timing: FillTiming::default(),
+            output_dir: None,
+            ticker_map_file: None,
+            splits_file: None,
+            dividends_file: None,
+            renames_file: None,
         }
     }
 }
@@ -205,6 +220,63 @@ impl Context {
     pub fn set_short_borrow_rate(&mut self, annual_rate: f64) {
         assert!(annual_rate >= 0.0, "short borrow rate must be non-negative");
         self.short_borrow_rate = annual_rate;
+    }
+
+    /// Directory `run` writes `backtest_result_<timestamp>.json` into
+    /// (created if missing). Takes precedence over the `BACKTEST_OUTPUT_DIR`
+    /// env var; when neither is set the file goes to the current working
+    /// directory. Ignored by `run_backtest`, which never writes a file.
+    pub fn set_output_dir(&mut self, dir: impl Into<PathBuf>) {
+        self.output_dir = Some(dir.into());
+    }
+
+    /// Path of the ticker-encoding map (default `encoded_tickers.json` in the
+    /// data root). A relative path is resolved against the data root passed
+    /// to `run`/`run_backtest`; an absolute path is used as-is. This file is
+    /// required — a backtest cannot start without it.
+    pub fn set_ticker_map_file(&mut self, path: impl Into<PathBuf>) {
+        self.ticker_map_file = Some(path.into());
+    }
+
+    /// Path of the Polygon-format stock-splits JSON (default
+    /// `get_splits.json` in the data root). A relative path is resolved
+    /// against the data root; an absolute path is used as-is. When left at
+    /// the default a missing file simply means "no splits"; a path set here
+    /// must exist, so a typo fails the run instead of silently skipping
+    /// every split.
+    pub fn set_splits_file(&mut self, path: impl Into<PathBuf>) {
+        self.splits_file = Some(path.into());
+    }
+
+    /// Path of the Polygon-format cash-dividends JSON (default
+    /// `get_dividends.json` in the data root). Same resolution and
+    /// missing-file rules as [`set_splits_file`](Self::set_splits_file).
+    pub fn set_dividends_file(&mut self, path: impl Into<PathBuf>) {
+        self.dividends_file = Some(path.into());
+    }
+
+    /// Path of the ticker-renames JSON (default `ticker_renames.json` in the
+    /// data root). Same resolution and missing-file rules as
+    /// [`set_splits_file`](Self::set_splits_file).
+    pub fn set_renames_file(&mut self, path: impl Into<PathBuf>) {
+        self.renames_file = Some(path.into());
+    }
+
+    /// Annual risk-free rate the Sharpe ratio is computed in excess of
+    /// (daily returns less `rate / 252`). Defaults to `0.0`. Only affects
+    /// reported stats — no cash accrues on idle balances.
+    pub fn set_risk_free_rate(&mut self, annual_rate: f64) {
+        assert!(annual_rate.is_finite(), "risk-free rate must be finite");
+        self.risk_free_rate = annual_rate;
+    }
+
+    /// Set how many bars per symbol `history()` retains (the rolling window
+    /// depth). Defaults to 500. `set_warm_up` raises it to cover the warm-up
+    /// length, so call this *after* `set_warm_up` to pick a smaller window on
+    /// purpose. Must be at least 1.
+    pub fn set_max_history(&mut self, bars: usize) {
+        assert!(bars >= 1, "max history must be at least 1");
+        self.max_history = bars;
     }
 
     /// Record a mark-to-market equity point on **every bar** (into
