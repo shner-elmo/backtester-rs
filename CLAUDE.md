@@ -43,7 +43,7 @@ Parquet files → Bar stream → Engine loop → Consolidators → Algorithm cal
 - `slippage.rs` / `commission.rs` — Pluggable fill friction: trait + built-ins + closure blanket impls, both keyed off `FillContext`
 - `margin.rs` — Pluggable buying-power limit (same trait + built-ins + closure pattern, keyed off `MarginContext`): `NoMargin` (default, unlimited) or `MaxLeverage` (gross exposure ≤ n × equity; over-cap fills trimmed to the lot or rejected, reducing fills always pass)
 - `consolidator.rs` — Aggregates minute bars into `Minutes(n)`, `Hours(n)`, or `Daily` periods (OHLCV aggregated); fires an `FnMut` callback when each period closes
-- `data.rs` — Loads bars from Parquet files (arrow/parquet crates); maps encoded ticker IDs to symbols via JSON; Hive-partitioned files sorted by (year, month); `read_bars_from_file` is the per-file streaming entry point
+- `data.rs` — Loads bars from Parquet files (arrow/parquet crates); maps encoded ticker IDs to symbols via JSON; Hive-partitioned files sorted by (year, month); `read_bars_from_file` is the per-file streaming entry point. Metadata filenames (ticker map, splits, dividends, renames) default to consts but are overridable per-run via `Context::set_*_file` setters (relative to the data root, or absolute)
 - `bar.rs` — `Bar`: time, OHLCV, `MarketSession` (PreMarket/Main/AfterMarket)
 - `slice.rs` — `Slice`: point-in-time snapshot of bars for all subscribed symbols
 - `stats.rs` — `Trade`, `EquityPoint`, `BacktestStats`; `compute_stats` derives drawdown/Sharpe from the daily mark-to-market equity curve

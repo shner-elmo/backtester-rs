@@ -20,6 +20,28 @@ Parquet plus a ticker-encoding JSON:
 
 `encoded_tickers.json` maps the encoded `ticker` id (a `u16`) to its symbol.
 
+### Optional metadata files & custom paths
+
+Next to `encoded_tickers.json` the engine also looks for three optional
+files: `get_splits.json` (stock splits), `get_dividends.json` (cash
+dividends), and `ticker_renames.json` (ticker renames). When absent they
+simply mean "no such events" (the committed test fixture has none of them).
+
+Every one of these locations — including the ticker map — can be overridden
+in code from `initialize`:
+
+```rust
+ctx.set_ticker_map_file("my_tickers.json");        // relative to the data root
+ctx.set_splits_file("/srv/meta/splits.json");      // absolute paths work too
+ctx.set_dividends_file("my_dividends.json");
+ctx.set_renames_file("renames/2023.json");
+```
+
+A relative path resolves against the data root passed to `run`; an absolute
+path is used as-is. Note the missing-file rule flips once you set a path
+explicitly: a configured splits/dividends/renames file **must exist**, so a
+typo fails the run instead of silently skipping every event.
+
 ### Parquet schema
 
 Columns, in physical order (this order matters — see the note below):

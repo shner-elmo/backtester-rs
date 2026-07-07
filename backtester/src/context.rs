@@ -91,6 +91,10 @@ pub struct Context {
     pub(crate) track_intraday_equity: bool,
     pub(crate) fill_timing: FillTiming,
     pub(crate) output_dir: Option<PathBuf>,
+    pub(crate) ticker_map_file: Option<PathBuf>,
+    pub(crate) splits_file: Option<PathBuf>,
+    pub(crate) dividends_file: Option<PathBuf>,
+    pub(crate) renames_file: Option<PathBuf>,
 }
 
 impl Default for Context {
@@ -120,6 +124,10 @@ impl Default for Context {
             track_intraday_equity: false,
             fill_timing: FillTiming::default(),
             output_dir: None,
+            ticker_map_file: None,
+            splits_file: None,
+            dividends_file: None,
+            renames_file: None,
         }
     }
 }
@@ -220,6 +228,38 @@ impl Context {
     /// directory. Ignored by `run_backtest`, which never writes a file.
     pub fn set_output_dir(&mut self, dir: impl Into<PathBuf>) {
         self.output_dir = Some(dir.into());
+    }
+
+    /// Path of the ticker-encoding map (default `encoded_tickers.json` in the
+    /// data root). A relative path is resolved against the data root passed
+    /// to `run`/`run_backtest`; an absolute path is used as-is. This file is
+    /// required — a backtest cannot start without it.
+    pub fn set_ticker_map_file(&mut self, path: impl Into<PathBuf>) {
+        self.ticker_map_file = Some(path.into());
+    }
+
+    /// Path of the Polygon-format stock-splits JSON (default
+    /// `get_splits.json` in the data root). A relative path is resolved
+    /// against the data root; an absolute path is used as-is. When left at
+    /// the default a missing file simply means "no splits"; a path set here
+    /// must exist, so a typo fails the run instead of silently skipping
+    /// every split.
+    pub fn set_splits_file(&mut self, path: impl Into<PathBuf>) {
+        self.splits_file = Some(path.into());
+    }
+
+    /// Path of the Polygon-format cash-dividends JSON (default
+    /// `get_dividends.json` in the data root). Same resolution and
+    /// missing-file rules as [`set_splits_file`](Self::set_splits_file).
+    pub fn set_dividends_file(&mut self, path: impl Into<PathBuf>) {
+        self.dividends_file = Some(path.into());
+    }
+
+    /// Path of the ticker-renames JSON (default `ticker_renames.json` in the
+    /// data root). Same resolution and missing-file rules as
+    /// [`set_splits_file`](Self::set_splits_file).
+    pub fn set_renames_file(&mut self, path: impl Into<PathBuf>) {
+        self.renames_file = Some(path.into());
     }
 
     /// Annual risk-free rate the Sharpe ratio is computed in excess of

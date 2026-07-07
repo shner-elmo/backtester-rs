@@ -644,3 +644,78 @@ fn margin_interest_accrues_on_a_negative_cash_balance() {
     assert!((result.final_equity - 99_950.0).abs() < 1e-6);
     assert!(identity_error(&result) < 1e-6);
 }
+
+#[test]
+fn splits_load_from_a_custom_configured_path() {
+    // Same scenario as forward_split_adjusts_position_history_and_keeps_equity_flat,
+    // but the splits JSON lives under a non-default name set via set_splits_file.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut rows = days_of(1, &TRADING_DAYS, |d| if d < 7 { 90.0 } else { 30.0 });
+    rows.extend(days_of(2, &TRADING_DAYS, |_| 10.0));
+    write_fixture(tmp.path(), &rows, &[(1, "SPLT"), (2, "STAY")], None, None);
+    let splits_json = r#"[{"execution_date": "2023-06-07", "id": "x", "split_from": 1, "split_to": 3, "ticker": "SPLT"}]"#;
+    fs::write(tmp.path().join("my_splits.json"), splits_json).unwrap();
+
+    struct WithSplitsFile {
+        file: std::path::PathBuf,
+        bought: bool,
+    }
+    impl Algorithm for WithSplitsFile {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("SPLT");
+            ctx.add_equity("STAY");
+            ctx.set_splits_file(&self.file);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            if !self.bought && data.bars.contains_key("SPLT") {
+                self.bought = true;
+                ctx.market_order("SPLT", 10.0);
+            }
+        }
+    }
+
+    // A relative path resolves against the data root.
+    let result = run_backtest(
+        WithSplitsFile { file: "my_splits.json".into(), bought: false },
+        tmp.path().to_str().unwrap(),
+    )
+    .unwrap();
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SPLT").unwrap();
+    assert!((pos.quantity - 30.0).abs() < 1e-9, "split not applied: qty {}", pos.quantity);
+    assert!((pos.avg_price - 30.0).abs() < 1e-9);
+
+    // An absolute path outside the data root works too.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let abs = elsewhere.path().join("elsewhere_splits.json");
+    fs::write(&abs, splits_json).unwrap();
+    let result =
+        run_backtest(WithSplitsFile { file: abs, bought: false }, tmp.path().to_str().unwrap())
+            .unwrap();
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SPLT").unwrap();
+    assert!((pos.quantity - 30.0).abs() < 1e-9, "split not applied via absolute path");
+}
+
+#[test]
+fn an_explicitly_configured_missing_metadata_file_is_an_error() {
+    // At the defaults a missing splits file just means "no splits", but a
+    // path the user set must exist — a typo should fail loudly, not silently
+    // skip every split.
+    let tmp = tempfile::tempdir().unwrap();
+    let rows = days_of(1, &TRADING_DAYS, |_| 10.0);
+    write_fixture(tmp.path(), &rows, &[(1, "STAY")], None, None);
+
+    struct MissingSplits;
+    impl Algorithm for MissingSplits {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("STAY");
+            ctx.set_splits_file("nope.json");
+        }
+        fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+    }
+
+    let err = run_backtest(MissingSplits, tmp.path().to_str().unwrap())
+        .expect_err("a configured-but-missing splits file must fail the run");
+    assert!(err.to_string().contains("nope.json"), "error should name the file: {err}");
+}

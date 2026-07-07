@@ -10,8 +10,9 @@ use crate::{
     broker::Position,
     context::{Context, FillTiming, Order, OrderKind, RestingKind, RestingOrder},
     data::{
-        file_year_month, load_dividends, load_renames, load_splits, load_ticker_map,
-        read_bars_from_file, sorted_parquet_files,
+        file_year_month, load_dividends_from, load_renames_from, load_splits_from,
+        load_ticker_map_from, read_bars_from_file, sorted_parquet_files, DIVIDENDS_FILE,
+        RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
     },
     error::BacktestError,
     margin::MarginContext,
@@ -553,6 +554,23 @@ pub fn run_backtest<A: Algorithm>(
     run_prepared(algo, ctx, data_path)
 }
 
+/// Resolve a metadata file location: an explicitly configured absolute path
+/// is used as-is, a relative one is joined to the data root, and `None`
+/// falls back to `default_name` in the data root. The bool reports whether
+/// the path was explicitly configured — missing *optional* files are only
+/// tolerated at the defaults; an explicitly set file must exist.
+fn resolve_data_file(
+    data_root: &str,
+    custom: &Option<std::path::PathBuf>,
+    default_name: &str,
+) -> (std::path::PathBuf, bool) {
+    match custom {
+        Some(p) if p.is_absolute() => (p.clone(), true),
+        Some(p) => (std::path::Path::new(data_root).join(p), true),
+        None => (std::path::Path::new(data_root).join(default_name), false),
+    }
+}
+
 /// The engine body shared by [`run_backtest`] and [`run`]: `ctx` has already
 /// been through the algorithm's `initialize`.
 fn run_prepared<A: Algorithm>(
@@ -561,7 +579,8 @@ fn run_prepared<A: Algorithm>(
     data_path: &str,
 ) -> Result<BacktestResult, BacktestError> {
     let initial_cash = ctx.portfolio.cash;
-    let ticker_map = load_ticker_map(data_path)?;
+    let (ticker_map_path, _) = resolve_data_file(data_path, &ctx.ticker_map_file, TICKER_MAP_FILE);
+    let ticker_map = load_ticker_map_from(&ticker_map_path)?;
     let mut subscribed = ctx.subscribed_symbols.clone();
 
     // Ticker renames, queued by effective date. Subscribe every rename target
@@ -569,7 +588,9 @@ fn run_prepared<A: Algorithm>(
     // transferred on the effective date); this also covers a successor that
     // begins trading in the same month-file as the rename.
     let mut pending_renames: BTreeMap<NaiveDate, Vec<(String, String)>> = BTreeMap::new();
-    for (date, pairs) in load_renames(data_path, &subscribed)? {
+    let (renames_path, renames_required) =
+        resolve_data_file(data_path, &ctx.renames_file, RENAMES_FILE);
+    for (date, pairs) in load_renames_from(&renames_path, &subscribed, renames_required)? {
         for (old, new) in pairs {
             subscribed.insert(new.clone());
             pending_renames.entry(date).or_default().push((old, new));
@@ -598,7 +619,9 @@ fn run_prepared<A: Algorithm>(
 
     // Splits for subscribed symbols, queued by execution date.
     let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
-    for (symbol, by_date) in load_splits(data_path, &subscribed)? {
+    let (splits_path, splits_required) =
+        resolve_data_file(data_path, &ctx.splits_file, SPLITS_FILE);
+    for (symbol, by_date) in load_splits_from(&splits_path, &subscribed, splits_required)? {
         for (date, ratio) in by_date {
             pending_splits.entry(date).or_default().push((symbol.clone(), ratio));
         }
@@ -606,7 +629,10 @@ fn run_prepared<A: Algorithm>(
 
     // Cash dividends for subscribed symbols, queued by ex-dividend date.
     let mut pending_dividends: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
-    for (symbol, by_date) in load_dividends(data_path, &subscribed)? {
+    let (dividends_path, dividends_required) =
+        resolve_data_file(data_path, &ctx.dividends_file, DIVIDENDS_FILE);
+    for (symbol, by_date) in load_dividends_from(&dividends_path, &subscribed, dividends_required)?
+    {
         for (date, amount) in by_date {
             pending_dividends.entry(date).or_default().push((symbol.clone(), amount));
         }
