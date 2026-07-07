@@ -129,9 +129,10 @@ things it deliberately does **not** model.
   conservative model call `ctx.set_fill_timing(FillTiming::NextBarOpen)` to
   fill at the **next bar's open** instead (see
   [Fill timing](docs/backtesting.md#fill-timing)).
-- There are **no limit/stop orders, no intrabar fills, no partial fills, and
-  no liquidity constraints** — you can notionally trade any size at the
-  close. Be skeptical of strategies that trade large size in illiquid names.
+- **Resting `limit_order`/`stop_order`s** fill intrabar off the bar's range,
+  and `set_max_volume_participation` caps a fill at a fraction of bar volume
+  (partial fills). Beyond that there is no order-book depth or queue modeling,
+  so be skeptical of strategies that trade large size in illiquid names.
 - `set_holdings` sizes at the pre-slippage reference price and rounds to the
   lot (default: whole shares).
 

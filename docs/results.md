@@ -124,8 +124,10 @@ jq -r '.equity_curve[] | "\(.time),\(.equity)"' backtest_result_*.json
 
 ## Caveats
 
-- Fills happen at the bar **close** (plus slippage); there is no intrabar
-  execution, order book, or partial-fill modeling.
+- Market fills happen at the bar **close** (or the next open under
+  `NextBarOpen`), plus slippage; resting limit/stop orders fill intrabar off the
+  bar's range, and `set_max_volume_participation` models partial fills. There is
+  no order-book depth or queue modeling.
 - With no slippage/commission configured, results are optimistic relative to
   live trading — see [backtesting.md](./backtesting.md#slippage) and
   [backtesting.md](./backtesting.md#commission).
