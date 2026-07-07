@@ -163,6 +163,32 @@ fn intraday_equity_is_opt_in_and_finer_than_the_daily_curve() {
 }
 
 #[test]
+fn on_end_of_day_fires_for_every_trading_day_including_the_last() {
+    use std::sync::{Arc, Mutex};
+
+    struct CountEod {
+        days: Arc<Mutex<usize>>,
+    }
+    impl Algorithm for CountEod {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("AAPL");
+        }
+        fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+        fn on_end_of_day(&mut self, _ctx: &mut Context) {
+            *self.days.lock().unwrap() += 1;
+        }
+    }
+
+    let days = Arc::new(Mutex::new(0));
+    let result = run_backtest(CountEod { days: days.clone() }, FIXTURE).unwrap();
+
+    // One callback per trading day — the curve has one extra point, the
+    // day-before anchor at initial cash.
+    assert_eq!(*days.lock().unwrap(), result.equity_curve.len() - 1);
+}
+
+#[test]
 fn set_holdings_rounds_to_whole_shares_by_default() {
     let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
     let qty = result.open_positions[0].quantity;

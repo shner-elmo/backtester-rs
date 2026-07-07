@@ -8,6 +8,7 @@ use crate::{
     broker::Portfolio,
     commission::{CommissionModel, NoCommission},
     consolidator::{ConsolidatorEntry, ConsolidatorPeriod},
+    margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
 };
 
@@ -77,6 +78,7 @@ pub struct Context {
     pub(crate) max_history: usize,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
+    pub(crate) margin: Box<dyn MarginModel>,
     pub(crate) lot_size: f64,
     pub(crate) delist_after_days: usize,
     pub(crate) delist_haircut: f64,
@@ -103,6 +105,7 @@ impl Default for Context {
             max_history: 500,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
+            margin: Box::new(NoMargin),
             lot_size: 1.0,
             delist_after_days: 5,
             delist_haircut: 0.0,
@@ -127,6 +130,9 @@ impl Context {
         self.portfolio.cash = cash;
     }
 
+    /// Skip the first `bars` time steps before `on_data` fires. History and
+    /// consolidators still fill during warm-up. Counts *ticks*, not per-symbol
+    /// bars: several symbols sharing one timestamp consume a single step.
     pub fn set_warm_up(&mut self, bars: usize) {
         self.warm_up_remaining = bars;
         if bars > self.max_history {
@@ -151,6 +157,18 @@ impl Context {
     /// Defaults to no commission.
     pub fn set_commission(&mut self, model: impl CommissionModel + 'static) {
         self.commission = Box::new(model);
+    }
+
+    /// Set the margin (buying-power) model consulted before every fill.
+    /// Accepts any built-in model — e.g.
+    /// [`MaxLeverage`](crate::margin::MaxLeverage) to cap gross exposure at a
+    /// multiple of equity — a custom [`MarginModel`](crate::margin::MarginModel),
+    /// or a closure `Fn(&MarginContext) -> f64` returning the allowed signed
+    /// quantity. Fills the model shrinks are rounded down to the lot size.
+    /// Defaults to [`NoMargin`](crate::margin::NoMargin): unlimited buying
+    /// power, cash may go arbitrarily negative.
+    pub fn set_margin_model(&mut self, model: impl MarginModel + 'static) {
+        self.margin = Box::new(model);
     }
 
     /// A held symbol that produces no bars for this many consecutive trading

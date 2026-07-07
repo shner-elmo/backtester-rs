@@ -14,6 +14,7 @@ use crate::{
         read_bars_from_file, sorted_parquet_files,
     },
     error::BacktestError,
+    margin::MarginContext,
     slice::Slice,
     slippage::FillContext,
     stats::{compute_stats, BacktestStats, EquityPoint, OpenPositionSummary, Trade},
@@ -213,20 +214,29 @@ fn apply_financing(
     }
 
     // Margin interest on a negative cash balance, spread across long positions
-    // by market value (they are what the borrowing funds).
+    // by market value (they are what the borrowing funds). With no longs it
+    // falls back to the whole book by absolute market value, so an all-short
+    // portfolio that went cash-negative still pays. With no positions at all
+    // the charge is skipped: there is no open lifetime to attribute it to, and
+    // an unattributed debit would break the accounting identity.
     if ctx.margin_interest_rate > 0.0 && ctx.portfolio.cash < 0.0 {
         let interest = ctx.margin_interest_rate / 252.0 * (-ctx.portfolio.cash);
-        let longs: Vec<(String, f64)> = ctx
-            .portfolio
-            .positions
-            .values()
-            .filter(|p| p.quantity > 0.0)
-            .map(|p| (p.symbol.clone(), p.quantity * price_of(&p.symbol, p.avg_price)))
-            .collect();
-        let total_mv: f64 = longs.iter().map(|(_, mv)| mv).sum();
+        let book = |longs_only: bool| -> Vec<(String, f64)> {
+            ctx.portfolio
+                .positions
+                .values()
+                .filter(|p| !longs_only || p.quantity > 0.0)
+                .map(|p| (p.symbol.clone(), p.quantity.abs() * price_of(&p.symbol, p.avg_price)))
+                .collect()
+        };
+        let mut pool = book(true);
+        if pool.is_empty() {
+            pool = book(false);
+        }
+        let total_mv: f64 = pool.iter().map(|(_, mv)| mv).sum();
         if total_mv > 0.0 {
             ctx.portfolio.cash -= interest;
-            for (sym, market_value) in longs {
+            for (sym, market_value) in pool {
                 let share = interest * (market_value / total_mv);
                 if let Some(lt) = lifetimes.get_mut(&sym) {
                     lt.realized_pnl -= share;
@@ -347,6 +357,12 @@ fn force_close_delisted(
 /// bar's close under [`FillTiming::CurrentBarClose`], the next bar's open under
 /// [`FillTiming::NextBarOpen`]). `fill_bar` is the bar the fill prints against.
 ///
+/// `limit_bound`, set for resting limit orders, caps the post-slippage fill at
+/// the limit price (a limit never fills worse than its limit — slippage can
+/// only improve it). `participation_used` tracks volume already taken from
+/// each symbol's bar this tick, so several orders on one symbol share the
+/// volume-participation cap instead of each taking the full fraction.
+///
 /// Returns the signed quantity actually filled (0.0 if none), which is less
 /// than requested when the volume-participation cap bites — the caller uses it
 /// to shrink a partially filled resting order.
@@ -361,6 +377,8 @@ fn execute_order(
     exec_price: f64,
     fill_bar: &Bar,
     tick_time: DateTime<Utc>,
+    limit_bound: Option<f64>,
+    participation_used: &mut HashMap<String, f64>,
 ) -> f64 {
     let current_qty = ctx.portfolio.positions.get(&order.symbol).map(|p| p.quantity).unwrap_or(0.0);
 
@@ -378,24 +396,69 @@ fn execute_order(
         OrderKind::Liquidate => -current_qty,
     };
 
-    // Volume-participation cap: a single fill can't take more than the
-    // configured fraction of the bar's volume. Unlimited when the fraction is 0.
+    // Volume-participation cap: fills on one symbol's bar can't take more than
+    // the configured fraction of its volume *in aggregate* this tick, and the
+    // remaining allowance is rounded down to the lot so a capped fill stays
+    // on-lot. Unlimited when the fraction is 0.
     let qty = if ctx.max_volume_participation > 0.0 {
-        let cap = ctx.max_volume_participation * fill_bar.volume as f64;
+        let used = participation_used.get(&order.symbol).copied().unwrap_or(0.0);
+        let cap = ctx.max_volume_participation * fill_bar.volume as f64 - used;
+        let cap = ((cap / ctx.lot_size).trunc() * ctx.lot_size).max(0.0);
         qty.signum() * qty.abs().min(cap)
     } else {
         qty
     };
 
+    // Buying-power cap from the margin model: shrink (or reject) the fill.
+    // The allowed quantity is clamped to the order's own direction and size —
+    // a model can only trim, never grow or reverse — and a trimmed fill is
+    // rounded down to the lot.
+    let qty = if ctx.margin.unlimited() {
+        qty
+    } else {
+        let equity = ctx.portfolio.total_value(mark_prices);
+        let other_exposure: f64 = ctx
+            .portfolio
+            .positions
+            .values()
+            .filter(|p| p.symbol != order.symbol)
+            .map(|p| p.quantity.abs() * mark_prices.get(&p.symbol).copied().unwrap_or(p.avg_price))
+            .sum();
+        let allowed = ctx.margin.allowed_quantity(&MarginContext {
+            symbol: &order.symbol,
+            quantity: qty,
+            price: exec_price,
+            current_qty,
+            cash: ctx.portfolio.cash,
+            equity,
+            other_exposure,
+        });
+        let allowed = if qty > 0.0 { allowed.clamp(0.0, qty) } else { allowed.clamp(qty, 0.0) };
+        if (allowed - qty).abs() < 1e-9 {
+            qty
+        } else {
+            qty.signum() * (allowed.abs() / ctx.lot_size).trunc() * ctx.lot_size
+        }
+    };
+
     if qty.abs() < 1e-9 {
         return 0.0;
     }
+    if ctx.max_volume_participation > 0.0 {
+        *participation_used.entry(order.symbol.clone()).or_insert(0.0) += qty.abs();
+    }
 
     // Actual execution price after the user's slippage model. Sizing (above)
-    // uses the reference price; slippage only affects the fill.
+    // uses the reference price; slippage only affects the fill — except that a
+    // limit order never fills through its limit.
     let fill_ctx =
         FillContext { symbol: &order.symbol, quantity: qty, price: exec_price, bar: fill_bar };
     let fill_price = ctx.slippage.fill_price(&fill_ctx);
+    let fill_price = match limit_bound {
+        Some(bound) if qty > 0.0 => fill_price.min(bound),
+        Some(bound) => fill_price.max(bound),
+        None => fill_price,
+    };
     let commission = ctx.commission.commission(&fill_ctx);
     *total_commission += commission;
 
@@ -516,6 +579,10 @@ pub fn run_backtest<A: Algorithm>(
     // bar's range until triggered or the backtest ends.
     let mut resting_book: HashMap<String, Vec<RestingOrder>> = HashMap::new();
 
+    // Bar volume already consumed per symbol this tick, so all fills against
+    // one bar share the volume-participation cap. Cleared every tick.
+    let mut participation_used: HashMap<String, f64> = HashMap::new();
+
     // Splits for subscribed symbols, queued by execution date.
     let mut pending_splits: BTreeMap<NaiveDate, Vec<(String, f64)>> = BTreeMap::new();
     for (symbol, by_date) in load_splits(data_path, &subscribed)? {
@@ -573,16 +640,21 @@ pub fn run_backtest<A: Algorithm>(
         // set, not the whole dataset, because the filter runs before the push.
         let mut tick_map: BTreeMap<i64, Vec<(String, Bar)>> = BTreeMap::new();
         read_bars_from_file(file_path, &ticker_map, &mut mask, |symbol, bar| {
+            // A timestamp outside the nanosecond-representable range (pre-1677
+            // or post-2262) is corrupt data; drop the bar rather than pinning
+            // it to the epoch.
             if subscribed.contains(&symbol) {
-                let ts = bar.time.timestamp_nanos_opt().unwrap_or(0);
-                tick_map.entry(ts).or_default().push((symbol, bar));
+                if let Some(ts) = bar.time.timestamp_nanos_opt() {
+                    tick_map.entry(ts).or_default().push((symbol, bar));
+                }
             }
         })?;
 
         for (ts_ns, bars) in tick_map {
             let secs = ts_ns / 1_000_000_000;
             let nanos = (ts_ns % 1_000_000_000) as u32;
-            let tick_time = Utc.timestamp_opt(secs, nanos).single().unwrap();
+            let Some(tick_time) = Utc.timestamp_opt(secs, nanos).single() else { continue };
+            participation_used.clear();
             // Trading date in US Eastern, so after-market bars (which cross
             // midnight UTC) stay on the day they belong to.
             let tick_date = tick_time.with_timezone(&Eastern).date_naive();
@@ -649,6 +721,26 @@ pub fn run_backtest<A: Algorithm>(
                             ratio,
                             tick_time,
                         );
+                        // Orders decided pre-split are expressed in pre-split
+                        // terms; rescale them (qty × ratio, trigger ÷ ratio)
+                        // so they don't spuriously fire — or silently die —
+                        // against the post-split tape.
+                        if let Some(orders) = resting_book.get_mut(&symbol) {
+                            for ro in orders {
+                                ro.qty *= ratio;
+                                ro.kind = match ro.kind {
+                                    RestingKind::Limit(p) => RestingKind::Limit(p / ratio),
+                                    RestingKind::Stop(p) => RestingKind::Stop(p / ratio),
+                                };
+                            }
+                        }
+                        if let Some(orders) = deferred.get_mut(&symbol) {
+                            for o in orders {
+                                if let OrderKind::Market(q) = &mut o.kind {
+                                    *q *= ratio;
+                                }
+                            }
+                        }
                         algo.on_split(&mut ctx, &symbol, ratio);
                     }
                 }
@@ -765,6 +857,8 @@ pub fn run_backtest<A: Algorithm>(
                             bar.open,
                             bar,
                             tick_time,
+                            None,
+                            &mut participation_used,
                         );
                     }
                 }
@@ -784,6 +878,10 @@ pub fn run_backtest<A: Algorithm>(
                                     symbol: symbol.clone(),
                                     kind: OrderKind::Market(ro.qty),
                                 };
+                                let bound = match ro.kind {
+                                    RestingKind::Limit(p) => Some(p),
+                                    RestingKind::Stop(_) => None,
+                                };
                                 let filled = execute_order(
                                     &mut ctx,
                                     &mut lifetimes,
@@ -794,6 +892,8 @@ pub fn run_backtest<A: Algorithm>(
                                     price,
                                     bar,
                                     tick_time,
+                                    bound,
+                                    &mut participation_used,
                                 );
                                 ro.qty -= filled;
                                 if ro.qty.abs() > 1e-9 {
@@ -863,7 +963,11 @@ pub fn run_backtest<A: Algorithm>(
                 FillTiming::CurrentBarClose => {
                     for order in orders {
                         // Fill at this bar's close; a symbol with no bar this
-                        // tick has no price to fill against.
+                        // tick has no price to fill against. Sizing marks the
+                        // portfolio with last_known_prices — already advanced
+                        // to this tick's closes — so held symbols *without* a
+                        // bar this tick are valued at their latest market
+                        // price, not their cost basis.
                         let Some(bar) = slice.bars.get(&order.symbol) else { continue };
                         let Some(&price) = current_prices.get(&order.symbol) else { continue };
                         execute_order(
@@ -872,10 +976,12 @@ pub fn run_backtest<A: Algorithm>(
                             &mut trades,
                             &mut total_commission,
                             &order,
-                            &current_prices,
+                            &last_known_prices,
                             price,
                             bar,
                             tick_time,
+                            None,
+                            &mut participation_used,
                         );
                     }
                 }
@@ -909,12 +1015,16 @@ pub fn run_backtest<A: Algorithm>(
         c.flush();
     }
 
-    // Close the equity curve with the final day's mark.
+    // Close the equity curve with the final day's mark and give the final day
+    // its end-of-day callback (mid-backtest it fires on the next day's first
+    // bar, which the last day doesn't have). Orders placed here have no bar
+    // left to fill against and are dropped.
     if let Some(prev) = last_date {
         equity_curve.push(EquityPoint {
             time: prev.to_string(),
             equity: ctx.portfolio.total_value(&last_known_prices),
         });
+        algo.on_end_of_day(&mut ctx);
     }
 
     let final_equity = ctx.portfolio.total_value(&last_known_prices);

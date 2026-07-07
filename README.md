@@ -25,7 +25,7 @@ cargo run -p ui        # http://localhost:3001
 === Backtest Complete ===
 Result written to: backtest_result_2026-07-04T22-13-30.json  (view it with `cargo run -p ui`)
 Trades: 92  |  Win Rate: 24%  |  Total PnL: $-1402  |  Final Equity: $98726
-Profit Factor: 0.88  |  Max Drawdown: 3.6%  |  Sharpe: -2.01  |  Commission: $0.00
+Profit Factor: 0.88  |  Max Drawdown: 3.6%  |  Sharpe: -1.84  |  Commission: $0.00
 ```
 
 To run against a full dataset, pass a directory containing
@@ -129,12 +129,21 @@ things it deliberately does **not** model.
   conservative model call `ctx.set_fill_timing(FillTiming::NextBarOpen)` to
   fill at the **next bar's open** instead (see
   [Fill timing](docs/backtesting.md#fill-timing)).
-- **Resting `limit_order`/`stop_order`s** fill intrabar off the bar's range,
-  and `set_max_volume_participation` caps a fill at a fraction of bar volume
-  (partial fills). Beyond that there is no order-book depth or queue modeling,
-  so be skeptical of strategies that trade large size in illiquid names.
+- **Resting `limit_order`/`stop_order`s** fill intrabar off the bar's range
+  (a limit never fills worse than its limit price, even with slippage
+  configured), and `set_max_volume_participation` caps fills at a fraction of
+  bar volume (partial fills) — shared across all orders hitting one bar and
+  rounded down to the lot. Beyond that there is no order-book depth or queue
+  modeling, so be skeptical of strategies that trade large size in illiquid
+  names.
 - `set_holdings` sizes at the pre-slippage reference price and rounds to the
   lot (default: whole shares).
+- **Buying power is unlimited by default** — cash can go arbitrarily negative
+  (free leverage unless you also set a financing rate). Set a margin model to
+  constrain it: `ctx.set_margin_model(MaxLeverage::new(2.0))` caps gross
+  exposure at 2× equity, trimming (or rejecting) orders that would exceed it
+  while always letting an over-levered book reduce. Pluggable like slippage —
+  see [Margin](docs/backtesting.md#margin--buying-power).
 
 ### Sessions
 
@@ -159,7 +168,9 @@ are much worse than the print. Check `bar.market_session` and skip
   so `set_delist_haircut(fraction)` writes the fill down.
 - **Ticker renames** (from `ticker_renames.json`) transfer the position,
   ledger, and history from old → new on the effective date with no trade
-  emitted; `on_rename` fires so you can retarget your strategy.
+  emitted; `on_rename` fires so you can retarget your strategy. Note that the
+  successor symbol is subscribed from the backtest start, so its bars appear
+  in `on_data` *before* the effective date.
 - **Cash dividends** are credited on the ex-date from `get_dividends.json`
   (Polygon format) for symbols you hold — a debit for shorts — and attributed
   to the position's PnL, so round trips report total return. `on_dividend`
@@ -177,7 +188,8 @@ are much worse than the print. Check `bar.market_session` and skip
   real-data run).
 - **Drawdown and Sharpe come from the daily mark-to-market equity curve**
   (ET trading dates), not per-trade PnL — open-position pain counts. Sharpe
-  assumes a zero risk-free rate and √252 scaling. The curve is **daily** by
+  assumes a zero risk-free rate, sample (n−1) variance, and √252 scaling. The
+  curve is **daily** by
   default; `set_track_intraday_equity(true)` also records a per-bar curve
   (`intraday_equity`) so intraday drawdown is visible.
 - **Survivorship bias is yours to manage**: the engine only sees symbols you
@@ -186,9 +198,11 @@ are much worse than the print. Check `bar.market_session` and skip
 
 ### Warm-up
 
-`set_warm_up(n)` counts **bars**, not days, starting at the effective start
-date. History and consolidators fill during warm-up; `on_data`,
-`on_end_of_day`, and the equity curve begin after it.
+`set_warm_up(n)` counts **time steps**, not days — several symbols sharing a
+timestamp consume one step — starting at the effective start date. History and
+consolidators fill during warm-up; `on_data`, `on_end_of_day`, and the equity
+curve begin after it. `on_end_of_day` also fires once for the final day at the
+end of data.
 
 ## Status
 

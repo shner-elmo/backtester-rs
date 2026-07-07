@@ -3,6 +3,12 @@ use crate::{context::Context, slice::Slice};
 pub trait Algorithm {
     fn initialize(&mut self, ctx: &mut Context);
     fn on_data(&mut self, ctx: &mut Context, data: &Slice);
+
+    /// Fired once per trading day after its last bar: on the first bar of the
+    /// following day (before that bar touches any state), and once at the end
+    /// of data for the final day. Orders placed here fill on the next day's
+    /// first bar — except on the final call, where no bar remains and they are
+    /// dropped.
     fn on_end_of_day(&mut self, _ctx: &mut Context) {}
 
     /// Fired when a stock split executes on a subscribed symbol. The engine
