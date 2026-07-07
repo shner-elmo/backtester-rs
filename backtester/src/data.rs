@@ -20,8 +20,15 @@ use crate::{
 pub const COLUMNS: [&str; 8] =
     ["ticker", "volume", "open", "high", "low", "close", "window_start", "market_session"];
 
+/// Metadata files the loaders expect inside the data root, next to the
+/// Parquet tree. Only `TICKER_MAP_FILE` is required; the rest are optional.
+pub const TICKER_MAP_FILE: &str = "encoded_tickers.json";
+pub const SPLITS_FILE: &str = "get_splits.json";
+pub const DIVIDENDS_FILE: &str = "get_dividends.json";
+pub const RENAMES_FILE: &str = "ticker_renames.json";
+
 pub fn load_ticker_map(data_root: &str) -> Result<HashMap<u16, String>, BacktestError> {
-    let path = PathBuf::from(format!("{}/encoded_tickers.json", data_root));
+    let path = PathBuf::from(format!("{data_root}/{TICKER_MAP_FILE}"));
     let content =
         read_to_string(&path).map_err(|source| BacktestError::Io { path: path.clone(), source })?;
     let temp: HashMap<String, String> = serde_json::from_str(&content)
@@ -51,7 +58,7 @@ pub fn load_splits(
         split_to: f64,
     }
 
-    let path = PathBuf::from(format!("{}/get_splits.json", data_root));
+    let path = PathBuf::from(format!("{data_root}/{SPLITS_FILE}"));
     let content = match read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -103,7 +110,7 @@ pub fn load_dividends(
 
     type DividendMap = HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>;
 
-    let path = PathBuf::from(format!("{}/get_dividends.json", data_root));
+    let path = PathBuf::from(format!("{data_root}/{DIVIDENDS_FILE}"));
     let file = match File::open(&path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -162,7 +169,7 @@ pub fn load_renames(
         new: String,
     }
 
-    let path = PathBuf::from(format!("{}/ticker_renames.json", data_root));
+    let path = PathBuf::from(format!("{data_root}/{RENAMES_FILE}"));
     let content = match read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

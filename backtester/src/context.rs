@@ -84,6 +84,7 @@ pub struct Context {
     pub(crate) delist_haircut: f64,
     pub(crate) margin_interest_rate: f64,
     pub(crate) short_borrow_rate: f64,
+    pub(crate) risk_free_rate: f64,
     pub(crate) track_intraday_equity: bool,
     pub(crate) fill_timing: FillTiming,
 }
@@ -111,6 +112,7 @@ impl Default for Context {
             delist_haircut: 0.0,
             margin_interest_rate: 0.0,
             short_borrow_rate: 0.0,
+            risk_free_rate: 0.0,
             track_intraday_equity: false,
             fill_timing: FillTiming::default(),
         }
@@ -205,6 +207,23 @@ impl Context {
     pub fn set_short_borrow_rate(&mut self, annual_rate: f64) {
         assert!(annual_rate >= 0.0, "short borrow rate must be non-negative");
         self.short_borrow_rate = annual_rate;
+    }
+
+    /// Annual risk-free rate the Sharpe ratio is computed in excess of
+    /// (daily returns less `rate / 252`). Defaults to `0.0`. Only affects
+    /// reported stats — no cash accrues on idle balances.
+    pub fn set_risk_free_rate(&mut self, annual_rate: f64) {
+        assert!(annual_rate.is_finite(), "risk-free rate must be finite");
+        self.risk_free_rate = annual_rate;
+    }
+
+    /// Set how many bars per symbol `history()` retains (the rolling window
+    /// depth). Defaults to 500. `set_warm_up` raises it to cover the warm-up
+    /// length, so call this *after* `set_warm_up` to pick a smaller window on
+    /// purpose. Must be at least 1.
+    pub fn set_max_history(&mut self, bars: usize) {
+        assert!(bars >= 1, "max history must be at least 1");
+        self.max_history = bars;
     }
 
     /// Record a mark-to-market equity point on **every bar** (into

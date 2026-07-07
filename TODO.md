@@ -1,8 +1,6 @@
 # TODO
 
-## Continuation context (read this first)
-
-Snapshot for picking the work back up in a fresh chat. Updated 2026-07-06.
+## Project snapshot
 
 **What the project is:** an event-driven Rust backtesting engine (QuantConnect-
 style ergonomics). Cargo workspace: `backtester` (core lib), `data-viz`
@@ -10,25 +8,23 @@ style ergonomics). Cargo workspace: `backtester` (core lib), `data-viz`
 Start with `README.md` and `docs/` (backtesting, results, visualization,
 data-setup).
 
-**Repo / git state:** branch `master`; recent work is committed locally but
-not pushed (`git log origin/master..HEAD`); push is fine (solo repo).
-
 **Data & how to run:**
-- Full dataset (44 GB) at
-  `/path/to/data/output`
-  (`minute/year=YYYY/month=M/part-0.parquet` + `encoded_tickers.json`).
+- Full dataset (44 GB) lives outside the repo as a data root:
+  `minute/year=YYYY/month=M/part-0.parquet` + `encoded_tickers.json`
+  (see `docs/data-setup.md`).
 - No external data needed for tests/dev: committed fixtures at
   `backtester/tests/fixtures` (AAPL, Jan 2023). Demo flow:
   `cargo run --example ema_cross -- backtester/tests/fixtures` then
   `cargo run -p ui` → http://localhost:3001.
 - `cargo test --workspace` green; `cargo clippy` clean.
 
-**The 2026-07-04/05 session shipped the whole roadmap:** commission model,
-netted trade accounting (position lifetimes), `run_backtest -> BacktestResult`
-(stats + daily equity curve + open positions + trades), the `ui` dashboard,
-per-file streaming data load with month skipping, volume in `Bar`, Hive dir
-sorting, ET trading dates, EOD-timing fix, FnMut consolidator callbacks, lot
-rounding. All prior "Bugs" and "Missing Features" sections are resolved.
+**History:** the 2026-07-04/05 sessions shipped the whole original roadmap:
+commission model, netted trade accounting (position lifetimes),
+`run_backtest -> BacktestResult` (stats + daily equity curve + open positions
++ trades), the `ui` dashboard, per-file streaming data load with month
+skipping, volume in `Bar`, Hive dir sorting, ET trading dates, EOD-timing fix,
+FnMut consolidator callbacks, lot rounding. All prior "Bugs" and "Missing
+Features" sections are resolved.
 
 ## Roadmap (all shipped or evaluated)
 

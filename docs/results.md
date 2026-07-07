@@ -30,7 +30,7 @@ Open: AAPL 754.00 @ 130.73 (last 130.90, unrealized $128)
 | **Final Equity** | Cash + open positions marked at their last seen price |
 | **Profit Factor** | Gross profit ÷ gross loss (`inf` if there are no losing trades) |
 | **Max Drawdown** | Worst peak-to-trough drop of the *daily mark-to-market* equity curve |
-| **Sharpe** | Annualized (√252) from daily equity-curve returns, risk-free rate 0 |
+| **Sharpe** | Annualized (√252) from daily equity-curve returns, in excess of the `set_risk_free_rate` rate (default 0) |
 | **Commission** | Total commissions charged across every fill |
 
 The numbers come from [`stats::compute_stats`](../backtester/src/stats.rs).
@@ -51,6 +51,8 @@ therefore reports *zero* trades until it actually exits.
 
 Written to the **current working directory** as
 `backtest_result_<timestamp>.json` (the path is printed at the end of the run).
+Set `BACKTEST_OUTPUT_DIR=/some/dir` to write it elsewhere (the directory is
+created if missing).
 Top-level shape:
 
 ```json

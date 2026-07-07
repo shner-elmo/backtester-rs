@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Trading days per year, used to annualize the Sharpe ratio (√252 scaling)
+/// and to accrue per-day financing charges (`annual_rate / 252`).
+pub const TRADING_DAYS_PER_YEAR: f64 = 252.0;
+
 /// One completed round trip: the full lifetime of a position from the fill
 /// that opened it from flat to the fill that returned it to flat (or flipped
 /// it). Intermediate rebalance fills are netted into the entry/exit averages
@@ -57,11 +61,18 @@ pub struct BacktestStats {
     pub profit_factor: f64,
     /// Worst peak-to-trough decline of the daily mark-to-market equity curve.
     pub max_drawdown: f64,
-    /// Annualized from daily equity-curve returns (√252 scaling).
+    /// Annualized from daily equity-curve returns (√252 scaling), in excess of
+    /// the configured risk-free rate (default 0).
     pub sharpe_ratio: f64,
 }
 
-pub fn compute_stats(trades: &[Trade], equity_curve: &[EquityPoint]) -> BacktestStats {
+/// `risk_free_rate` is an annual rate (e.g. `0.05` for 5%); the Sharpe ratio
+/// is computed on daily returns in excess of `risk_free_rate / 252`.
+pub fn compute_stats(
+    trades: &[Trade],
+    equity_curve: &[EquityPoint],
+    risk_free_rate: f64,
+) -> BacktestStats {
     let trade_count = trades.len();
 
     let total_pnl: f64 = trades.iter().map(|t| t.pnl).sum();
@@ -96,7 +107,9 @@ pub fn compute_stats(trades: &[Trade], equity_curve: &[EquityPoint]) -> Backtest
         }
     }
 
-    // Sharpe from daily returns of the equity curve (risk-free rate = 0).
+    // Sharpe from daily returns of the equity curve, in excess of the
+    // risk-free rate.
+    let daily_rf = risk_free_rate / TRADING_DAYS_PER_YEAR;
     let returns: Vec<f64> = equity_curve
         .windows(2)
         .filter(|w| w[0].equity > 0.0)
@@ -114,7 +127,7 @@ pub fn compute_stats(trades: &[Trade], equity_curve: &[EquityPoint]) -> Backtest
         if std == 0.0 {
             0.0
         } else {
-            mean / std * 252.0_f64.sqrt()
+            (mean - daily_rf) / std * TRADING_DAYS_PER_YEAR.sqrt()
         }
     };
 
@@ -149,7 +162,7 @@ mod tests {
 
     #[test]
     fn empty_inputs_produce_zeroed_stats() {
-        let s = compute_stats(&[], &[]);
+        let s = compute_stats(&[], &[], 0.0);
         assert_eq!(s.trade_count, 0);
         assert_eq!(s.total_pnl, 0.0);
         assert_eq!(s.max_drawdown, 0.0);
@@ -159,7 +172,7 @@ mod tests {
     #[test]
     fn win_rate_and_profit_factor() {
         let trades = vec![trade(100.0), trade(-50.0), trade(300.0), trade(-100.0)];
-        let s = compute_stats(&trades, &[]);
+        let s = compute_stats(&trades, &[], 0.0);
         assert_eq!(s.trade_count, 4);
         assert_eq!(s.win_rate, 0.5);
         assert_eq!(s.total_pnl, 250.0);
@@ -169,13 +182,13 @@ mod tests {
     #[test]
     fn drawdown_comes_from_the_equity_curve() {
         // Peak 110, trough 88 -> 20% drawdown, even with no losing trades.
-        let s = compute_stats(&[trade(10.0)], &curve(&[100.0, 110.0, 88.0, 120.0]));
+        let s = compute_stats(&[trade(10.0)], &curve(&[100.0, 110.0, 88.0, 120.0]), 0.0);
         assert!((s.max_drawdown - 0.2).abs() < 1e-12);
     }
 
     #[test]
     fn sharpe_uses_sample_variance() {
-        let s = compute_stats(&[], &curve(&[100.0, 110.0, 104.5]));
+        let s = compute_stats(&[], &curve(&[100.0, 110.0, 104.5]), 0.0);
         let (r1, r2): (f64, f64) = (0.1, 104.5 / 110.0 - 1.0);
         let mean = (r1 + r2) / 2.0;
         let var = ((r1 - mean).powi(2) + (r2 - mean).powi(2)) / 1.0; // n - 1 = 1
@@ -184,8 +197,23 @@ mod tests {
     }
 
     #[test]
+    fn risk_free_rate_lowers_sharpe() {
+        let curve = curve(&[100.0, 110.0, 104.5]);
+        let base = compute_stats(&[], &curve, 0.0);
+        let with_rf = compute_stats(&[], &curve, 0.05);
+        assert!(with_rf.sharpe_ratio < base.sharpe_ratio);
+        // The gap is exactly the daily risk-free rate over the return std,
+        // annualized.
+        let (r1, r2): (f64, f64) = (0.1, 104.5 / 110.0 - 1.0);
+        let mean = (r1 + r2) / 2.0;
+        let std = (((r1 - mean).powi(2) + (r2 - mean).powi(2)) / 1.0).sqrt();
+        let expected_gap = 0.05 / 252.0 / std * 252.0_f64.sqrt();
+        assert!((base.sharpe_ratio - with_rf.sharpe_ratio - expected_gap).abs() < 1e-12);
+    }
+
+    #[test]
     fn flat_curve_has_zero_sharpe_and_drawdown() {
-        let s = compute_stats(&[], &curve(&[100.0, 100.0, 100.0]));
+        let s = compute_stats(&[], &curve(&[100.0, 100.0, 100.0]), 0.0);
         assert_eq!(s.max_drawdown, 0.0);
         assert_eq!(s.sharpe_ratio, 0.0);
     }

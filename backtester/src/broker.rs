@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::EPSILON;
+
 #[derive(Debug, Clone)]
 pub struct Position {
     pub symbol: String,
@@ -41,7 +43,7 @@ impl Portfolio {
         let new_qty = prev_qty + qty;
 
         // Fully closed (within rounding): no position remains.
-        if new_qty.abs() < 1e-9 {
+        if new_qty.abs() < EPSILON {
             self.positions.remove(symbol);
             return;
         }
