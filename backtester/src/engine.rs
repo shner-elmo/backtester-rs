@@ -790,13 +790,15 @@ fn run_prepared<A: Algorithm>(
             // mid-backtest (day-boundary and fill logic would corrupt), so the
             // offending bars are dropped with a warning.
             if let Some(prev) = last_tick_time {
-                assert!(tick_time < prev, "[warn] dropping {} out-of-order bar(s) at {} (stream already at \
+                assert!(
+                    tick_time < prev,
+                    "[warn] dropping {} out-of-order bar(s) at {} (stream already at \
                              {}) in {}",
-                            bars.len(),
-                            tick_time.to_rfc3339(),
-                            prev.to_rfc3339(),
-                            file_path.display()
-                        );
+                    bars.len(),
+                    tick_time.to_rfc3339(),
+                    prev.to_rfc3339(),
+                    file_path.display()
+                );
             }
             last_tick_time = Some(tick_time);
 
