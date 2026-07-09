@@ -11,6 +11,7 @@ use crate::{
     broker::Portfolio,
     commission::{CommissionModel, NoCommission},
     consolidator::{ConsolidatorEntry, ConsolidatorPeriod},
+    logging::LogConfig,
     margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
 };
@@ -90,6 +91,7 @@ pub struct Context {
     pub(crate) risk_free_rate: f64,
     pub(crate) track_intraday_equity: bool,
     pub(crate) fill_timing: FillTiming,
+    pub(crate) log_config: LogConfig,
     pub(crate) output_dir: Option<PathBuf>,
     pub(crate) ticker_map_file: Option<PathBuf>,
     pub(crate) splits_file: Option<PathBuf>,
@@ -123,6 +125,7 @@ impl Default for Context {
             risk_free_rate: 0.0,
             track_intraday_equity: false,
             fill_timing: FillTiming::default(),
+            log_config: LogConfig::default(),
             output_dir: None,
             ticker_map_file: None,
             splits_file: None,
@@ -286,6 +289,15 @@ impl Context {
     /// `equity_curve` and its stats stay daily either way.
     pub fn set_track_intraday_equity(&mut self, enabled: bool) {
         self.track_intraday_equity = enabled;
+    }
+
+    /// Choose which engine events are logged to stderr as the backtest runs:
+    /// the run header/footer, every fill and completed trade, a per-day recap,
+    /// corporate events, and data-quality warnings — see [`LogConfig`] for the
+    /// flags. Defaults to warnings only; `LogConfig::all()` /
+    /// `LogConfig::none()` turn everything on / off.
+    pub fn set_log_config(&mut self, config: LogConfig) {
+        self.log_config = config;
     }
 
     /// Choose when orders fill: at the current bar's close (the default,

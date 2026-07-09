@@ -1,5 +1,7 @@
 use std::{fmt, io, path::PathBuf};
 
+use chrono::NaiveDate;
+
 /// Everything that can go wrong loading data or running a backtest. The hot
 /// loop still panics on internal invariant violations; this covers the
 /// diagnosable failures — bad paths, malformed metadata, unreadable Parquet.
@@ -20,6 +22,9 @@ pub enum BacktestError {
     /// No `.parquet` files were found under the data path — almost always a
     /// wrong `data_path` argument.
     NoData { path: PathBuf },
+    /// The configured date range is inverted: the start date is after the end
+    /// date.
+    InvalidDateRange { start: NaiveDate, end: NaiveDate },
 }
 
 impl fmt::Display for BacktestError {
@@ -36,6 +41,9 @@ impl fmt::Display for BacktestError {
             }
             Self::NoData { path } => {
                 write!(f, "no .parquet files found under {}", path.display())
+            }
+            Self::InvalidDateRange { start, end } => {
+                write!(f, "invalid date range: start date {start} is after end date {end}")
             }
         }
     }
