@@ -11,8 +11,8 @@ use crate::{
     context::{Context, FillTiming, Order, OrderKind, RestingKind, RestingOrder},
     data::{
         file_year_month, load_dividends_from, load_renames_from, load_splits_from,
-        load_ticker_map_from, read_bars_from_file, sorted_parquet_files, DIVIDENDS_FILE,
-        RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
+        load_ticker_map_from, sorted_parquet_files, TickReader, DIVIDENDS_FILE, RENAMES_FILE,
+        SPLITS_FILE, TICKER_MAP_FILE,
     },
     error::BacktestError,
     logging::LogConfig,
@@ -688,9 +688,10 @@ fn run_prepared<A: Algorithm>(
     let mut day_index: u64 = 0;
     let mut last_seen_day: HashMap<String, u64> = HashMap::new();
 
-    // Stream the dataset one file at a time: files are month-partitioned and
-    // chronologically sorted, so only a single month of subscribed bars is
-    // ever resident, instead of the whole dataset.
+    // Stream the dataset file by file, tick by tick: files are
+    // month-partitioned and chronologically sorted, and each file is consumed
+    // through a TickReader, so only a single tick of subscribed bars is ever
+    // resident.
     let files = sorted_parquet_files(data_path);
     if files.is_empty() {
         return Err(BacktestError::NoData { path: data_path.into() });
@@ -758,47 +759,31 @@ fn run_prepared<A: Algorithm>(
             }
         }
 
-        // Buffer one month's *subscribed* bars into a timestamp-ordered map.
-        // This is intentionally order-agnostic: the map re-sorts whatever order
-        // the file yields rows in (Polygon flat files are grouped by ticker,
-        // not globally by time), so it is correct without any sort guarantee.
-        // A k-way merge that streamed instead of buffering would only pay off
-        // for a very wide subscribed universe *and* would need a guaranteed
-        // intra-file time sort; measured peak RSS is ~42 MB over a full year of
-        // one symbol, so the buffer stays. Memory scales with the subscribed
-        // set, not the whole dataset, because the filter runs before the push.
-        let mut tick_map: BTreeMap<i64, Vec<(String, Bar)>> = BTreeMap::new();
-        read_bars_from_file(file_path, &ticker_map, &mut mask, |symbol, bar| {
-            // A timestamp outside the nanosecond-representable range (pre-1677
-            // or post-2262) is corrupt data; drop the bar rather than pinning
-            // it to the epoch.
-            if subscribed.contains(&symbol) {
-                if let Some(ts) = bar.time.timestamp_nanos_opt() {
-                    tick_map.entry(ts).or_default().push((symbol, bar));
-                }
-            }
-        })?;
-
-        for (ts_ns, bars) in tick_map {
+        // Stream the file's subscribed bars one tick at a time (all bars
+        // sharing a timestamp), so only a single tick is ever resident instead
+        // of a whole month. This leans on the files being time-sorted:
+        // TickReader never re-sorts and errors on an in-file timestamp
+        // regression, so unsorted data must be sorted at ingest. It also lets
+        // the end-date break below stop decoding mid-file.
+        let mut ticks = TickReader::new(file_path, &ticker_map, &mut mask, &subscribed)?;
+        while let Some((ts_ns, bars)) = ticks.next_tick()? {
             let secs = ts_ns / 1_000_000_000;
             let nanos = (ts_ns % 1_000_000_000) as u32;
             let Some(tick_time) = Utc.timestamp_opt(secs, nanos).single() else { continue };
 
             // Order validation: ticks must be non-decreasing in time. Within a
-            // file the BTreeMap guarantees it, so a violation means a bar was
+            // file TickReader guarantees it, so a violation means a bar was
             // filed under the wrong month partition. Time can't run backwards
             // mid-backtest (day-boundary and fill logic would corrupt), so the
-            // offending bars are dropped with a warning.
+            // run fails instead of processing the bar.
             if let Some(prev) = last_tick_time {
-                assert!(
-                    tick_time < prev,
-                    "[warn] dropping {} out-of-order bar(s) at {} (stream already at \
-                             {}) in {}",
-                    bars.len(),
-                    tick_time.to_rfc3339(),
-                    prev.to_rfc3339(),
-                    file_path.display()
-                );
+                if tick_time < prev {
+                    return Err(BacktestError::OutOfOrderData {
+                        path: file_path.clone(),
+                        at: tick_time,
+                        stream_at: prev,
+                    });
+                }
             }
             last_tick_time = Some(tick_time);
 

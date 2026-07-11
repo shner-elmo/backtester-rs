@@ -1,6 +1,6 @@
 //! Date-range validation and data-order validation: an inverted range fails
-//! fast, a range the data doesn't cover still runs, and bars filed under the
-//! wrong month partition (time running backwards across files) are dropped.
+//! fast, a range the data doesn't cover still runs, and time running backwards
+//! — within a file or across month partitions — fails the run.
 
 use std::fs;
 use std::path::Path;
@@ -121,7 +121,7 @@ fn write_part(root: &Path, year: i32, month: u32, part: &str, rows: &[(NaiveDate
 }
 
 #[test]
-fn out_of_order_bars_across_files_are_dropped() {
+fn out_of_order_bars_across_files_are_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     fs::write(root.join("encoded_tickers.json"), r#"{"1": "XYZ"}"#).unwrap();
@@ -131,7 +131,8 @@ fn out_of_order_bars_across_files_are_dropped() {
 
     // June's file ends at 15:02. July's partition holds a legitimate July bar
     // in part-0 and — in part-1, which sorts after it — a rogue bar dated back
-    // in June, before the stream's high-water mark.
+    // in June, before the stream's high-water mark. Processing it would run
+    // time backwards mid-backtest, so the run must fail instead.
     write_part(
         root,
         2023,
@@ -143,13 +144,34 @@ fn out_of_order_bars_across_files_are_dropped() {
     write_part(root, 2023, 7, "part-1.parquet", &[(jun1, 1, 99.0)]);
 
     let algo = RecordTimes::new("XYZ", None, None);
-    let times = algo.times.clone();
-    run_backtest(algo, root.to_str().unwrap()).unwrap();
+    let err = run_backtest(algo, root.to_str().unwrap()).unwrap_err();
+    assert!(
+        matches!(err, BacktestError::OutOfOrderData { .. }),
+        "expected OutOfOrderData, got: {err}"
+    );
+}
 
-    let times = times.lock().unwrap();
-    // 3 June bars + 1 July bar; the rogue June-dated bar never reaches on_data.
-    assert_eq!(times.len(), 4, "expected the out-of-order bar to be dropped: {times:?}");
-    for w in times.windows(2) {
-        assert!(w[0] <= w[1], "on_data saw time run backwards: {} -> {}", w[0], w[1]);
-    }
+#[test]
+fn unsorted_bars_within_a_file_are_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("encoded_tickers.json"), r#"{"1": "XYZ"}"#).unwrap();
+
+    // The engine streams rows in file order without re-sorting, so a file
+    // whose timestamps regress (15:02 then back to 15:01) is rejected.
+    let jun1 = NaiveDate::from_ymd_opt(2023, 6, 1).unwrap();
+    write_part(
+        root,
+        2023,
+        6,
+        "part-0.parquet",
+        &[(jun1, 0, 10.0), (jun1, 2, 12.0), (jun1, 1, 11.0)],
+    );
+
+    let algo = RecordTimes::new("XYZ", None, None);
+    let err = run_backtest(algo, root.to_str().unwrap()).unwrap_err();
+    assert!(
+        matches!(err, BacktestError::OutOfOrderData { .. }),
+        "expected OutOfOrderData, got: {err}"
+    );
 }
