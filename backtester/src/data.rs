@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     fs::{read_to_string, File},
     path::{Path, PathBuf},
 };
@@ -8,8 +8,11 @@ use arrow::{
     array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array},
     record_batch::RecordBatch,
 };
-use chrono::{TimeZone, Utc};
-use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
+use chrono::{DateTime, TimeZone, Utc};
+use parquet::arrow::{
+    arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder},
+    ProjectionMask,
+};
 use walkdir::WalkDir;
 
 use crate::{
@@ -310,6 +313,29 @@ pub fn read_bars_from_file(
     mask: &mut Option<ProjectionMask>,
     mut cb: impl FnMut(String, Bar),
 ) -> Result<(), BacktestError> {
+    let reader = open_bar_reader(file_path, mask)?;
+    for batch in reader {
+        let batch = batch.map_err(|e| BacktestError::Parquet {
+            path: file_path.to_path_buf(),
+            message: e.to_string(),
+        })?;
+        let cols = BarColumns::extract(&batch, file_path)?;
+        for i in 0..batch.num_rows() {
+            let symbol = match ticker_map.get(&cols.ticker.value(i)) {
+                Some(s) => s.clone(),
+                None => continue,
+            };
+            let Some(bar) = cols.bar(i) else { continue };
+            cb(symbol, bar);
+        }
+    }
+    Ok(())
+}
+
+fn open_bar_reader(
+    file_path: &Path,
+    mask: &mut Option<ProjectionMask>,
+) -> Result<ParquetRecordBatchReader, BacktestError> {
     let file = File::open(file_path)
         .map_err(|source| BacktestError::Io { path: file_path.to_path_buf(), source })?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
@@ -318,60 +344,166 @@ pub fn read_bars_from_file(
     let mask = mask
         .get_or_insert_with(|| ProjectionMask::columns(builder.parquet_schema(), COLUMNS))
         .clone();
-    let reader = builder.with_projection(mask).build().map_err(|e| BacktestError::Parquet {
+    builder.with_projection(mask).build().map_err(|e| BacktestError::Parquet {
         path: file_path.to_path_buf(),
         message: e.to_string(),
-    })?;
+    })
+}
 
-    for batch in reader {
-        let batch = batch.map_err(|e| BacktestError::Parquet {
+/// The bar columns of one record batch, downcast once per batch.
+struct BarColumns<'a> {
+    ticker: &'a UInt16Array,
+    volume: &'a UInt32Array,
+    open: &'a Float64Array,
+    high: &'a Float64Array,
+    low: &'a Float64Array,
+    close: &'a Float64Array,
+    ts: &'a TimestampNanosecondArray,
+    session: &'a UInt8Array,
+}
+
+impl<'a> BarColumns<'a> {
+    fn extract(batch: &'a RecordBatch, path: &Path) -> Result<Self, BacktestError> {
+        Ok(Self {
+            ticker: column(batch, "ticker", path)?,
+            volume: column(batch, "volume", path)?,
+            open: column(batch, "open", path)?,
+            high: column(batch, "high", path)?,
+            low: column(batch, "low", path)?,
+            close: column(batch, "close", path)?,
+            ts: column(batch, "window_start", path)?,
+            session: column(batch, "market_session", path)?,
+        })
+    }
+
+    /// Decode row `i` into a [`Bar`], or `None` for a corrupt row (a timestamp
+    /// outside the nanosecond-representable range, or an unknown session code).
+    fn bar(&self, i: usize) -> Option<Bar> {
+        self.bar_with_time(i, ts_to_datetime(self.ts.value(i))?)
+    }
+
+    /// [`bar`](Self::bar) for callers that already decoded the row's time.
+    fn bar_with_time(&self, i: usize, time: DateTime<Utc>) -> Option<Bar> {
+        let session = match self.session.value(i) {
+            1 => MarketSession::PreMarket,
+            2 => MarketSession::Main,
+            3 => MarketSession::AfterMarket,
+            _ => return None,
+        };
+        Some(Bar {
+            time,
+            open: self.open.value(i),
+            high: self.high.value(i),
+            low: self.low.value(i),
+            close: self.close.value(i),
+            volume: self.volume.value(i) as u64,
+            market_session: session,
+        })
+    }
+}
+
+fn ts_to_datetime(ts_ns: i64) -> Option<DateTime<Utc>> {
+    let secs = ts_ns / 1_000_000_000;
+    let nanos = (ts_ns % 1_000_000_000) as u32;
+    Utc.timestamp_opt(secs, nanos).single()
+}
+
+/// One tick: a nanosecond timestamp and every subscribed bar printed on it.
+pub type Tick = (i64, Vec<(String, Bar)>);
+
+/// Streams one Parquet file's subscribed bars grouped into ticks — all
+/// consecutive rows sharing one `window_start` — in row order, so only a
+/// single tick is ever resident instead of a whole month.
+///
+/// This relies on the file being sorted by `window_start` (non-decreasing;
+/// ties may be split across part files but not interleaved with later times).
+/// Nothing is re-sorted: a timestamp regression between rows is an
+/// [`BacktestError::OutOfOrderData`] error, so unsorted data must be sorted at
+/// ingest. Rows with a timestamp outside the nanosecond-representable range
+/// are corrupt and dropped before the order check, as are rows with an
+/// unknown session code or a ticker id missing from the map.
+pub struct TickReader<'a> {
+    path: PathBuf,
+    reader: ParquetRecordBatchReader,
+    ticker_map: &'a HashMap<u16, String>,
+    subscribed: &'a HashSet<String>,
+    /// Decoded subscribed rows not yet grouped into a tick.
+    queue: VecDeque<(String, i64, Bar)>,
+    /// Timestamp of the last decodable row seen, for the sort check. Tracks
+    /// every row (not just subscribed ones): an unsorted file is bad data
+    /// regardless of which symbols this run happens to subscribe.
+    last_ts: Option<i64>,
+    exhausted: bool,
+}
+
+impl<'a> TickReader<'a> {
+    pub fn new(
+        file_path: &Path,
+        ticker_map: &'a HashMap<u16, String>,
+        mask: &mut Option<ProjectionMask>,
+        subscribed: &'a HashSet<String>,
+    ) -> Result<Self, BacktestError> {
+        Ok(Self {
             path: file_path.to_path_buf(),
+            reader: open_bar_reader(file_path, mask)?,
+            ticker_map,
+            subscribed,
+            queue: VecDeque::new(),
+            last_ts: None,
+            exhausted: false,
+        })
+    }
+
+    /// The next tick: every subscribed bar sharing the file's next timestamp.
+    /// `Ok(None)` once the file is exhausted.
+    pub fn next_tick(&mut self) -> Result<Option<Tick>, BacktestError> {
+        let Some(tick_ts) = self.peek_ts()? else { return Ok(None) };
+        let mut bars = Vec::new();
+        while self.peek_ts()? == Some(tick_ts) {
+            let (symbol, _, bar) = self.queue.pop_front().expect("peeked row vanished");
+            bars.push((symbol, bar));
+        }
+        Ok(Some((tick_ts, bars)))
+    }
+
+    /// Timestamp of the next queued row, decoding further batches as needed.
+    fn peek_ts(&mut self) -> Result<Option<i64>, BacktestError> {
+        while self.queue.is_empty() && !self.exhausted {
+            self.decode_next_batch()?;
+        }
+        Ok(self.queue.front().map(|&(_, ts, _)| ts))
+    }
+
+    fn decode_next_batch(&mut self) -> Result<(), BacktestError> {
+        let Some(batch) = self.reader.next() else {
+            self.exhausted = true;
+            return Ok(());
+        };
+        let batch = batch.map_err(|e| BacktestError::Parquet {
+            path: self.path.clone(),
             message: e.to_string(),
         })?;
-
-        let ticker_col: &UInt16Array = column(&batch, "ticker", file_path)?;
-        let volume_col: &UInt32Array = column(&batch, "volume", file_path)?;
-        let open_col: &Float64Array = column(&batch, "open", file_path)?;
-        let high_col: &Float64Array = column(&batch, "high", file_path)?;
-        let low_col: &Float64Array = column(&batch, "low", file_path)?;
-        let close_col: &Float64Array = column(&batch, "close", file_path)?;
-        let ts_col: &TimestampNanosecondArray = column(&batch, "window_start", file_path)?;
-        let sess_col: &UInt8Array = column(&batch, "market_session", file_path)?;
-
+        let cols = BarColumns::extract(&batch, &self.path)?;
         for i in 0..batch.num_rows() {
-            let ticker_id = ticker_col.value(i);
-            let symbol = match ticker_map.get(&ticker_id) {
-                Some(s) => s.clone(),
-                None => continue,
-            };
-
-            let ts_ns = ts_col.value(i);
-            let secs = ts_ns / 1_000_000_000;
-            let nanos = (ts_ns % 1_000_000_000) as u32;
-            let Some(time) = Utc.timestamp_opt(secs, nanos).single() else {
+            let ts = cols.ts.value(i);
+            let Some(time) = ts_to_datetime(ts) else { continue };
+            if let Some(last) = self.last_ts {
+                if ts < last {
+                    return Err(BacktestError::OutOfOrderData {
+                        path: self.path.clone(),
+                        at: time,
+                        stream_at: ts_to_datetime(last).expect("validated on a previous row"),
+                    });
+                }
+            }
+            self.last_ts = Some(ts);
+            let Some(symbol) = self.ticker_map.get(&cols.ticker.value(i)) else { continue };
+            if !self.subscribed.contains(symbol) {
                 continue;
-            };
-
-            let session = match sess_col.value(i) {
-                1 => MarketSession::PreMarket,
-                2 => MarketSession::Main,
-                3 => MarketSession::AfterMarket,
-                _ => continue,
-            };
-
-            cb(
-                symbol,
-                Bar {
-                    time,
-                    open: open_col.value(i),
-                    high: high_col.value(i),
-                    low: low_col.value(i),
-                    close: close_col.value(i),
-                    volume: volume_col.value(i) as u64,
-                    market_session: session,
-                },
-            );
+            }
+            let Some(bar) = cols.bar_with_time(i, time) else { continue };
+            self.queue.push_back((symbol.clone(), ts, bar));
         }
+        Ok(())
     }
-    Ok(())
 }

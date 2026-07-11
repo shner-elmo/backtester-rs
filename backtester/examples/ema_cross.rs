@@ -12,7 +12,7 @@ struct EmaCross {
 impl Algorithm for EmaCross {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_start_date(2023, 1, 1);
-        ctx.set_end_date(2023, 12, 31);
+        ctx.set_end_date(2024, 12, 31);
         ctx.set_cash(100_000.0);
         ctx.set_warm_up(30);
         ctx.add_equity(&self.symbol.clone());

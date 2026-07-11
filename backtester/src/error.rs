@@ -1,6 +1,6 @@
 use std::{fmt, io, path::PathBuf};
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 
 /// Everything that can go wrong loading data or running a backtest. The hot
 /// loop still panics on internal invariant violations; this covers the
@@ -25,6 +25,11 @@ pub enum BacktestError {
     /// The configured date range is inverted: the start date is after the end
     /// date.
     InvalidDateRange { start: NaiveDate, end: NaiveDate },
+    /// A bar's timestamp ran backwards. The engine streams each Parquet file
+    /// in row order and never re-sorts, so rows must be non-decreasing in
+    /// `window_start` within a file, and a month partition must not contain
+    /// rows dated before an earlier partition's bars. Sort the data at ingest.
+    OutOfOrderData { path: PathBuf, at: DateTime<Utc>, stream_at: DateTime<Utc> },
 }
 
 impl fmt::Display for BacktestError {
@@ -44,6 +49,16 @@ impl fmt::Display for BacktestError {
             }
             Self::InvalidDateRange { start, end } => {
                 write!(f, "invalid date range: start date {start} is after end date {end}")
+            }
+            Self::OutOfOrderData { path, at, stream_at } => {
+                write!(
+                    f,
+                    "{}: bar at {} is out of order (stream already at {}); data files must \
+                     be sorted by time",
+                    path.display(),
+                    at.to_rfc3339(),
+                    stream_at.to_rfc3339()
+                )
             }
         }
     }

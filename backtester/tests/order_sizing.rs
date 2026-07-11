@@ -18,6 +18,7 @@ use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
 /// One synthetic minute bar: (ticker id, day-of-June-2023, minute offset,
 /// price). o=h=l=c=price, volume=100, main session; bars sit at
 /// 15:00+offset UTC (= 11:00 ET, so UTC and ET dates agree).
+#[derive(Clone, Copy)]
 struct Row {
     ticker: u16,
     day: u32,
@@ -50,6 +51,12 @@ fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)]) {
         Field::new("window_start", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
         Field::new("market_session", DataType::UInt8, false),
     ]));
+
+    // The engine requires files to be time-sorted (it streams rows in file
+    // order and never re-sorts), so write the rows the way a real ingest
+    // would, whatever order the test listed them in.
+    let mut rows: Vec<Row> = rows.to_vec();
+    rows.sort_by_key(|r| (r.day, r.minute));
 
     let ts: Vec<i64> = rows
         .iter()
