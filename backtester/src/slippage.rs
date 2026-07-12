@@ -106,38 +106,18 @@ impl SlippageModel for FixedSlippage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bar::MarketSession;
-    use chrono::Utc;
-
-    fn ctx(quantity: f64, price: f64) -> (Bar, f64) {
-        // returns a bar and the price; caller builds FillContext to keep the
-        // borrow of `bar` local.
-        let bar = Bar {
-            time: Utc::now(),
-            open: price,
-            high: price + 1.0,
-            low: price - 1.0,
-            close: price,
-            volume: 1_000,
-            market_session: MarketSession::Main,
-        };
-        (bar, quantity)
-    }
-
-    fn fill<'a>(bar: &'a Bar, quantity: f64, price: f64) -> FillContext<'a> {
-        FillContext { symbol: "AAPL", quantity, price, bar }
-    }
+    use crate::test_util::{bar, fill};
 
     #[test]
     fn no_slippage_is_identity() {
-        let (bar, q) = ctx(10.0, 100.0);
-        assert_eq!(NoSlippage.fill_price(&fill(&bar, q, 100.0)), 100.0);
+        let bar = bar(100.0);
+        assert_eq!(NoSlippage.fill_price(&fill(&bar, 10.0, 100.0)), 100.0);
     }
 
     #[test]
     fn percent_moves_against_the_aggressor() {
         let model = PercentSlippage::bps(10.0); // 0.1%
-        let (bar, _) = ctx(0.0, 100.0);
+        let bar = bar(100.0);
         // Buy fills higher, sell fills lower.
         assert!((model.fill_price(&fill(&bar, 5.0, 100.0)) - 100.1).abs() < 1e-9);
         assert!((model.fill_price(&fill(&bar, -5.0, 100.0)) - 99.9).abs() < 1e-9);
@@ -146,7 +126,7 @@ mod tests {
     #[test]
     fn fixed_per_share_moves_against_the_aggressor() {
         let model = FixedSlippage { per_share: 0.05 };
-        let (bar, _) = ctx(0.0, 100.0);
+        let bar = bar(100.0);
         assert_eq!(model.fill_price(&fill(&bar, 1.0, 100.0)), 100.05);
         assert_eq!(model.fill_price(&fill(&bar, -1.0, 100.0)), 99.95);
     }
@@ -154,7 +134,7 @@ mod tests {
     #[test]
     fn fixed_clamps_at_zero() {
         let model = FixedSlippage { per_share: 10.0 };
-        let (bar, _) = ctx(0.0, 5.0);
+        let bar = bar(5.0);
         assert_eq!(model.fill_price(&fill(&bar, -1.0, 5.0)), 0.0);
     }
 
@@ -162,7 +142,7 @@ mod tests {
     fn closure_is_a_slippage_model() {
         // A custom model that uses the bar's range.
         let model = |f: &FillContext| f.price + (f.bar.high - f.bar.low) * f.direction();
-        let (bar, _) = ctx(0.0, 100.0); // range = 2.0
+        let bar = bar(100.0); // range = 2.0
         assert_eq!(model.fill_price(&fill(&bar, 1.0, 100.0)), 102.0);
         assert_eq!(model.fill_price(&fill(&bar, -1.0, 100.0)), 98.0);
     }

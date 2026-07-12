@@ -162,27 +162,20 @@ impl Context {
         self.subscribed_symbols.insert(symbol.to_string());
     }
 
-    /// Set the slippage model applied to every fill. Accepts any built-in
-    /// model, a custom [`SlippageModel`](crate::slippage::SlippageModel), or a
-    /// closure `Fn(&FillContext) -> f64`. Defaults to no slippage.
+    /// Set the slippage model applied to every fill (built-in, trait impl, or
+    /// closure — see [`slippage`](crate::slippage)). Defaults to none.
     pub fn set_slippage(&mut self, model: impl SlippageModel + 'static) {
         self.slippage = Box::new(model);
     }
 
-    /// Set the commission model applied to every fill. Accepts any built-in
-    /// model, a custom [`CommissionModel`](crate::commission::CommissionModel),
-    /// or a closure `Fn(&FillContext) -> f64` returning the cash charge.
-    /// Defaults to no commission.
+    /// Set the commission model applied to every fill (built-in, trait impl,
+    /// or closure — see [`commission`](crate::commission)). Defaults to none.
     pub fn set_commission(&mut self, model: impl CommissionModel + 'static) {
         self.commission = Box::new(model);
     }
 
-    /// Set the margin (buying-power) model consulted before every fill.
-    /// Accepts any built-in model — e.g.
-    /// [`MaxLeverage`](crate::margin::MaxLeverage) to cap gross exposure at a
-    /// multiple of equity — a custom [`MarginModel`](crate::margin::MarginModel),
-    /// or a closure `Fn(&MarginContext) -> f64` returning the allowed signed
-    /// quantity. Fills the model shrinks are rounded down to the lot size.
+    /// Set the margin (buying-power) model consulted before every fill
+    /// (built-in, trait impl, or closure — see [`margin`](crate::margin)).
     /// Defaults to [`NoMargin`](crate::margin::NoMargin): unlimited buying
     /// power, cash may go arbitrarily negative.
     pub fn set_margin_model(&mut self, model: impl MarginModel + 'static) {
@@ -234,19 +227,19 @@ impl Context {
     }
 
     /// Path of the ticker-encoding map (default `encoded_tickers.json` in the
-    /// data root). A relative path is resolved against the data root passed
-    /// to `run`/`run_backtest`; an absolute path is used as-is. This file is
-    /// required — a backtest cannot start without it.
+    /// data root). Same path resolution as
+    /// [`set_splits_file`](Self::set_splits_file); unlike the others this
+    /// file is required — a backtest cannot start without it.
     pub fn set_ticker_map_file(&mut self, path: impl Into<PathBuf>) {
         self.ticker_map_file = Some(path.into());
     }
 
     /// Path of the Polygon-format stock-splits JSON (default
     /// `get_splits.json` in the data root). A relative path is resolved
-    /// against the data root; an absolute path is used as-is. When left at
-    /// the default a missing file simply means "no splits"; a path set here
-    /// must exist, so a typo fails the run instead of silently skipping
-    /// every split.
+    /// against the data root passed to `run`/`run_backtest`; an absolute path
+    /// is used as-is. When left at the default a missing file simply means
+    /// "no splits"; a path set here must exist, so a typo fails the run
+    /// instead of silently skipping every split.
     pub fn set_splits_file(&mut self, path: impl Into<PathBuf>) {
         self.splits_file = Some(path.into());
     }
@@ -360,6 +353,9 @@ impl Context {
             }
             if tick_min >= entry_min {
                 self.time_callbacks[i].last_fired_date = Some(tick_date);
+                // Swap the callback out per entry (rather than taking the
+                // whole vec) so a callback that registers a new on_time
+                // callback isn't clobbered when the vec is restored.
                 let mut cb = std::mem::replace(
                     &mut self.time_callbacks[i].callback,
                     Box::new(|_: &mut Context| {}),
@@ -390,6 +386,10 @@ impl Context {
     /// backtest ends), filling intrabar off the bar's range — independent of
     /// `set_fill_timing`.
     pub fn limit_order(&mut self, symbol: &str, qty: f64, limit_price: f64) {
+        // A zero-quantity order can never trigger; don't let it rest forever.
+        if qty == 0.0 {
+            return;
+        }
         self.resting_orders.push(RestingOrder {
             symbol: symbol.to_string(),
             qty,
@@ -401,6 +401,10 @@ impl Context {
     /// fill when the price rises to `stop_price`, a sell (`qty < 0`) when it
     /// falls to it. Rests across bars until triggered (or the backtest ends).
     pub fn stop_order(&mut self, symbol: &str, qty: f64, stop_price: f64) {
+        // A zero-quantity order can never trigger; don't let it rest forever.
+        if qty == 0.0 {
+            return;
+        }
         self.resting_orders.push(RestingOrder {
             symbol: symbol.to_string(),
             qty,

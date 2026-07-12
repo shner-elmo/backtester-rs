@@ -70,7 +70,7 @@ impl Algorithm for GapShort {
                 .bars
                 .iter()
                 .filter(|(symbol, bar)| {
-                    bar.market_session == MarketSession::Main
+                    bar.session() == MarketSession::Main
                         && bar.open >= MIN_PRICE
                         && self
                             .premarket_dollar_vol
@@ -94,7 +94,7 @@ impl Algorithm for GapShort {
         }
 
         for (symbol, bar) in &data.bars {
-            match bar.market_session {
+            match bar.session() {
                 MarketSession::Main => {
                     self.last_close.insert(symbol.clone(), bar.close);
                 }

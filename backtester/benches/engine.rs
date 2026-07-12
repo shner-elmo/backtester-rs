@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array};
+use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use chrono::{Datelike, Months, NaiveDate, TimeZone, Utc};
@@ -59,7 +59,6 @@ fn schema() -> Arc<Schema> {
         Field::new("high", DataType::Float64, false),
         Field::new("low", DataType::Float64, false),
         Field::new("window_start", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
-        Field::new("market_session", DataType::UInt8, false),
     ]))
 }
 
@@ -73,7 +72,6 @@ struct FixtureColumns {
     low: Vec<f64>,
     close: Vec<f64>,
     ts: Vec<i64>,
-    session: Vec<u8>,
 }
 
 /// Read every row of the fixture Parquet into column vectors (by name, matching
@@ -90,7 +88,6 @@ fn read_fixture(file: &std::path::Path) -> FixtureColumns {
         low: Vec::new(),
         close: Vec::new(),
         ts: Vec::new(),
-        session: Vec::new(),
     };
 
     for batch in reader {
@@ -100,9 +97,6 @@ fn read_fixture(file: &std::path::Path) -> FixtureColumns {
         };
         let u32_col = |name| {
             batch.column_by_name(name).unwrap().as_any().downcast_ref::<UInt32Array>().unwrap()
-        };
-        let u8_col = |name| {
-            batch.column_by_name(name).unwrap().as_any().downcast_ref::<UInt8Array>().unwrap()
         };
         let f64_col = |name| {
             batch.column_by_name(name).unwrap().as_any().downcast_ref::<Float64Array>().unwrap()
@@ -123,7 +117,6 @@ fn read_fixture(file: &std::path::Path) -> FixtureColumns {
         let low = f64_col("low");
         let close = f64_col("close");
         let ts = ts_col("window_start");
-        let session = u8_col("market_session");
 
         for i in 0..batch.num_rows() {
             cols.ticker.push(ticker.value(i));
@@ -133,7 +126,6 @@ fn read_fixture(file: &std::path::Path) -> FixtureColumns {
             cols.low.push(low.value(i));
             cols.close.push(close.value(i));
             cols.ts.push(ts.value(i));
-            cols.session.push(session.value(i));
         }
     }
 
@@ -153,7 +145,6 @@ fn write_replica(
     high: Vec<f64>,
     low: Vec<f64>,
     ts: Vec<i64>,
-    session: &[u8],
 ) {
     let schema = schema();
     let batch = RecordBatch::try_new(
@@ -166,7 +157,6 @@ fn write_replica(
             Arc::new(Float64Array::from(high)),
             Arc::new(Float64Array::from(low)),
             Arc::new(TimestampNanosecondArray::from(ts)),
-            Arc::new(UInt8Array::from(session.to_vec())),
         ],
     )
     .unwrap();
@@ -228,7 +218,6 @@ fn generate_dataset() -> (TempDir, u64) {
             high,
             low,
             ts,
-            &fx.session,
         );
     }
 

@@ -1,0 +1,179 @@
+//! The backtest engine. [`run`] and [`run_backtest`] are the entry points;
+//! the event loop and its state live in `run.rs`, order execution in
+//! `orders.rs`, day-boundary corporate actions in `corporate_actions.rs`, and
+//! the trade ledger in `ledger.rs`.
+
+mod corporate_actions;
+mod ledger;
+mod orders;
+mod run;
+
+use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    algorithm::Algorithm,
+    context::Context,
+    data::{
+        load_dividends_from, load_renames_from, load_splits_from, load_ticker_map_from,
+        DIVIDENDS_FILE, RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
+    },
+    error::BacktestError,
+    stats::{BacktestStats, EquityPoint, OpenPositionSummary, Trade},
+};
+
+use run::{run_prepared, PendingActions};
+
+/// Everything a finished backtest produced. `run` prints a summary of this and
+/// writes it to disk; consume it directly (or via the JSON file) for custom
+/// reporting and the results dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestResult {
+    pub initial_cash: f64,
+    /// Cash plus open positions marked at the last known market price.
+    pub final_equity: f64,
+    pub total_commission: f64,
+    pub stats: BacktestStats,
+    /// Daily mark-to-market equity, one point per trading day.
+    pub equity_curve: Vec<EquityPoint>,
+    /// Per-bar mark-to-market equity (RFC 3339 timestamps), empty unless
+    /// `Context::set_track_intraday_equity(true)` was set. Exposes intraday
+    /// drawdown the daily `equity_curve` can't show.
+    #[serde(default)]
+    pub intraday_equity: Vec<EquityPoint>,
+    /// Positions still open at the end, marked at the last known price.
+    pub open_positions: Vec<OpenPositionSummary>,
+    /// Completed round trips (rebalance fills netted per position lifetime).
+    pub trades: Vec<Trade>,
+}
+
+/// Run a backtest and return its full results without printing anything.
+pub fn run_backtest<A: Algorithm>(
+    mut algo: A,
+    data_path: &str,
+) -> Result<BacktestResult, BacktestError> {
+    let mut ctx = Context::default();
+    algo.initialize(&mut ctx);
+    run_prepared(algo, ctx, data_path)
+}
+
+/// Run a backtest, print a summary, and write the full result JSON
+/// (`backtest_result_<timestamp>.json`) for the `ui` dashboard. The file goes
+/// to the directory set via `Context::set_output_dir`, else to
+/// `$BACKTEST_OUTPUT_DIR` when that is set, else to the current directory
+/// (the directory is created if missing).
+pub fn run<A: Algorithm>(mut algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
+    let mut ctx = Context::default();
+    algo.initialize(&mut ctx);
+    // set_output_dir wins over the env var: the strategy author's explicit
+    // choice shouldn't be silently redirected by the environment.
+    let out_dir = ctx.output_dir.clone().or_else(|| {
+        std::env::var("BACKTEST_OUTPUT_DIR").ok().filter(|d| !d.is_empty()).map(Into::into)
+    });
+
+    let result = run_prepared(algo, ctx, data_path)?;
+    let stats = &result.stats;
+
+    let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
+    let file_name = format!("backtest_result_{ts}.json");
+    let out_path = match out_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir)
+                .map_err(|source| BacktestError::Io { path: dir.clone(), source })?;
+            dir.join(file_name)
+        }
+        None => std::path::PathBuf::from(file_name),
+    };
+    let file = std::fs::File::create(&out_path)
+        .map_err(|source| BacktestError::Io { path: out_path.clone(), source })?;
+    serde_json::to_writer_pretty(file, &result)
+        .map_err(|e| BacktestError::Json { path: out_path.clone(), message: e.to_string() })?;
+
+    println!("=== Backtest Complete ===");
+    println!("Result written to: {}  (view it with `cargo run -p ui`)", out_path.display());
+    println!(
+        "Trades: {}  |  Win Rate: {:.0}%  |  Total PnL: ${:.0}  |  Final Equity: ${:.0}",
+        stats.trade_count,
+        stats.win_rate * 100.0,
+        stats.total_pnl,
+        result.final_equity,
+    );
+    println!(
+        "Profit Factor: {:.2}  |  Max Drawdown: {:.1}%  |  Sharpe: {:.2}  |  Commission: ${:.2}",
+        stats.profit_factor,
+        stats.max_drawdown * 100.0,
+        stats.sharpe_ratio,
+        result.total_commission,
+    );
+    if !result.open_positions.is_empty() {
+        for p in &result.open_positions {
+            println!(
+                "Open: {} {:.2} @ {:.2} (last {:.2}, unrealized ${:.0})",
+                p.symbol, p.quantity, p.avg_price, p.last_price, p.unrealized_pnl
+            );
+        }
+    }
+
+    Ok(result)
+}
+
+/// Resolve a metadata file location: an explicitly configured absolute path
+/// is used as-is, a relative one is joined to the data root, and `None`
+/// falls back to `default_name` in the data root. The bool reports whether
+/// the path was explicitly configured — missing *optional* files are only
+/// tolerated at the defaults; an explicitly set file must exist.
+fn resolve_data_file(
+    data_root: &str,
+    custom: &Option<std::path::PathBuf>,
+    default_name: &str,
+) -> (std::path::PathBuf, bool) {
+    match custom {
+        Some(p) if p.is_absolute() => (p.clone(), true),
+        Some(p) => (std::path::Path::new(data_root).join(p), true),
+        None => (std::path::Path::new(data_root).join(default_name), false),
+    }
+}
+
+/// Load the ticker map and queue every corporate action (splits, dividends,
+/// renames) for the subscribed symbols by date. Rename targets are subscribed
+/// up front so their bars stream from the start (the position is only
+/// transferred on the effective date); this also covers a successor that
+/// begins trading in the same month-file as the rename.
+fn load_pending_actions(
+    ctx: &Context,
+    data_path: &str,
+    subscribed: &mut HashSet<String>,
+) -> Result<(HashMap<u16, String>, PendingActions), BacktestError> {
+    let (ticker_map_path, _) = resolve_data_file(data_path, &ctx.ticker_map_file, TICKER_MAP_FILE);
+    let ticker_map = load_ticker_map_from(&ticker_map_path)?;
+
+    let mut pending = PendingActions::default();
+
+    let (renames_path, renames_required) =
+        resolve_data_file(data_path, &ctx.renames_file, RENAMES_FILE);
+    for (date, pairs) in load_renames_from(&renames_path, subscribed, renames_required)? {
+        for (old, new) in pairs {
+            subscribed.insert(new.clone());
+            pending.renames.entry(date).or_default().push((old, new));
+        }
+    }
+
+    let (splits_path, splits_required) =
+        resolve_data_file(data_path, &ctx.splits_file, SPLITS_FILE);
+    for (symbol, by_date) in load_splits_from(&splits_path, subscribed, splits_required)? {
+        for (date, ratio) in by_date {
+            pending.splits.entry(date).or_default().push((symbol.clone(), ratio));
+        }
+    }
+
+    let (dividends_path, dividends_required) =
+        resolve_data_file(data_path, &ctx.dividends_file, DIVIDENDS_FILE);
+    for (symbol, by_date) in load_dividends_from(&dividends_path, subscribed, dividends_required)? {
+        for (date, amount) in by_date {
+            pending.dividends.entry(date).or_default().push((symbol.clone(), amount));
+        }
+    }
+
+    Ok((ticker_map, pending))
+}

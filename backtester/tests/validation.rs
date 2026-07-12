@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array};
+use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
@@ -86,7 +86,6 @@ fn write_part(root: &Path, year: i32, month: u32, part: &str, rows: &[(NaiveDate
         Field::new("high", DataType::Float64, false),
         Field::new("low", DataType::Float64, false),
         Field::new("window_start", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
-        Field::new("market_session", DataType::UInt8, false),
     ]));
 
     let ts: Vec<i64> = rows
@@ -107,7 +106,6 @@ fn write_part(root: &Path, year: i32, month: u32, part: &str, rows: &[(NaiveDate
             Arc::new(Float64Array::from(prices.clone())),
             Arc::new(Float64Array::from(prices)),
             Arc::new(TimestampNanosecondArray::from(ts)),
-            Arc::new(UInt8Array::from(vec![2u8; rows.len()])),
         ],
     )
     .unwrap();

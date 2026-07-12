@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array},
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
     record_batch::RecordBatch,
 };
 use chrono::{DateTime, TimeZone, Utc};
@@ -15,13 +15,9 @@ use parquet::arrow::{
 };
 use walkdir::WalkDir;
 
-use crate::{
-    bar::{Bar, MarketSession},
-    error::BacktestError,
-};
+use crate::{bar::Bar, error::BacktestError};
 
-pub const COLUMNS: [&str; 8] =
-    ["ticker", "volume", "open", "high", "low", "close", "window_start", "market_session"];
+pub const COLUMNS: [&str; 7] = ["ticker", "volume", "open", "high", "low", "close", "window_start"];
 
 /// Metadata files the loaders expect inside the data root, next to the
 /// Parquet tree. Only `TICKER_MAP_FILE` is required; the rest are optional.
@@ -359,7 +355,6 @@ struct BarColumns<'a> {
     low: &'a Float64Array,
     close: &'a Float64Array,
     ts: &'a TimestampNanosecondArray,
-    session: &'a UInt8Array,
 }
 
 impl<'a> BarColumns<'a> {
@@ -372,24 +367,17 @@ impl<'a> BarColumns<'a> {
             low: column(batch, "low", path)?,
             close: column(batch, "close", path)?,
             ts: column(batch, "window_start", path)?,
-            session: column(batch, "market_session", path)?,
         })
     }
 
     /// Decode row `i` into a [`Bar`], or `None` for a corrupt row (a timestamp
-    /// outside the nanosecond-representable range, or an unknown session code).
+    /// outside the nanosecond-representable range).
     fn bar(&self, i: usize) -> Option<Bar> {
         self.bar_with_time(i, ts_to_datetime(self.ts.value(i))?)
     }
 
     /// [`bar`](Self::bar) for callers that already decoded the row's time.
     fn bar_with_time(&self, i: usize, time: DateTime<Utc>) -> Option<Bar> {
-        let session = match self.session.value(i) {
-            1 => MarketSession::PreMarket,
-            2 => MarketSession::Main,
-            3 => MarketSession::AfterMarket,
-            _ => return None,
-        };
         Some(Bar {
             time,
             open: self.open.value(i),
@@ -397,7 +385,6 @@ impl<'a> BarColumns<'a> {
             low: self.low.value(i),
             close: self.close.value(i),
             volume: self.volume.value(i) as u64,
-            market_session: session,
         })
     }
 }
@@ -420,8 +407,8 @@ pub type Tick = (i64, Vec<(String, Bar)>);
 /// Nothing is re-sorted: a timestamp regression between rows is an
 /// [`BacktestError::OutOfOrderData`] error, so unsorted data must be sorted at
 /// ingest. Rows with a timestamp outside the nanosecond-representable range
-/// are corrupt and dropped before the order check, as are rows with an
-/// unknown session code or a ticker id missing from the map.
+/// are corrupt and dropped before the order check, as are rows with a
+/// ticker id missing from the map.
 pub struct TickReader<'a> {
     path: PathBuf,
     reader: ParquetRecordBatchReader,

@@ -1,20 +1,17 @@
 //! Customizable margin (buying-power) models.
 //!
-//! A margin model decides how much of a proposed fill the account can actually
-//! carry. The default is [`NoMargin`]: unlimited buying power, cash may go
-//! arbitrarily negative (pair it with
-//! [`set_margin_interest_rate`](crate::Context::set_margin_interest_rate) to at
-//! least pay for the leverage). Set a model on the [`Context`](crate::Context)
-//! in `initialize`:
+//! A margin model decides how much of a proposed fill the account can
+//! actually carry: the full quantity, a trimmed same-sign partial (rounded
+//! down to the lot size by the engine), or `0.0` to reject it. Orders that
+//! *reduce* exposure should always be allowed (the built-ins do), so an
+//! over-levered book can still de-risk. The default is [`NoMargin`] —
+//! unlimited buying power, cash may go arbitrarily negative (pair it with
+//! [`set_margin_interest_rate`](crate::Context::set_margin_interest_rate) to
+//! at least pay for the leverage); `MaxLeverage::new(2.0)` gives a
+//! Reg-T-style 2x gross-exposure cap.
 //!
-//! ```
-//! # use backtester::{Context, margin::MaxLeverage};
-//! # let mut ctx = Context::default();
-//! ctx.set_margin_model(MaxLeverage::new(2.0)); // Reg-T-style 2x gross exposure
-//! ```
-//!
-//! You can pass any built-in model, your own type implementing
-//! [`MarginModel`], or a plain closure `Fn(&MarginContext) -> f64` returning
+//! Same pattern as [`slippage`](crate::slippage) — a built-in, your own
+//! [`MarginModel`] impl, or any `Fn(&MarginContext) -> f64` closure returning
 //! the allowed signed quantity:
 //!
 //! ```
@@ -29,10 +26,6 @@
 //!     }
 //! });
 //! ```
-//!
-//! When a model shrinks a fill, the engine rounds the allowed quantity down to
-//! the configured lot size. Orders that *reduce* exposure should always be
-//! allowed (the built-ins do), so an over-levered book can still de-risk.
 
 /// Everything a margin model needs to size a single proposed fill. All values
 /// are marked at the same prices order sizing uses (no look-ahead into the
