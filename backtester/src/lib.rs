@@ -1,3 +1,18 @@
+//! An event-driven backtesting engine for minute-bar equity data stored as
+//! Parquet.
+//!
+//! Implement [`Algorithm`], configure the [`Context`] in `initialize`
+//! (symbols, dates, cash), trade in `on_data`, and hand it to [`run`] or
+//! [`run_backtest`]. See `examples/ema_cross.rs` for a complete strategy.
+//!
+//! # Execution models
+//!
+//! Fill friction and buying power are pluggable, and all three follow the
+//! same pattern — pass a built-in model, your own trait impl, or a plain
+//! closure to the corresponding `Context` setter: `set_slippage`
+//! ([`slippage`]), `set_commission` ([`commission`]), and `set_margin_model`
+//! ([`margin`]).
+
 /// Tolerance for float comparisons on share quantities: anything smaller is
 /// rounding noise, not a position.
 pub(crate) const EPSILON: f64 = 1e-9;
@@ -17,6 +32,8 @@ pub mod margin;
 pub mod slice;
 pub mod slippage;
 pub mod stats;
+#[cfg(test)]
+mod test_util;
 
 pub use algorithm::Algorithm;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};

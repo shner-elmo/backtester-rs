@@ -1,5 +1,5 @@
 //! One-off sanity sweep: load a real month for ALL tickers and assert OHLC/
-//! volume/session invariants hold on every bar. Not part of the test suite —
+//! volume invariants hold on every bar. Not part of the test suite —
 //! run it manually against the full dataset:
 //!
 //!   cargo run --release --example data_invariants_check -- /path/to/data/output/minute/year=2023/month=6 /path/to/data/output

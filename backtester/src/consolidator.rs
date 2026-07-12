@@ -98,19 +98,10 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
-    use crate::bar::MarketSession;
 
     fn bar_at_et(y: i32, mo: u32, d: u32, h: u32, m: u32, close: f64, volume: u64) -> Bar {
         let time = Eastern.with_ymd_and_hms(y, mo, d, h, m, 0).unwrap().with_timezone(&Utc);
-        Bar {
-            time,
-            open: close,
-            high: close,
-            low: close,
-            close,
-            volume,
-            market_session: MarketSession::Main,
-        }
+        Bar { time, open: close, high: close, low: close, close, volume }
     }
 
     #[test]

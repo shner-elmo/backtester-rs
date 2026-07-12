@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array};
+use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use chrono::{NaiveDate, TimeZone, Utc};
@@ -40,7 +40,6 @@ fn write_fixture(root: &Path, bars: &[Ohlc]) {
         Field::new("high", DataType::Float64, false),
         Field::new("low", DataType::Float64, false),
         Field::new("window_start", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
-        Field::new("market_session", DataType::UInt8, false),
     ]));
 
     let date = NaiveDate::from_ymd_opt(2023, 6, 5).unwrap();
@@ -63,7 +62,6 @@ fn write_fixture(root: &Path, bars: &[Ohlc]) {
             Arc::new(Float64Array::from(bars.iter().map(|b| b.high).collect::<Vec<_>>())),
             Arc::new(Float64Array::from(bars.iter().map(|b| b.low).collect::<Vec<_>>())),
             Arc::new(TimestampNanosecondArray::from(ts)),
-            Arc::new(UInt8Array::from(vec![2u8; bars.len()])),
         ],
     )
     .unwrap();

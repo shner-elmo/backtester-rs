@@ -23,13 +23,13 @@ fn maps_columns_to_the_right_fields() {
 
     // First bar (earliest window_start) has known values pulled straight from
     // the Parquet by column name: open=130.28 close=131.0 high=131.0 low=130.28,
-    // 2023-01-03T04:00:00-05:00 (= 09:00 UTC), market_session=1 (PreMarket).
+    // 2023-01-03T04:00:00-05:00 (= 09:00 UTC), which derives as PreMarket.
     let (_, first) = bars.iter().min_by_key(|(_, b)| b.time).unwrap();
     assert_eq!(first.open, 130.28);
     assert_eq!(first.close, 131.0);
     assert_eq!(first.high, 131.0);
     assert_eq!(first.low, 130.28);
-    assert_eq!(first.market_session, MarketSession::PreMarket);
+    assert_eq!(first.session(), MarketSession::PreMarket);
     assert_eq!(first.time.to_rfc3339(), "2023-01-03T09:00:00+00:00");
 }
 

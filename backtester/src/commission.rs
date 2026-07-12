@@ -1,22 +1,12 @@
-//! Customizable commission models.
+//! Customizable commission models: the cash cost charged per fill.
 //!
-//! A commission model returns the cash cost charged for a fill. Set one on the
-//! [`Context`](crate::Context) in `initialize`:
+//! Same pattern as [`slippage`](crate::slippage) — a built-in, your own
+//! [`CommissionModel`] impl, or any `Fn(&FillContext) -> f64` closure:
 //!
 //! ```
 //! # use backtester::{Context, commission::PerShareCommission};
 //! # let mut ctx = Context::default();
 //! ctx.set_commission(PerShareCommission { per_share: 0.005, minimum: 1.0 });
-//! ```
-//!
-//! You can pass any built-in model, your own type implementing
-//! [`CommissionModel`], or a plain closure `Fn(&FillContext) -> f64`:
-//!
-//! ```
-//! # use backtester::{Context, slippage::FillContext};
-//! # let mut ctx = Context::default();
-//! // Flat fee per order.
-//! ctx.set_commission(|_fill: &FillContext| 1.0);
 //! ```
 
 use crate::slippage::FillContext;
@@ -83,24 +73,7 @@ impl CommissionModel for PercentCommission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bar::{Bar, MarketSession};
-    use chrono::Utc;
-
-    fn bar(price: f64) -> Bar {
-        Bar {
-            time: Utc::now(),
-            open: price,
-            high: price + 1.0,
-            low: price - 1.0,
-            close: price,
-            volume: 1_000,
-            market_session: MarketSession::Main,
-        }
-    }
-
-    fn fill<'a>(bar: &'a Bar, quantity: f64, price: f64) -> FillContext<'a> {
-        FillContext { symbol: "AAPL", quantity, price, bar }
-    }
+    use crate::test_util::{bar, fill};
 
     #[test]
     fn no_commission_is_zero() {

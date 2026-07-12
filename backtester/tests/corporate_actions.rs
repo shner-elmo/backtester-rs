@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array};
+use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use chrono::{NaiveDate, TimeZone, Utc};
@@ -59,7 +59,6 @@ fn write_fixture(
         Field::new("high", DataType::Float64, false),
         Field::new("low", DataType::Float64, false),
         Field::new("window_start", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
-        Field::new("market_session", DataType::UInt8, false),
     ]));
 
     // The engine requires files to be time-sorted (it streams rows in file
@@ -87,7 +86,6 @@ fn write_fixture(
             Arc::new(Float64Array::from(prices.clone())),
             Arc::new(Float64Array::from(prices)),
             Arc::new(TimestampNanosecondArray::from(ts)),
-            Arc::new(UInt8Array::from(vec![2u8; rows.len()])),
         ],
     )
     .unwrap();
