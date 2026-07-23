@@ -355,8 +355,8 @@ filtered to the subscribed symbols as it parses, rather than loaded whole.
 - A `Slice` (`data`) exposes `data.bars: HashMap<String, Bar>`; use
   `data.bars.get(symbol)`.
 - A [`Bar`](../backtester/src/bar.rs) has `time` (`DateTime<Utc>`), `open`,
-  `high`, `low`, `close`, `volume`, and `market_session`
-  (`PreMarket` / `Main` / `AfterMarket`).
+  `high`, `low`, `close`, and `volume`; `bar.session()` derives the session
+  (`PreMarket` / `Main` / `AfterMarket`) from the US Eastern time-of-day.
 
 ## Indicators
 

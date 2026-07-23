@@ -62,7 +62,7 @@ impl Algorithm for MyStrategy {
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
         let Some(bar) = data.bars.get("AAPL") else { return };
-        // bar.open/high/low/close/volume, bar.time, bar.market_session
+        // bar.open/high/low/close/volume, bar.time, bar.session()
         ctx.set_holdings("AAPL", 1.0);   // go 100% long
     }
 }
@@ -150,8 +150,9 @@ things it deliberately does **not** model.
 
 Pre-market and after-market bars **are fed to `on_data`**, and orders placed
 on them fill at their prices — thin, wide-spread sessions where real fills
-are much worse than the print. Check `bar.market_session` and skip
-`PreMarket`/`AfterMarket` unless you mean to trade them.
+are much worse than the print. Check `bar.session()` — derived from the
+bar's US Eastern time-of-day — and skip `PreMarket`/`AfterMarket` unless
+you mean to trade them.
 
 ### Prices & corporate actions
 
