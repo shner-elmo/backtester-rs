@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Reference docs — read these before exploring the source
+
+`docs/` answers most schema/API questions without spelunking the code:
+
+- `docs/backtesting.md` — the full user-facing API: `Algorithm` trait, every `Context` method (a table), fill timing, order types, slippage/commission/margin models, financing, corporate-action semantics, consolidators, the example strategies
+- `docs/data-setup.md` — Parquet dataset layout (Hive `year=/month=` partitioning), column schema, the metadata JSON files (`encoded_tickers.json`, splits/dividends/renames) and their formats, `STONKS_DATA_ROOT`, the committed test fixture, helper examples
+- `docs/results.md` — the `backtest_result_*.json` shape (full example), stat definitions, trade-netting semantics, `jq` recipes
+- `docs/visualization.md` — the `data-viz` (:3000) and `ui` (:3001) servers and their HTTP APIs
+
+Keep these in sync with code changes — they are the canonical reference; this file only summarizes.
+
 ## Commands
 
 ```bash
@@ -37,7 +48,7 @@ Parquet files → Bar stream → Engine loop → Consolidators → Algorithm cal
 **Modules:**
 
 - `engine/` — Orchestrates the backtest. `mod.rs` holds the entry points (`run_backtest()` returns a `BacktestResult`; `run()` additionally prints a summary and writes `backtest_result_<ts>.json`) and metadata loading; `run.rs` holds the `Engine` state struct and the event loop (`run_prepared` streams data one month-file at a time skipping months outside the date range, `process_tick` sequences each tick's phases, warm-up, daily equity curve); `orders.rs` executes orders (sizing, volume-participation and margin caps, slippage/commission, deferred next-bar-open and resting limit/stop fills); `corporate_actions.rs` does day-boundary work (splits on execution date — position qty × ratio, basis ÷ ratio, history rescaled, bar prices stay raw; dividends credited on the ex-date and attributed to position PnL as total return; ticker renames; short-borrow/margin-interest financing accrual; force-liquidation of symbols silent for N trading days with an optional fill haircut); `ledger.rs` nets fills into position-lifetime trades. Validates the configured date range up front (an inverted range is an error; a range the data doesn't cover warns and runs over the overlap). Data files must be sorted by timestamp: the engine streams each file tick-by-tick (`data::TickReader`) without buffering or re-sorting, and a timestamp regression — within a file or across month files — fails the run with `OutOfOrderData`
-- `algorithm.rs` — `Algorithm` trait users implement: `initialize()`, `on_data()`, `on_end_of_day()`, plus optional `on_split()` / `on_delisted()` / `on_dividend()`
+- `algorithm.rs` — `Algorithm` trait users implement: `initialize()`, `on_data()`, `on_end_of_day()`, plus optional `on_split()` / `on_delisted()` / `on_dividend()` / `on_rename()`
 - `context.rs` — Execution context passed to algorithm: subscribe symbols, place market orders (`Market`, `SetHoldings`, `Liquidate`) and resting `limit_order`/`stop_order`s, access bar history (rolling deque, default 500 bars via `set_max_history`), register consolidators, set slippage/commission/margin/lot-size/financing/volume-participation/risk-free-rate/output-dir/log-config models and toggles
 - `broker.rs` — `Portfolio` (cash + positions map); `Position` tracks qty + avg price; `apply_fill()` updates positions
 - `slippage.rs` / `commission.rs` — Pluggable fill friction: trait + built-ins + closure blanket impls, both keyed off `FillContext`

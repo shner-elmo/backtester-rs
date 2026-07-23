@@ -432,7 +432,8 @@ The `data_path` argument must be a directory that contains
 - Market fills print at a single price (bar close or next open); resting
   limit/stop orders and volume-participation partial fills add intrabar
   execution, but there is no order-book depth or queue modeling.
-- A month of *subscribed* bars is buffered in memory at a time (filtered before
-  buffering, so it scales with your universe, not the dataset); measured peak
-  RSS is ~42 MB over a full year of one symbol. See [`TODO.md`](../TODO.md) for
-  the reasoning behind keeping this over a streaming k-way merge.
+- Data streams one tick at a time: each month file is consumed through a
+  `TickReader` that keeps only the current timestamp's bars resident (no
+  month-sized buffering, no re-sorting — an out-of-order timestamp fails the
+  run). Memory scales with the subscribed universe's per-tick bar count plus
+  the rolling `history()` windows, not with the dataset.
