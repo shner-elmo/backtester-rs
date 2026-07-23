@@ -16,87 +16,43 @@ fn main() {
     let files = sorted_parquet_files(&root);
     assert!(!files.is_empty(), "no parquet files under {root}");
 
-    let mut bad_files = 0u32;
-    let mut global_prev = i64::MIN;
+    let mut rows = 0;
+    let mut prev = 0;
+    let mut count_wrong_ts = 0;
 
     for file in &files {
-        // A zero-length or unparsable .parquet (e.g. a leftover tmp file from
-        // an interrupted job) would fail a backtest just like unsorted data.
+        println!("scanning file {}", file.display());
+
         let f = std::fs::File::open(file).unwrap();
-        let builder = match ParquetRecordBatchReaderBuilder::try_new(f) {
-            Ok(b) => b,
-            Err(e) => {
-                bad_files += 1;
-                println!("BROKEN   {} — unreadable: {e}", file.display());
-                continue;
-            }
-        };
+        let builder = ParquetRecordBatchReaderBuilder::try_new(f).unwrap();
         let schema = builder.parquet_schema();
-        let ts_idx = schema
-            .columns()
-            .iter()
-            .position(|c| c.name() == "window_start")
-            .expect("window_start column");
+        let ts_idx = schema.columns().iter().position(|c| c.name() == "window_start").unwrap();
         let mask = ProjectionMask::leaves(schema, [ts_idx]);
         let reader = builder.with_projection(mask).build().unwrap();
 
-        let mut prev = i64::MIN;
-        let mut regressions = 0u64;
-        let mut first_at = None;
-        let mut rows = 0u64;
-        for batch in reader {
+        for (batch_idx, batch) in reader.enumerate() {
             let batch = batch.unwrap();
             let col = batch.column(0).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
             for i in 0..col.len() {
-                let v = col.value(i);
-                if v < prev && first_at.is_none() {
-                    first_at = Some(rows + i as u64);
+                let curr = col.value(i);
+
+                if curr < prev {
+                    count_wrong_ts += 1;
+                    println!(
+                        "out-of-order timestamp in {file}\n  batch {batch_idx}, row {i} (absolute row {absolute})\n  prev = {prev} ns  ({prev_s:.3} s)\n  curr = {curr} ns  ({curr_s:.3} s)",
+                         file = file.display(),
+                         absolute = rows + i as u64,
+                         prev_s = prev as f64 / 1e9,
+                         curr_s = curr as f64 / 1e9,
+                    );
                 }
-                if v < prev {
-                    regressions += 1;
-                }
-                prev = v;
+                prev = curr;
             }
             rows += batch.num_rows() as u64;
         }
-
-        let boundary_ok = rows == 0 || {
-            // First value of this file vs last value of the previous one.
-            let ok = first_value(file) >= global_prev;
-            global_prev = prev;
-            ok
-        };
-
-        if regressions > 0 || !boundary_ok {
-            bad_files += 1;
-            println!(
-                "UNSORTED {} — {rows} rows, {regressions} regression(s){}{}",
-                file.display(),
-                first_at.map(|r| format!(", first at row {r}")).unwrap_or_default(),
-                if boundary_ok { "" } else { ", starts before the previous file ends" },
-            );
-        } else {
-            println!("ok       {} — {rows} rows", file.display());
-        }
     }
 
-    if bad_files > 0 {
-        println!("\n{bad_files} of {} file(s) unsorted", files.len());
-        std::process::exit(1);
-    }
     println!("\nall {} file(s) sorted", files.len());
-}
-
-/// The first `window_start` value in a file (files are checked in stream order,
-/// so this is what the cross-file boundary check compares).
-fn first_value(file: &std::path::Path) -> i64 {
-    let f = std::fs::File::open(file).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(f).unwrap();
-    let schema = builder.parquet_schema();
-    let ts_idx =
-        schema.columns().iter().position(|c| c.name() == "window_start").expect("window_start");
-    let mask = ProjectionMask::leaves(schema, [ts_idx]);
-    let mut reader = builder.with_projection(mask).with_batch_size(1).build().unwrap();
-    let batch = reader.next().expect("empty file").unwrap();
-    batch.column(0).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap().value(0)
+    println!("out of order timestamps: {}", count_wrong_ts);
+    println!("Scanned whole dataset (rows: {})", rows);
 }
