@@ -4,7 +4,7 @@
 //! grouping, slice assembly, day boundaries) with no strategy work on top —
 //! the floor any real backtest pays.
 //!
-//! Usage: cargo run --release --example noop_baseline -- /path/to/data/root [start] [end]
+//! Usage: cargo run --release --example no_op_baseline -- /path/to/data/root [start] [end]
 //!
 //! `start` / `end` are optional YYYY-MM-DD bounds; omit both to run the whole
 //! dataset.
