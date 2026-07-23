@@ -1,21 +1,23 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::get;
-use axum::Router;
-use chrono::{NaiveDate, TimeZone, Utc};
-use datafusion::arrow::array::{Float64Array, TimestampNanosecondArray};
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::{Html, IntoResponse, Json, Response},
+    routing::get,
+    Router,
 };
-use datafusion::prelude::*;
-use datafusion::scalar::ScalarValue;
-
 use backtester::data::{load_ticker_map, sorted_parquet_files};
+use chrono::{NaiveDate, TimeZone, Utc};
+use datafusion::{
+    arrow::array::{Float64Array, TimestampNanosecondArray},
+    datasource::{
+        file_format::parquet::ParquetFormat,
+        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+    },
+    prelude::*,
+    scalar::ScalarValue,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ta::{

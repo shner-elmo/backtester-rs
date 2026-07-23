@@ -10,6 +10,7 @@ use std::{
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 use chrono_tz::US::Eastern;
 
+use super::{ledger::OpenLifetime, load_pending_actions, BacktestResult};
 use crate::{
     algorithm::Algorithm,
     bar::Bar,
@@ -19,8 +20,6 @@ use crate::{
     slice::Slice,
     stats::{compute_stats, EquityPoint, OpenPositionSummary, Trade},
 };
-
-use super::{ledger::OpenLifetime, load_pending_actions, BacktestResult};
 
 /// Corporate actions queued by their effective date, drained at day
 /// boundaries as the backtest clock reaches them.

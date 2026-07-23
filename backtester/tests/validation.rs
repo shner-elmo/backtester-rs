@@ -2,17 +2,20 @@
 //! fast, a range the data doesn't cover still runs, and time running backwards
 //! — within a file or across month partitions — fails the run.
 
-use std::fs;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
+use backtester::{run_backtest, Algorithm, BacktestError, Context, Slice};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
-
-use backtester::{run_backtest, Algorithm, BacktestError, Context, Slice};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 

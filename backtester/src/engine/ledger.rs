@@ -3,9 +3,8 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::{logging::LogConfig, stats::Trade};
-
 use super::run::Engine;
+use crate::{logging::LogConfig, stats::Trade};
 
 /// The full lifetime of one position, from flat to flat. Rebalance fills that
 /// grow or trim the position accumulate here instead of each emitting a

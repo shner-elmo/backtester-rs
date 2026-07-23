@@ -2,20 +2,19 @@
 //! account can carry, always lets an over-levered book reduce, and closures
 //! work as custom models. Uses a synthetic single-symbol fixture.
 
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
-use chrono::{NaiveDate, TimeZone, Utc};
-use parquet::arrow::ArrowWriter;
-
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
 use backtester::{
     margin::{MarginContext, MaxLeverage},
     run_backtest, Algorithm, BacktestResult, Context, Slice,
 };
+use chrono::{NaiveDate, TimeZone, Utc};
+use parquet::arrow::ArrowWriter;
 
 /// One synthetic minute bar: (day-of-June-2023, minute offset, price);
 /// o=h=l=c=price, volume 100,000 (no participation cap in play), main session.

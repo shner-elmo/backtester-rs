@@ -3,17 +3,16 @@
 //! fills — not at their cost basis. Uses a synthetic two-symbol fixture where
 //! one symbol appreciates and then goes quiet.
 
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
+use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
-
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
 
 /// One synthetic minute bar: (ticker id, day-of-June-2023, minute offset,
 /// price). o=h=l=c=price, volume=100, main session; bars sit at

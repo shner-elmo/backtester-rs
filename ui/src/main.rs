@@ -10,8 +10,7 @@
 //! PORT=8080 cargo run -p ui
 //! ```
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     extract::{Query, State},

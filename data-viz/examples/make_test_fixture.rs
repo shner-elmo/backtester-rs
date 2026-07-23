@@ -13,13 +13,9 @@
 //! Usage (source path may be overridden as the first arg):
 //!   cargo run -p data-viz --example make_test_fixture -- [SOURCE_MONTH_PARQUET]
 
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
-use datafusion::dataframe::DataFrameWriteOptions;
-use datafusion::prelude::*;
-use datafusion::scalar::ScalarValue;
+use datafusion::{dataframe::DataFrameWriteOptions, prelude::*, scalar::ScalarValue};
 
 const AAPL_ID: u16 = 47;
 const MAX_ROWS: usize = 5_000;

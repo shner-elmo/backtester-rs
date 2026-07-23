@@ -1,10 +1,13 @@
-use backtester::data::sorted_parquet_files;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
-};
-use datafusion::prelude::*;
 use std::sync::Arc;
+
+use backtester::data::sorted_parquet_files;
+use datafusion::{
+    datasource::{
+        file_format::parquet::ParquetFormat,
+        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+    },
+    prelude::*,
+};
 
 #[tokio::main]
 async fn main() {

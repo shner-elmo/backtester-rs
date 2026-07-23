@@ -2,17 +2,16 @@
 //! range, and volume-participation partial fills. Uses a synthetic single-symbol
 //! fixture with explicit OHLCV so the range can wick through a trigger price.
 
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
+use backtester::{run_backtest, Algorithm, BacktestResult, Context, PercentSlippage, Slice};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
-
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, PercentSlippage, Slice};
 
 /// One synthetic minute bar with explicit OHLCV.
 struct Ohlc {

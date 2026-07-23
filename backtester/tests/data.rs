@@ -3,8 +3,10 @@
 //!   cargo run -p data-viz --example make_test_fixture
 //! then copy tests/fixtures from data-viz into backtester.
 
-use backtester::bar::{Bar, MarketSession};
-use backtester::data::{iter_bars, load_ticker_map};
+use backtester::{
+    bar::{Bar, MarketSession},
+    data::{iter_bars, load_ticker_map},
+};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
@@ -43,8 +45,9 @@ fn volume_is_loaded() {
 
 #[test]
 fn file_year_month_parses_hive_partition_dirs() {
-    use backtester::data::file_year_month;
     use std::path::Path;
+
+    use backtester::data::file_year_month;
 
     let hive = Path::new("/data/minute/year=2023/month=7/part-0.parquet");
     assert_eq!(file_year_month(hive), Some((2023, 7)));

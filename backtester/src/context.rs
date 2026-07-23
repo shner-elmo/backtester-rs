@@ -424,9 +424,11 @@ impl Context {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use chrono::TimeZone;
     use std::sync::{Arc, Mutex};
+
+    use chrono::TimeZone;
+
+    use super::*;
 
     fn et(y: i32, mo: u32, d: u32, h: u32, m: u32) -> DateTime<Utc> {
         Eastern.with_ymd_and_hms(y, mo, d, h, m, 0).unwrap().with_timezone(&Utc)

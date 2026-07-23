@@ -14,9 +14,7 @@
 //! fixture run completes with zero trades; point it at a real dataset for
 //! signals.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use backtester::{bar::MarketSession, data::load_ticker_map, run, Algorithm, Context, Slice};
 use chrono::Timelike;

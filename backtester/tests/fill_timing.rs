@@ -3,17 +3,16 @@
 //! Uses a synthetic fixture whose open and close differ every bar, so the two
 //! models produce distinguishable fill prices.
 
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
+use backtester::{run_backtest, Algorithm, BacktestResult, Context, FillTiming, Slice};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
-
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, FillTiming, Slice};
 
 /// One synthetic minute bar with distinct open and close.
 struct Bar {

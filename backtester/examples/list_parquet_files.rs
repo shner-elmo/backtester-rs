@@ -1,5 +1,6 @@
-use backtester::data::sorted_parquet_files;
 use std::env;
+
+use backtester::data::sorted_parquet_files;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

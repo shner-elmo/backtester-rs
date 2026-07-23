@@ -1,5 +1,6 @@
-use glob::glob;
 use std::fs;
+
+use glob::glob;
 
 fn main() {
     let root = std::env::var("STONKS_DATA_ROOT").expect("set STONKS_DATA_ROOT to the minute/ dir");
