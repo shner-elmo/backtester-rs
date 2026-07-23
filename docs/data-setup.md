@@ -44,21 +44,26 @@ typo fails the run instead of silently skipping every event.
 
 ### Parquet schema
 
-Columns, in physical order (this order matters — see the note below):
+The engine reads exactly these columns (the `COLUMNS` const in
+[`data.rs`](../backtester/src/data.rs)); this is also the schema the ingest
+scripts ([`scripts/ingest_arrow.rs`](../scripts/ingest_arrow.rs)) produce:
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `ticker` | `u16` | Encoded id; resolve via `encoded_tickers.json` |
+| `window_start` | timestamp (ns) | Bar start, epoch nanoseconds (read as UTC); files must be sorted non-decreasing on it |
+| `open`, `high`, `low`, `close` | `f64` | |
 | `volume` | `u32` | |
-| `open`, `close`, `high`, `low` | `f64` | Note the order: **open, close, high, low** |
-| `window_start` | timestamp (ns, `US/Eastern`) | Bar start |
-| `transactions` | | |
-| `market_session` | `u8` | `1` = pre-market, `2` = main, `3` = after-market |
-| `day` | | |
 
-> The physical column order puts `close` before `high`/`low`. Column readers
-> must look columns up **by name**, not by position — otherwise high/low/close
-> get scrambled. This bit the loader once; it's now guarded by
+Extra columns (older Polygon-derived files carried `transactions`,
+`market_session`, `day`) are ignored — there is no session column anymore; the
+session is derived from the timestamp's US Eastern time-of-day via
+`bar.session()`.
+
+> Physical column order varies between dataset generations (older files put
+> `close` before `high`/`low`). Column readers must look columns up **by
+> name**, not by position — otherwise high/low/close get scrambled. This bit
+> the loader once; it's now guarded by
 > [`backtester/tests/data.rs`](../backtester/tests/data.rs).
 
 ## Who consumes what
