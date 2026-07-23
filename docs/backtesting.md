@@ -405,7 +405,7 @@ cargo run --example <name> -- backtester/tests/fixtures
 | [`macd_trend`](../backtester/examples/macd_trend.rs) | Hold long while the MACD histogram is positive |
 | [`slippage_demo`](../backtester/examples/slippage_demo.rs) | `ema_cross` with slippage and commission applied |
 | [`kitchen_sink`](../backtester/examples/kitchen_sink.rs) | Every configurable knob at once |
-| [`noop_baseline`](../backtester/examples/noop_baseline.rs) | Wall-clock baseline: full universe subscribed, no-op strategy — prints elapsed time and bars/s (run with `--release`) |
+| [`no_op_baseline`](../backtester/examples/no_op_baseline.rs) | Wall-clock baseline: full universe subscribed, no-op strategy — prints elapsed time and bars/s (run with `--release`) |
 
 `kitchen_sink` is the guided tour of the whole API: warm-up, a slippage and a
 commission model, next-bar-open fills, a custom lot size and delist threshold,
