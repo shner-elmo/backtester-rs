@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `docs/` answers most schema/API questions without spelunking the code:
 
 - `docs/backtesting.md` — the full user-facing API: `Algorithm` trait, every `Context` method (a table), fill timing, order types, slippage/commission/margin models, financing, corporate-action semantics, consolidators, the example strategies
-- `docs/data-setup.md` — Parquet dataset layout (Hive `year=/month=` partitioning), column schema, the metadata JSON files (`encoded_tickers.json`, splits/dividends/renames) and their formats, `STONKS_DATA_ROOT`, the committed test fixture, helper examples
+- `docs/data-setup.md` — Parquet dataset layout (Hive `year=/month=` partitioning), column schema, the metadata JSON files (`encoded_tickers.json`, splits/dividends/renames) and their formats, `STONKS_DATA_ROOT`, regenerating the dataset from raw CSVs (`scripts/ingest_arrow.rs`), the committed test fixture, helper examples
 - `docs/results.md` — the `backtest_result_*.json` shape (full example), stat definitions, trade-netting semantics, `jq` recipes
 - `docs/visualization.md` — the `data-viz` (:3000) and `ui` (:3001) servers and their HTTP APIs
 

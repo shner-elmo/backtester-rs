@@ -46,7 +46,7 @@ typo fails the run instead of silently skipping every event.
 
 The engine reads exactly these columns (the `COLUMNS` const in
 [`data.rs`](../backtester/src/data.rs)); this is also the schema the ingest
-scripts ([`scripts/ingest_arrow.rs`](../scripts/ingest_arrow.rs)) produce:
+script ([`scripts/ingest_arrow.rs`](../scripts/ingest_arrow.rs)) produces:
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -92,6 +92,45 @@ export STONKS_DATA_ROOT=/path/to/data/output/minute
 Each example either uses this directly or appends a sub-path (e.g.
 `make_test_fixture` reads `$STONKS_DATA_ROOT/year=2023/month=1/part-0.parquet`).
 
+## Regenerating the dataset from raw CSVs
+
+The raw source is one gzipped CSV per trading day at
+`<input>/minute/<YYYY>/<MM>/<YYYY-MM-DD>.csv.gz` with columns
+`ticker,volume,open,close,high,low,window_start,transactions`
+(`window_start` in epoch nanoseconds). Rows are grouped by ticker,
+**not** globally time-sorted.
+
+[`scripts/ingest_arrow.rs`](../scripts/ingest_arrow.rs) (a
+[rust-script](https://rust-script.org)) converts that tree into the
+Hive-partitioned Parquet layout above:
+
+```bash
+cargo install rust-script   # once
+rust-script scripts/ingest_arrow.rs <input>/minute <output>/minute \
+  <output>/minute/encoded_tickers.json
+```
+
+If the `encoded_tickers.json` argument doesn't exist yet, the script
+bootstraps it first (scans the input for distinct tickers, assigns sequential
+u16 ids in sorted order). Pass an **existing** map to keep ids consistent with
+previously written parquet.
+
+Design: each daily file is sorted by `(window_start, ticker)` in memory and
+appended to its month's writer in date order. Consecutive trading days are
+disjoint in time (after-market ends 20:00 ET, the next pre-market opens
+4:00 ET), so the concatenation is globally time-sorted without ever buffering
+more than one day (~1.5 M rows) per worker; the day-boundary invariant is
+checked at runtime and aborts the month if violated. Months convert in
+parallel and are written via tmp-file + atomic rename, so an interrupted run
+can't leave a truncated file. The full 2021–2025 dataset (56 months, ~1.8 B
+rows) converts in about 5 minutes.
+
+Verify before pointing the engine at the result:
+
+```bash
+cargo run --release -p backtester --example check_sorted -- <output>/minute
+```
+
 ## Committed test fixture
 
 A tiny slice — AAPL, January 2023, 5,000 bars (~126 KB) — is committed so the
@@ -121,7 +160,6 @@ STONKS_DATA_ROOT=/path/to/data/output/minute \
 | `print_schema` | backtester | Dump a Parquet file's Arrow schema |
 | `list_parquet_files` | backtester | List discovered Parquet files in sorted order |
 | `check_sorted` | backtester | Verify every file is time-sorted (the engine's hard requirement); flags unreadable files |
-| `resort_parquet` | backtester | Repair unsorted files: stable re-sort by `(window_start, ticker)`, verified rewrite |
 | `noop_baseline` | backtester | Time a full-universe no-op backtest — the engine's floor cost in bars/s |
 | `make_test_fixture` | data-viz | Regenerate the committed fixture |
 | `read_and_filter` | data-viz | DataFusion query against the partitioned dataset |
