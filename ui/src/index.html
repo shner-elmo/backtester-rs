@@ -3,349 +3,881 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Backtest Results</title>
-  <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+  <meta name="color-scheme" content="light dark" />
+  <title>Backtest results</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Palette: validated light/dark tokens; charts reference roles, never hex ── */
     :root {
-      --bg: #131722; --panel: #1e222d; --border: #2a2e39; --text: #d1d4dc;
-      --muted: #787b86; --green: #26a69a; --red: #ef5350; --blue: #2962ff;
+      --page: #f9f9f7; --surface: #fcfcfb;
+      --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+      --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, .10);
+      --s1: #2a78d6;            /* categorical slot 1 (blue): equity, positive bars */
+      --s2: #1baf7a;            /* categorical slot 2 (aqua): comparison series */
+      --neg: #e34948;           /* diverging negative pole (red): drawdown, losses */
+      --up: #006300; --down: #c22f2f;   /* delta text: direction x up-is-good */
+      --warn-ink: #8a5300; --warn-bg: rgba(250, 178, 25, .18);
+      --up-bg: rgba(12, 163, 12, .12); --down-bg: rgba(208, 59, 59, .10);
+      --shadow: 0 1px 2px rgba(11, 11, 11, .04);
     }
-    body { font-family: -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
-    h1 { font-size: 18px; font-weight: 600; }
-    h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
-    header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
-    header .src { color: var(--muted); font-size: 12px; }
-    select.src { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 4px 8px; font-family: inherit; max-width: 60vw; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
-    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
-    .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-    .card .value { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
-    .pos { color: var(--green); } .neg { color: var(--red); }
-    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 16px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
-    .chart { width: 100%; }
-    canvas.bars { width: 100%; height: 220px; display: block; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --page: #0d0d0d; --surface: #1a1a19;
+        --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+        --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, .10);
+        --s1: #3987e5; --s2: #199e70; --neg: #e66767;
+        --up: #0ca30c; --down: #e66767;
+        --warn-ink: #fab219; --warn-bg: rgba(250, 178, 25, .14);
+        --up-bg: rgba(12, 163, 12, .16); --down-bg: rgba(230, 103, 103, .14);
+        --shadow: none;
+      }
+    }
+    :root[data-theme="dark"] {
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, .10);
+      --s1: #3987e5; --s2: #199e70; --neg: #e66767;
+      --up: #0ca30c; --down: #e66767;
+      --warn-ink: #fab219; --warn-bg: rgba(250, 178, 25, .14);
+      --up-bg: rgba(12, 163, 12, .16); --down-bg: rgba(230, 103, 103, .14);
+      --shadow: none;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--page); color: var(--ink);
+      padding: 24px clamp(16px, 4vw, 40px) 48px;
+      font-size: 14px; line-height: 1.45;
+    }
+
+    /* ── Header / filter row ── */
+    header {
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    h1 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+    .controls { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+    .controls .vs { color: var(--muted); font-size: 12px; }
+    select {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--ink); padding: 6px 10px; font: inherit; font-size: 13px;
+      max-width: min(320px, 42vw);
+    }
+    button.ghost {
+      background: none; border: 1px solid var(--border); border-radius: 8px;
+      color: var(--ink-2); padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+    }
+    button.ghost:hover { background: var(--surface); color: var(--ink); }
+    button.ghost[aria-pressed="true"] { background: var(--surface); color: var(--ink); border-color: var(--axis); }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px 18px; box-shadow: var(--shadow);
+    }
+    main { display: grid; gap: 14px; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 940px) { .row2 { grid-template-columns: 1fr; } }
+
+    /* ── Overview: hero + stat tiles ── */
+    .overview { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 14px; }
+    @media (max-width: 940px) { .overview { grid-template-columns: 1fr; } }
+    .hero .label { font-size: 13px; color: var(--ink-2); }
+    .hero .value { font-size: 48px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; margin: 2px 0 6px; }
+    .hero .sub { font-size: 12px; color: var(--muted); }
+    .hero .sub b { color: var(--ink-2); font-weight: 550; }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 14px; }
+    .tile .label { font-size: 12px; color: var(--ink-2); }
+    .tile .value { font-size: 22px; font-weight: 650; margin-top: 3px; letter-spacing: -.01em; }
+    .up { color: var(--up); } .down { color: var(--down); }
+
+    /* ── Figures (chart cards) ── */
+    figure.viz figcaption {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+    }
+    figure.viz h2, section.card h2 {
+      font-size: 13px; font-weight: 600; color: var(--ink-2);
+    }
+    section.card h2 { margin-bottom: 10px; }
+    .legend { display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--ink-2); min-width: 0; }
+    .legend .item { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .legend .key { width: 14px; height: 2.5px; border-radius: 2px; flex: none; }
+    .legend .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+    figure.viz .spacer { margin-left: auto; }
+    .plot { position: relative; }
+    .plot svg { display: block; }
+    .plot svg:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 4px; }
+    .empty { color: var(--muted); padding: 36px 0; text-align: center; font-size: 13px; }
+
+    /* Tooltip — enhances, never gates: same values live in the table view */
+    .tt {
+      position: absolute; pointer-events: none; z-index: 5;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, .14);
+      max-width: 320px;
+    }
+    .tt-title { color: var(--muted); font-size: 11px; margin-bottom: 3px; white-space: nowrap; }
+    .tt-row { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+    .tt-key { width: 10px; height: 2.5px; border-radius: 2px; flex: none; }
+    .tt-val { font-weight: 650; font-variant-numeric: tabular-nums; }
+    .tt-name { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
+
+    /* Table view — every chart's accessibility twin */
+    .tview { max-height: 320px; overflow-y: auto; }
+    [hidden] { display: none !important; }
+
+    /* ── Tables ── */
     table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
-    th { text-align: right; color: var(--muted); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-    td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    th { text-align: right; color: var(--muted); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+    td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); }
+    tr:last-child td { border-bottom: none; }
     th:first-child, td:first-child { text-align: left; }
-    tbody tr:hover { background: #262b38; }
+    thead th { position: sticky; top: 0; background: var(--surface); }
+    tbody tr:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
     .scroll { max-height: 420px; overflow-y: auto; }
-    .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-    .badge.long { background: rgba(38,166,154,.15); color: var(--green); }
-    .badge.short { background: rgba(239,83,80,.15); color: var(--red); }
-    .badge.forced { background: rgba(255,183,77,.15); color: #ffb74d; }
-    #empty { color: var(--muted); padding: 30px; text-align: center; }
+    td.empty-cell { text-align: center; color: var(--muted); padding: 28px 0; }
+
+    .badge {
+      display: inline-block; padding: 1px 8px; border-radius: 10px;
+      font-size: 11px; font-weight: 600;
+    }
+    .badge.long { background: var(--up-bg); color: var(--up); }
+    .badge.short { background: var(--down-bg); color: var(--down); }
+    .badge.forced { background: var(--warn-bg); color: var(--warn-ink); }
+
+    #error { color: var(--down); }
   </style>
 </head>
 <body>
   <header>
-    <h1>Backtest Results</h1>
-    <select class="src" id="result-picker" title="Switch result file"></select>
-    <span class="src">vs</span>
-    <select class="src" id="compare-picker" title="Compare against another result"></select>
+    <h1>Backtest results</h1>
+    <div class="controls">
+      <select id="result-picker" title="Result file"></select>
+      <span class="vs">vs</span>
+      <select id="compare-picker" title="Compare against another result"></select>
+      <button class="ghost" id="theme-btn" title="Toggle color theme">Theme</button>
+    </div>
   </header>
 
-  <div class="panel" id="compare-panel" style="display:none">
-    <h2>Comparison</h2>
-    <table id="compare-table">
-      <thead><tr><th>Metric</th><th id="cmp-a">A</th><th id="cmp-b">B</th><th>Δ</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
+  <div class="card" id="error" hidden></div>
 
-  <div class="cards" id="cards"></div>
+  <main id="main" hidden>
+    <section class="overview">
+      <div class="card hero" id="hero"></div>
+      <div class="tiles" id="tiles"></div>
+    </section>
 
-  <div class="panel">
-    <h2>Equity Curve</h2>
-    <div class="chart" id="equity-chart"></div>
-  </div>
+    <section class="card" id="compare-panel" hidden>
+      <h2>Comparison</h2>
+      <table id="compare-table"></table>
+    </section>
 
-  <div class="panel">
-    <h2>Drawdown</h2>
-    <div class="chart" id="dd-chart"></div>
-  </div>
+    <figure class="card viz" id="fig-equity">
+      <figcaption>
+        <h2>Equity curve</h2>
+        <div class="legend"></div>
+        <span class="spacer"></span>
+        <button class="ghost" data-toggle aria-pressed="false">Data</button>
+      </figcaption>
+      <div class="plot"></div>
+      <div class="tview" hidden></div>
+    </figure>
 
-  <div class="row">
-    <div class="panel">
-      <h2>Trade PnL Distribution</h2>
-      <canvas class="bars" id="pnl-hist"></canvas>
+    <figure class="card viz" id="fig-dd">
+      <figcaption>
+        <h2>Drawdown</h2>
+        <span class="spacer"></span>
+        <button class="ghost" data-toggle aria-pressed="false">Data</button>
+      </figcaption>
+      <div class="plot"></div>
+      <div class="tview" hidden></div>
+    </figure>
+
+    <div class="row2">
+      <figure class="card viz" id="fig-monthly">
+        <figcaption>
+          <h2>Monthly returns</h2>
+          <span class="spacer"></span>
+          <button class="ghost" data-toggle aria-pressed="false">Data</button>
+        </figcaption>
+        <div class="plot"></div>
+        <div class="tview" hidden></div>
+      </figure>
+      <figure class="card viz" id="fig-hist">
+        <figcaption>
+          <h2>Trade PnL distribution</h2>
+          <span class="spacer"></span>
+          <button class="ghost" data-toggle aria-pressed="false">Data</button>
+        </figcaption>
+        <div class="plot"></div>
+        <div class="tview" hidden></div>
+      </figure>
     </div>
-    <div class="panel">
-      <h2>Monthly Returns</h2>
-      <canvas class="bars" id="monthly"></canvas>
-    </div>
-  </div>
 
-  <div class="panel" id="open-panel" style="display:none">
-    <h2>Open Positions</h2>
-    <table id="open-table">
-      <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Last</th><th>Market Value</th><th>Unrealized</th><th>Realized (open)</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
+    <section class="card" id="open-panel" hidden>
+      <h2>Open positions</h2>
+      <table id="open-table"></table>
+    </section>
 
-  <div class="panel">
-    <h2>Per-Symbol Summary</h2>
-    <table id="symbol-table">
-      <thead><tr><th>Symbol</th><th>Trades</th><th>Win Rate</th><th>Total PnL</th><th>Avg PnL</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
+    <section class="card">
+      <h2>Per-symbol summary</h2>
+      <table id="symbol-table"></table>
+    </section>
 
-  <div class="panel">
-    <h2>Trade Log</h2>
-    <div class="scroll">
-      <table id="trade-table">
-        <thead><tr><th>#</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Entry Time</th><th>Exit Time</th><th>PnL</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
+    <section class="card">
+      <h2>Trade log</h2>
+      <div class="scroll"><table id="trade-table"></table></div>
+    </section>
+  </main>
 
   <script>
-    const fmt = (n, d = 2) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
-    const usd = n => (n < 0 ? '-$' : '$') + fmt(Math.abs(n));
-    const pnlClass = n => n > 0 ? 'pos' : n < 0 ? 'neg' : '';
-    const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+    'use strict';
 
-    function card(label, value, cls = '') {
-      return `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
-    }
+    /* ────────────────────────── helpers ────────────────────────── */
 
-    function makeChart(el, height) {
-      const chart = LightweightCharts.createChart(el, {
-        layout: { background: { color: css('--panel') }, textColor: css('--text') },
-        grid: { vertLines: { color: css('--border') }, horzLines: { color: css('--border') } },
-        width: el.clientWidth, height,
-        rightPriceScale: { borderColor: css('--border') },
-        timeScale: { borderColor: css('--border') },
-      });
-      new ResizeObserver(() => chart.resize(el.clientWidth, height)).observe(el);
-      return chart;
-    }
+    const fmt = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const usd = (n, d = 2) => (n < 0 ? '-$' : '$') + fmt(Math.abs(n), d);
+    const pct = (n, d = 1) => fmt(n, d) + '%';
+    const signed = s => (s.startsWith('-') ? s : '+' + s);
+    const deltaClass = n => n > 0 ? 'up' : n < 0 ? 'down' : '';
 
-    // Minimal categorical bar chart on a canvas (histogram / monthly returns).
-    function drawBars(canvas, labels, values, formatValue, colors) {
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.clientWidth, h = canvas.clientHeight;
-      canvas.width = w * dpr; canvas.height = h * dpr;
-      const ctx = canvas.getContext('2d');
-      ctx.scale(dpr, dpr);
-      ctx.clearRect(0, 0, w, h);
-      if (!values.length) {
-        ctx.fillStyle = css('--muted'); ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText('no data', w / 2, h / 2);
-        return;
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const fdate = d => `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+    const fmonth = key => { const [y, m] = key.split('-'); return `${MONTHS[+m - 1]} ${y}`; };
+
+    // Untrusted strings (symbols, file names) only ever enter the DOM as text.
+    const h = (tag, attrs = {}, ...children) => {
+      const e = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'class') e.className = v;
+        else if (k === 'style') e.style.cssText = v;
+        else e.setAttribute(k, v);
       }
-      const padB = 22, padT = 14;
-      const maxV = Math.max(...values, 0), minV = Math.min(...values, 0);
-      const range = (maxV - minV) || 1;
-      const zeroY = padT + (maxV / range) * (h - padT - padB);
-      const bw = (w / values.length);
-      ctx.font = '10px sans-serif';
-      values.forEach((v, i) => {
-        const x = i * bw + bw * 0.12;
-        const bh = Math.abs(v) / range * (h - padT - padB);
-        ctx.fillStyle = colors ? colors[i] : (v >= 0 ? css('--green') : css('--red'));
-        ctx.fillRect(x, v >= 0 ? zeroY - bh : zeroY, bw * 0.76, Math.max(bh, 1));
-        if (v !== 0 && values.length <= 24) {
-          ctx.fillStyle = css('--text'); ctx.textAlign = 'center';
-          ctx.fillText(formatValue(v), x + bw * 0.38, v >= 0 ? zeroY - bh - 3 : zeroY + bh + 10);
-        }
-      });
-      ctx.strokeStyle = css('--border');
-      ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY); ctx.stroke();
-      ctx.fillStyle = css('--muted'); ctx.textAlign = 'center';
-      const step = Math.ceil(labels.length / Math.floor(w / 60));
-      labels.forEach((l, i) => { if (i % step === 0) ctx.fillText(l, i * bw + bw / 2, h - 6); });
+      for (const c of children.flat(9)) if (c != null) e.append(c.nodeType ? c : String(c));
+      return e;
+    };
+    const svgEl = (tag, attrs = {}) => {
+      const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+      return e;
+    };
+
+    function niceTicks(min, max, n = 5) {
+      if (!(max > min)) max = min + 1;
+      const span = max - min;
+      const base = Math.pow(10, Math.floor(Math.log10(span / n)));
+      const err = span / n / base;
+      const step = base * (err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1);
+      const ticks = [];
+      for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-6; v += step)
+        ticks.push(Math.abs(v) < step * 1e-6 ? 0 : v);
+      return ticks;
     }
 
-    let liveCharts = [];
+    // Decimals needed so labels one tick apart never read identical.
+    const tickDecimals = ticks => {
+      const step = ticks.length > 1 ? ticks[1] - ticks[0] : 1;
+      return Math.max(0, Math.min(4, -Math.floor(Math.log10(step) + 1e-9)));
+    };
+
+    function makeTable(table, headers, rows, emptyText) {
+      table.textContent = '';
+      table.append(h('thead', {}, h('tr', {}, headers.map(c => h('th', {}, c)))));
+      const tb = h('tbody');
+      if (!rows.length && emptyText) {
+        tb.append(h('tr', {}, h('td', { class: 'empty-cell', colspan: headers.length }, emptyText)));
+      }
+      for (const row of rows) {
+        tb.append(h('tr', {}, row.map(cell =>
+          cell && cell.nodeType ? h('td', {}, cell)
+            : h('td', { class: (cell && cell.cls) || '' }, cell && cell.cls !== undefined ? cell.text : cell))));
+      }
+      table.append(tb);
+      return table;
+    }
+
+    /* ─────────────────────── chart plumbing ─────────────────────── */
+
+    // One tooltip per figure; positioned inside the .plot, flipped near edges.
+    function tooltipFor(root) {
+      const tt = h('div', { class: 'tt' });
+      tt.hidden = true;
+      root.append(tt);
+      return {
+        show(px, py, title, rows) {
+          tt.textContent = '';
+          tt.append(h('div', { class: 'tt-title' }, title));
+          for (const r of rows) {
+            tt.append(h('div', { class: 'tt-row' },
+              r.color ? h('span', { class: 'tt-key', style: `background:${r.color}` }) : null,
+              h('span', { class: 'tt-val' }, r.value),
+              r.name ? h('span', { class: 'tt-name' }, r.name) : null));
+          }
+          tt.hidden = false;
+          const w = root.clientWidth, tw = tt.offsetWidth, th = tt.offsetHeight;
+          tt.style.left = Math.round(px + 14 + tw > w ? Math.max(0, px - tw - 12) : px + 14) + 'px';
+          tt.style.top = Math.round(Math.max(0, Math.min(py - th - 10, root.clientHeight - th - 4))) + 'px';
+        },
+        hide() { tt.hidden = true; },
+      };
+    }
+
+    const redraws = [];   // [{el, draw}] — re-rendered on resize
+    function mountPlot(plotEl, draw) {
+      redraws.push({ el: plotEl, draw });
+      draw();
+    }
+    let resizeQueued = false;
+    new ResizeObserver(() => {
+      if (resizeQueued) return;
+      resizeQueued = true;
+      requestAnimationFrame(() => {
+        resizeQueued = false;
+        for (const { el, draw } of redraws) if (el.clientWidth > 40) draw();
+      });
+    }).observe(document.body);
+
+    function xTimeTicks(tmin, tmax, plotW) {
+      const n = Math.max(2, Math.floor(plotW / 92));
+      const span = tmax - tmin;
+      const label = span > 2.6 * 365 * 864e5
+        ? d => String(d.getUTCFullYear())
+        : span > 120 * 864e5
+          ? d => `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`
+          : d => `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+      const ticks = [];
+      let prev = null;
+      for (let i = 0; i < n; i++) {
+        const t = tmin + span * (n === 1 ? 0 : i / (n - 1));
+        const text = label(new Date(t));
+        if (text !== prev) { ticks.push({ t, text }); prev = text; }
+      }
+      return ticks;
+    }
+
+    /* ───────────────────────── line chart ─────────────────────────
+       series: [{ name, color, points: [{t: ms, v}] (sorted) }]
+       2px lines, 10% area wash on the first series, hairline solid grid,
+       crosshair + one tooltip listing every series, keyboard operable. */
+    function lineChart(plotEl, { series, height, yFmt, valFmt, areaBase, threshold }) {
+      plotEl.textContent = '';
+      series = series.filter(s => s.points.length);
+      if (!series.length) { plotEl.append(h('div', { class: 'empty' }, 'No data')); return; }
+      const w = plotEl.clientWidth || 640;
+
+      const times = [...new Set(series.flatMap(s => s.points.map(p => p.t)))].sort((a, b) => a - b);
+      const tmin = times[0], tmax = times[times.length - 1] || tmin + 1;
+      let vmin = Infinity, vmax = -Infinity;
+      for (const s of series) for (const p of s.points) { vmin = Math.min(vmin, p.v); vmax = Math.max(vmax, p.v); }
+      if (threshold) { vmin = Math.min(vmin, threshold.value); vmax = Math.max(vmax, threshold.value); }
+      if (areaBase != null && areaBase !== 'bottom') { vmin = Math.min(vmin, areaBase); vmax = Math.max(vmax, areaBase); }
+      const vpad = (vmax - vmin || Math.abs(vmax) || 1) * .06;
+      vmin -= vpad; vmax += vpad;
+      const yTicks = niceTicks(vmin, vmax, Math.max(3, Math.round(height / 60)));
+      const yDec = tickDecimals(yTicks);
+
+      const mL = 16 + Math.max(...yTicks.map(v => yFmt(v, yDec).length)) * 6.6;
+      const m = { t: 12, r: 14, b: 26, l: Math.ceil(mL) };
+      const pw = Math.max(10, w - m.l - m.r), ph = height - m.t - m.b;
+      const x = t => m.l + (tmax === tmin ? pw / 2 : (t - tmin) / (tmax - tmin) * pw);
+      const y = v => m.t + (vmax - v) / (vmax - vmin) * ph;
+
+      const svg = svgEl('svg', { width: w, height, role: 'img', tabindex: 0 });
+      // grid: solid hairlines, one step off the surface
+      for (const v of yTicks) {
+        svg.append(svgEl('line', { x1: m.l, x2: w - m.r, y1: y(v), y2: y(v), style: `stroke:var(--grid)`, 'stroke-width': 1 }));
+        const lbl = svgEl('text', { x: m.l - 8, y: y(v) + 3.5, 'text-anchor': 'end',
+          style: 'fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums' });
+        lbl.textContent = yFmt(v, yDec);
+        svg.append(lbl);
+      }
+      for (const tk of xTimeTicks(tmin, tmax, pw)) {
+        const tx = x(tk.t);
+        const lbl = svgEl('text', { x: tx, y: height - 8,
+          'text-anchor': tx > w - 30 ? 'end' : tx < m.l + 16 ? 'start' : 'middle',
+          style: 'fill:var(--muted);font-size:11px' });
+        lbl.textContent = tk.text;
+        svg.append(lbl);
+      }
+      svg.append(svgEl('line', { x1: m.l, x2: w - m.r, y1: m.t + ph, y2: m.t + ph, style: 'stroke:var(--axis)', 'stroke-width': 1 }));
+
+      if (areaBase != null) {
+        const s0 = series[0];
+        const baseY = areaBase === 'bottom' ? m.t + ph : y(areaBase);
+        const d = `M${x(s0.points[0].t)},${baseY}` +
+          s0.points.map(p => `L${x(p.t)},${y(p.v)}`).join('') +
+          `L${x(s0.points[s0.points.length - 1].t)},${baseY}Z`;
+        svg.append(svgEl('path', { d, style: `fill:${s0.color}`, 'fill-opacity': .1 }));
+      }
+      if (threshold) {
+        svg.append(svgEl('line', { x1: m.l, x2: w - m.r, y1: y(threshold.value), y2: y(threshold.value),
+          style: 'stroke:var(--axis)', 'stroke-width': 1, 'stroke-dasharray': '4 3' }));
+        const lbl = svgEl('text', { x: w - m.r, y: y(threshold.value) - 4, 'text-anchor': 'end', style: 'fill:var(--muted);font-size:10px' });
+        lbl.textContent = threshold.label;
+        svg.append(lbl);
+      }
+      for (const s of series) {
+        const d = 'M' + s.points.map(p => `${x(p.t)},${y(p.v)}`).join('L');
+        svg.append(svgEl('path', { d, fill: 'none', style: `stroke:${s.color}`,
+          'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+      }
+
+      // crosshair + markers (2px surface ring so dots stay legible on the line)
+      const cross = svgEl('g', { visibility: 'hidden' });
+      const vline = svgEl('line', { y1: m.t, y2: m.t + ph, style: 'stroke:var(--muted)', 'stroke-width': 1 });
+      cross.append(vline);
+      const dots = series.map(s => {
+        const c = svgEl('circle', { r: 4.5, style: `fill:${s.color};stroke:var(--surface)`, 'stroke-width': 2 });
+        cross.append(c);
+        return c;
+      });
+      svg.append(cross);
+
+      const tt = tooltipFor(plotEl);
+      const nearest = (arr, t) => {   // binary search over sorted ms
+        let lo = 0, hi = arr.length - 1;
+        while (hi - lo > 1) { const mid = (lo + hi) >> 1; (arr[mid].t ?? arr[mid]) <= t ? lo = mid : hi = mid; }
+        const a = arr[lo], b = arr[hi];
+        return t - (a.t ?? a) <= (b.t ?? b) - t ? lo : hi;
+      };
+      function showAt(t, clientY) {
+        const i = nearest(times, t);
+        const tx = x(times[i]);
+        vline.setAttribute('x1', tx); vline.setAttribute('x2', tx);
+        cross.setAttribute('visibility', 'visible');
+        const rows = [];
+        series.forEach((s, k) => {
+          const p = s.points[nearest(s.points, times[i])];
+          dots[k].setAttribute('cx', x(p.t)); dots[k].setAttribute('cy', y(p.v));
+          rows.push({ color: s.color, value: valFmt(p.v), name: series.length > 1 ? s.name : null });
+        });
+        tt.show(tx, clientY ?? m.t + 10, fdate(new Date(times[i])), rows);
+        return i;
+      }
+      const hide = () => { cross.setAttribute('visibility', 'hidden'); tt.hide(); };
+
+      svg.addEventListener('pointermove', e => {
+        const r = svg.getBoundingClientRect();
+        const px = e.clientX - r.left;
+        if (px < m.l - 6 || px > w - m.r + 6) return hide();
+        activeIdx = showAt(tmin + (Math.min(Math.max(px, m.l), w - m.r) - m.l) / pw * (tmax - tmin), e.clientY - r.top);
+      });
+      svg.addEventListener('pointerleave', hide);
+      let activeIdx = -1;   // keyboard gets the same readout as hover
+      svg.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { activeIdx = -1; return hide(); }
+        const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!step && e.key !== 'Home' && e.key !== 'End') return;
+        e.preventDefault();
+        activeIdx = e.key === 'Home' ? 0 : e.key === 'End' ? times.length - 1
+          : Math.max(0, Math.min(times.length - 1, (activeIdx < 0 ? (step > 0 ? -1 : times.length) : activeIdx) + step));
+        showAt(times[activeIdx]);
+      });
+      svg.addEventListener('blur', hide);
+      plotEl.append(svg);
+    }
+
+    /* ──────────────────────── column chart ────────────────────────
+       Thin columns (≤24px) with a 4px rounded data-end, square at the
+       baseline, ≥2px surface gap; per-mark hover tooltip; extremes get
+       selective direct labels. */
+    function columnChart(plotEl, { categories, values, height, color, yFmt, valFmt, catFmt, xLabel }) {
+      plotEl.textContent = '';
+      if (!values.length) { plotEl.append(h('div', { class: 'empty' }, 'No data')); return; }
+      const w = plotEl.clientWidth || 640;
+      let vmin = Math.min(0, ...values), vmax = Math.max(0, ...values);
+      const vpad = (vmax - vmin || 1) * .08;
+      if (vmin < 0) vmin -= vpad;
+      if (vmax > 0) vmax += vpad;
+      const yTicks = niceTicks(vmin, vmax, Math.max(3, Math.round(height / 55)));
+      const yDec = tickDecimals(yTicks);
+
+      const m = { t: 16, r: 10, b: 26, l: Math.ceil(16 + Math.max(...yTicks.map(v => yFmt(v, yDec).length)) * 6.6) };
+      const pw = Math.max(10, w - m.l - m.r), ph = height - m.t - m.b;
+      const y = v => m.t + (vmax - v) / (vmax - vmin) * ph;
+      const zeroY = y(0);
+      const band = pw / values.length;
+      const barW = Math.max(1, Math.min(24, band - 2));
+
+      const svg = svgEl('svg', { width: w, height, role: 'img', tabindex: 0 });
+      for (const v of yTicks) {
+        svg.append(svgEl('line', { x1: m.l, x2: w - m.r, y1: y(v), y2: y(v), style: 'stroke:var(--grid)', 'stroke-width': 1 }));
+        const lbl = svgEl('text', { x: m.l - 8, y: y(v) + 3.5, 'text-anchor': 'end',
+          style: 'fill:var(--muted);font-size:11px;font-variant-numeric:tabular-nums' });
+        lbl.textContent = yFmt(v, yDec);
+        svg.append(lbl);
+      }
+      svg.append(svgEl('line', { x1: m.l, x2: w - m.r, y1: zeroY, y2: zeroY, style: 'stroke:var(--axis)', 'stroke-width': 1 }));
+
+      // rounded corners on the data end only, square at the baseline
+      const barPath = (cx, v) => {
+        const x0 = cx - barW / 2, x1 = cx + barW / 2;
+        const yv = y(v);
+        const hgt = Math.max(Math.abs(yv - zeroY), 1);
+        const r = Math.min(4, barW / 2, hgt);
+        if (v >= 0) {
+          const top = Math.min(yv, zeroY - 1);
+          return `M${x0},${zeroY}L${x0},${top + r}Q${x0},${top} ${x0 + r},${top}L${x1 - r},${top}Q${x1},${top} ${x1},${top + r}L${x1},${zeroY}Z`;
+        }
+        const bot = Math.max(yv, zeroY + 1);
+        return `M${x0},${zeroY}L${x0},${bot - r}Q${x0},${bot} ${x0 + r},${bot}L${x1 - r},${bot}Q${x1},${bot} ${x1},${bot - r}L${x1},${zeroY}Z`;
+      };
+
+      const bars = values.map((v, i) => {
+        const bar = svgEl('path', { d: barPath(m.l + band * (i + .5), v), style: `fill:${color(v, i)}` });
+        svg.append(bar);
+        return bar;
+      });
+
+      // selective direct labels: the extremes only, the tooltip carries the rest
+      const iMax = values.indexOf(Math.max(...values)), iMin = values.indexOf(Math.min(...values));
+      const extremes = [...new Set([iMax, iMin])].filter(i => values[i] !== 0);
+      if (band >= 14) for (const i of extremes) {
+        const v = values[i];
+        const ly = v >= 0 ? y(v) - 5 : y(v) + 13;
+        if (ly < m.t - 2 || ly > m.t + ph + 12) continue;
+        const lbl = svgEl('text', { x: m.l + band * (i + .5), y: ly, 'text-anchor': 'middle',
+          style: 'fill:var(--ink-2);font-size:11px;font-variant-numeric:tabular-nums' });
+        lbl.textContent = valFmt(v);
+        svg.append(lbl);
+      }
+
+      const step = Math.max(1, Math.ceil(values.length / Math.floor(pw / 68)));
+      for (let i = 0; i < values.length; i += step) {
+        const lbl = svgEl('text', { x: m.l + band * (i + .5), y: height - 8, 'text-anchor': 'middle', style: 'fill:var(--muted);font-size:11px' });
+        lbl.textContent = xLabel(categories[i]);
+        svg.append(lbl);
+      }
+
+      // the whole band is the hit target, never just the painted pixels
+      const tt = tooltipFor(plotEl);
+      let hot = -1;
+      const setHot = i => {
+        if (hot >= 0) bars[hot].style.filter = '';
+        hot = i;
+        if (i < 0) return tt.hide();
+        bars[i].style.filter = 'brightness(1.12)';
+        tt.show(m.l + band * (i + .5), Math.min(y(values[i]), zeroY) - 6, catFmt(categories[i]),
+          [{ color: color(values[i], i), value: valFmt(values[i]) }]);
+      };
+      svg.addEventListener('pointermove', e => {
+        const r = svg.getBoundingClientRect();
+        const i = Math.floor((e.clientX - r.left - m.l) / band);
+        setHot(i >= 0 && i < values.length ? i : -1);
+      });
+      svg.addEventListener('pointerleave', () => setHot(-1));
+      svg.addEventListener('keydown', e => {
+        if (e.key === 'Escape') return setHot(-1);
+        const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!step && e.key !== 'Home' && e.key !== 'End') return;
+        e.preventDefault();
+        setHot(e.key === 'Home' ? 0 : e.key === 'End' ? values.length - 1
+          : Math.max(0, Math.min(values.length - 1, (hot < 0 ? (step > 0 ? -1 : values.length) : hot) + step)));
+      });
+      svg.addEventListener('blur', () => setHot(-1));
+      plotEl.append(svg);
+    }
+
+    /* ───────────────────────── figures ───────────────────────── */
+
+    function setupToggles() {
+      for (const fig of document.querySelectorAll('figure.viz')) {
+        const btn = fig.querySelector('[data-toggle]');
+        btn.addEventListener('click', () => {
+          const showData = fig.querySelector('.tview').hidden;
+          fig.querySelector('.tview').hidden = !showData;
+          fig.querySelector('.plot').hidden = showData;
+          btn.setAttribute('aria-pressed', String(showData));
+          btn.textContent = showData ? 'Chart' : 'Data';
+          if (!showData) for (const { el, draw } of redraws) if (fig.contains(el)) draw();
+        });
+      }
+    }
+
+    function figureParts(id) {
+      const fig = document.getElementById(id);
+      return { plot: fig.querySelector('.plot'), tview: fig.querySelector('.tview'), legend: fig.querySelector('.legend') };
+    }
+
+    /* ───────────────────────── rendering ───────────────────────── */
+
+    function statTile(label, value, cls = '') {
+      return h('div', { class: 'card tile' },
+        h('div', { class: 'label' }, label),
+        h('div', { class: `value ${cls}` }, value));
+    }
+
+    function renderOverview(r) {
+      const s = r.stats;
+      const ret = (r.final_equity / r.initial_cash - 1) * 100;
+      const curve = r.equity_curve;
+      const range = curve.length
+        ? `${fdate(new Date(curve[0].time))} – ${fdate(new Date(curve[curve.length - 1].time))}` : '';
+
+      const hero = document.getElementById('hero');
+      hero.textContent = '';
+      hero.append(
+        h('div', { class: 'label' }, 'Total return'),
+        h('div', { class: `value ${deltaClass(ret)}` }, signed(pct(ret))),
+        h('div', { class: 'sub' },
+          h('b', {}, usd(r.final_equity, 0)), ` final equity from ${usd(r.initial_cash, 0)}`,
+          range ? h('div', {}, range) : null,
+          h('div', {}, r.source_file || '')));
+
+      const tiles = document.getElementById('tiles');
+      tiles.textContent = '';
+      tiles.append(
+        statTile('Realized PnL', usd(s.total_pnl), deltaClass(s.total_pnl)),
+        statTile('Trades', String(s.trade_count)),
+        statTile('Win rate', pct(s.win_rate * 100)),
+        statTile('Profit factor', isFinite(s.profit_factor) ? fmt(s.profit_factor) : '∞'),
+        statTile('Max drawdown', signed(pct(-s.max_drawdown * 100)), s.max_drawdown > 0 ? 'down' : ''),
+        statTile('Sharpe', fmt(s.sharpe_ratio), deltaClass(s.sharpe_ratio)),
+        statTile('Commission', usd(r.total_commission)));
+    }
 
     function renderCompare(r, cmp) {
       const panel = document.getElementById('compare-panel');
-      if (!cmp) { panel.style.display = 'none'; return; }
-      panel.style.display = '';
-      document.getElementById('cmp-a').textContent = r.source_file || 'A';
-      document.getElementById('cmp-b').textContent = cmp.source_file || 'B';
+      panel.hidden = !cmp;
+      if (!cmp) return;
       const retOf = x => (x.final_equity / x.initial_cash - 1) * 100;
       const rows = [
-        ['Final Equity', usd(r.final_equity), usd(cmp.final_equity), true],
-        ['Total Return', `${fmt(retOf(r))}%`, `${fmt(retOf(cmp))}%`, false],
-        ['Realized PnL', usd(r.stats.total_pnl), usd(cmp.stats.total_pnl), true],
-        ['Trades', r.stats.trade_count, cmp.stats.trade_count, false],
-        ['Win Rate', `${fmt(r.stats.win_rate * 100, 1)}%`, `${fmt(cmp.stats.win_rate * 100, 1)}%`, false],
-        ['Profit Factor', fmt(r.stats.profit_factor), fmt(cmp.stats.profit_factor), false],
-        ['Max Drawdown', `${fmt(r.stats.max_drawdown * 100, 1)}%`, `${fmt(cmp.stats.max_drawdown * 100, 1)}%`, false],
-        ['Sharpe', fmt(r.stats.sharpe_ratio), fmt(cmp.stats.sharpe_ratio), false],
+        // [label, raw A, raw B, format, lower-is-better]
+        ['Final equity', r.final_equity, cmp.final_equity, v => usd(v, 0), false],
+        ['Total return', retOf(r), retOf(cmp), v => pct(v, 2), false],
+        ['Realized PnL', r.stats.total_pnl, cmp.stats.total_pnl, usd, false],
+        ['Trades', r.stats.trade_count, cmp.stats.trade_count, v => fmt(v, 0), false],
+        ['Win rate', r.stats.win_rate * 100, cmp.stats.win_rate * 100, pct, false],
+        ['Profit factor', r.stats.profit_factor, cmp.stats.profit_factor, fmt, false],
+        ['Max drawdown', r.stats.max_drawdown * 100, cmp.stats.max_drawdown * 100, pct, true],
+        ['Sharpe', r.stats.sharpe_ratio, cmp.stats.sharpe_ratio, fmt, false],
       ];
-      const raw = { 'Final Equity': [r.final_equity, cmp.final_equity], 'Total Return': [retOf(r), retOf(cmp)],
-        'Realized PnL': [r.stats.total_pnl, cmp.stats.total_pnl], 'Trades': [r.stats.trade_count, cmp.stats.trade_count],
-        'Win Rate': [r.stats.win_rate, cmp.stats.win_rate], 'Profit Factor': [r.stats.profit_factor, cmp.stats.profit_factor],
-        'Max Drawdown': [r.stats.max_drawdown, cmp.stats.max_drawdown], 'Sharpe': [r.stats.sharpe_ratio, cmp.stats.sharpe_ratio] };
-      document.querySelector('#compare-table tbody').innerHTML = rows.map(([label, a, b, money]) => {
-        const [ra, rb] = raw[label];
-        const delta = rb - ra;
-        const good = label === 'Max Drawdown' ? delta < 0 : delta > 0; // lower drawdown is better
-        const deltaStr = money ? usd(delta) : (label === 'Trades' ? delta : fmt(delta));
-        const cls = delta === 0 ? '' : (good ? 'pos' : 'neg');
-        return `<tr><td>${label}</td><td>${a}</td><td>${b}</td><td class="${cls}">${delta >= 0 ? '+' : ''}${deltaStr}</td></tr>`;
-      }).join('');
+      const key = color => h('span', { class: 'legend' }, h('span', { class: 'key', style: `background:${color};display:inline-block;vertical-align:middle;margin-right:6px` }));
+      makeTable(document.getElementById('compare-table'),
+        ['Metric',
+          h('span', {}, key('var(--s1)'), r.source_file || 'A'),
+          h('span', {}, key('var(--s2)'), cmp.source_file || 'B'),
+          'Δ (B − A)'],
+        rows.map(([label, a, b, f, lowerBetter]) => {
+          const delta = b - a;
+          const good = lowerBetter ? delta < 0 : delta > 0;
+          return [label, f(a), f(b),
+            { text: signed(f(delta)), cls: delta === 0 ? '' : good ? 'up' : 'down' }];
+        }));
     }
 
-    function render(r, cmp) {
-      const s = r.stats;
+    function renderEquity(r, cmp) {
+      const { plot, tview, legend } = figureParts('fig-equity');
+      const toPts = c => c.map(p => ({ t: Date.parse(p.time), v: p.equity }));
+      const series = [{ name: r.source_file || 'this run', color: 'var(--s1)', points: toPts(r.equity_curve) }];
+      if (cmp) series.push({ name: cmp.source_file || 'comparison', color: 'var(--s2)', points: toPts(cmp.equity_curve) });
 
-      // Dispose charts and reset panels from any previous render before redraw.
-      liveCharts.forEach(c => c.remove());
-      liveCharts = [];
-      document.getElementById('equity-chart').innerHTML = '';
-      document.getElementById('dd-chart').innerHTML = '';
-      document.getElementById('open-panel').style.display = 'none';
-      document.querySelector('#open-table tbody').innerHTML = '';
-
-      renderCompare(r, cmp);
-
-      const ret = (r.final_equity / r.initial_cash - 1) * 100;
-      document.getElementById('cards').innerHTML = [
-        card('Final Equity', usd(r.final_equity)),
-        card('Total Return', `${ret >= 0 ? '+' : ''}${fmt(ret)}%`, pnlClass(ret)),
-        card('Realized PnL', usd(s.total_pnl), pnlClass(s.total_pnl)),
-        card('Trades', s.trade_count, ''),
-        card('Win Rate', `${fmt(s.win_rate * 100, 1)}%`),
-        card('Profit Factor', isFinite(s.profit_factor) ? fmt(s.profit_factor) : '∞'),
-        card('Max Drawdown', `${fmt(s.max_drawdown * 100, 1)}%`, s.max_drawdown > 0 ? 'neg' : ''),
-        card('Sharpe', fmt(s.sharpe_ratio), pnlClass(s.sharpe_ratio)),
-        card('Commission', usd(r.total_commission)),
-      ].join('');
-
-      // ── Equity curve ──
-      const curve = r.equity_curve.map(p => ({ time: p.time, value: p.equity }));
-      const eqChart = makeChart(document.getElementById('equity-chart'), 320);
-      liveCharts.push(eqChart);
-      const eqSeries = eqChart.addAreaSeries({
-        lineColor: css('--blue'), topColor: 'rgba(41,98,255,.35)', bottomColor: 'rgba(41,98,255,.02)',
-        lineWidth: 2, priceFormat: { type: 'price', precision: 0, minMove: 1 },
-      });
-      eqSeries.setData(curve);
-      eqSeries.createPriceLine({ price: r.initial_cash, color: css('--muted'), lineStyle: 2, title: 'start' });
-      // Overlay the comparison equity curve as a second line.
-      if (cmp) {
-        const cmpSeries = eqChart.addLineSeries({ color: css('--muted'), lineWidth: 2, lineStyle: 0,
-          priceFormat: { type: 'price', precision: 0, minMove: 1 } });
-        cmpSeries.setData(cmp.equity_curve.map(p => ({ time: p.time, value: p.equity })));
+      // legend only when there are ≥ 2 series — one series is named by the title
+      legend.textContent = '';
+      if (cmp) for (const s of series) {
+        legend.append(h('span', { class: 'item', title: s.name },
+          h('span', { class: 'key', style: `background:${s.color}` }),
+          h('span', { class: 'name' }, s.name)));
       }
-      eqChart.timeScale().fitContent();
 
-      // ── Drawdown (computed from the curve) ──
+      mountPlot(plot, () => lineChart(plot, {
+        series, height: 320,
+        yFmt: (v, d = 0) => usd(v, d), valFmt: v => usd(v, 0),
+        areaBase: 'bottom',
+        threshold: { value: r.initial_cash, label: 'start' },
+      }));
+
+      const byTime = series.map(s => new Map(s.points.map(p => [p.t, p.v])));
+      const times = [...new Set(series.flatMap(s => s.points.map(p => p.t)))].sort((a, b) => a - b);
+      makeTable(tview.appendChild(h('table')), ['Date', ...series.map(s => s.name)],
+        times.map(t => [fdate(new Date(t)), ...byTime.map(m => m.has(t) ? usd(m.get(t)) : '')]), 'No data');
+    }
+
+    function renderDrawdown(r) {
+      const { plot, tview } = figureParts('fig-dd');
       let peak = -Infinity;
       const dd = r.equity_curve.map(p => {
         peak = Math.max(peak, p.equity);
-        return { time: p.time, value: peak > 0 ? -(peak - p.equity) / peak * 100 : 0 };
+        return { t: Date.parse(p.time), v: peak > 0 ? -(peak - p.equity) / peak * 100 : 0 };
       });
-      const ddChart = makeChart(document.getElementById('dd-chart'), 180);
-      liveCharts.push(ddChart);
-      const ddSeries = ddChart.addAreaSeries({
-        lineColor: css('--red'), topColor: 'rgba(239,83,80,.02)', bottomColor: 'rgba(239,83,80,.35)',
-        lineWidth: 2, invertFilledArea: true,
-        priceFormat: { type: 'custom', formatter: v => fmt(v, 1) + '%' },
-      });
-      ddSeries.setData(dd);
-      ddChart.timeScale().fitContent();
+      mountPlot(plot, () => lineChart(plot, {
+        series: [{ name: 'drawdown', color: 'var(--neg)', points: dd }],
+        height: 180,
+        yFmt: (v, d = 1) => pct(v, d), valFmt: v => pct(v, 2),
+        areaBase: 0,
+      }));
+      makeTable(tview.appendChild(h('table')), ['Date', 'Drawdown'],
+        dd.map(p => [fdate(new Date(p.t)), pct(p.v, 2)]), 'No data');
+    }
 
-      // ── PnL histogram ──
+    function renderMonthly(r) {
+      const { plot, tview } = figureParts('fig-monthly');
+      const byMonth = new Map();
+      for (const p of r.equity_curve) byMonth.set(p.time.slice(0, 7), p.equity); // last point per month
+      const months = [...byMonth.keys()].sort();
+      let prev = r.initial_cash;
+      const vals = months.map(mo => {
+        const v = (byMonth.get(mo) / prev - 1) * 100;
+        prev = byMonth.get(mo);
+        return v;
+      });
+      mountPlot(plot, () => columnChart(plot, {
+        categories: months, values: vals, height: 220,
+        color: v => v >= 0 ? 'var(--s1)' : 'var(--neg)',
+        yFmt: (v, d = 0) => pct(v, d), valFmt: v => signed(pct(v)), catFmt: fmonth,
+        xLabel: mo => {
+          const [yy, mm] = mo.split('-');
+          return months.length > 14 ? `${MONTHS[+mm - 1]} '${yy.slice(2)}` : MONTHS[+mm - 1];
+        },
+      }));
+      makeTable(tview.appendChild(h('table')), ['Month', 'Return'],
+        months.map((mo, i) => [fmonth(mo), { text: signed(pct(vals[i], 2)), cls: deltaClass(vals[i]) }]), 'No data');
+    }
+
+    function renderHistogram(r) {
+      const { plot, tview } = figureParts('fig-hist');
       const pnls = r.trades.map(t => t.pnl);
+      let bins = [], labels = [];
       if (pnls.length) {
         const lo = Math.min(...pnls), hi = Math.max(...pnls);
         const nBins = Math.min(21, Math.max(7, Math.round(Math.sqrt(pnls.length))));
         const width = (hi - lo) / nBins || 1;
-        const bins = Array(nBins).fill(0);
-        pnls.forEach(p => bins[Math.min(nBins - 1, Math.floor((p - lo) / width))]++);
-        drawBars(document.getElementById('pnl-hist'),
-          bins.map((_, i) => usd(lo + (i + 0.5) * width)),
-          bins, v => v,
-          bins.map((_, i) => lo + (i + 0.5) * width >= 0 ? css('--green') : css('--red')));
-      } else {
-        drawBars(document.getElementById('pnl-hist'), [], [], v => v);
+        bins = Array(nBins).fill(0);
+        for (const p of pnls) bins[Math.min(nBins - 1, Math.floor((p - lo) / width))]++;
+        labels = bins.map((_, i) => ({
+          mid: lo + (i + .5) * width,
+          range: `${usd(lo + i * width, 0)} to ${usd(lo + (i + 1) * width, 0)}`,
+        }));
       }
+      mountPlot(plot, () => columnChart(plot, {
+        categories: labels, values: bins, height: 220,
+        color: (_, i) => labels[i].mid >= 0 ? 'var(--s1)' : 'var(--neg)',
+        yFmt: (v, d = 0) => fmt(v, d), valFmt: v => `${fmt(v, 0)} trade${v === 1 ? '' : 's'}`,
+        catFmt: c => c.range, xLabel: c => usd(c.mid, 0),
+      }));
+      makeTable(tview.appendChild(h('table')), ['PnL range', 'Trades'],
+        labels.map((c, i) => [c.range, fmt(bins[i], 0)]), 'No completed trades');
+    }
 
-      // ── Monthly returns from the equity curve ──
-      const byMonth = new Map();
-      r.equity_curve.forEach(p => byMonth.set(p.time.slice(0, 7), p.equity)); // last point per month
-      const months = [...byMonth.keys()].sort();
-      let prevEq = r.initial_cash;
-      const monthlyVals = months.map(m => {
-        const v = (byMonth.get(m) / prevEq - 1) * 100;
-        prevEq = byMonth.get(m);
-        return v;
-      });
-      drawBars(document.getElementById('monthly'), months, monthlyVals, v => fmt(v, 1) + '%');
-
-      // ── Open positions ──
+    function renderTables(r) {
+      const openPanel = document.getElementById('open-panel');
+      openPanel.hidden = !r.open_positions.length;
       if (r.open_positions.length) {
-        document.getElementById('open-panel').style.display = '';
-        document.querySelector('#open-table tbody').innerHTML = r.open_positions.map(p => `
-          <tr><td>${p.symbol}</td><td>${fmt(p.quantity)}</td><td>${fmt(p.avg_price)}</td>
-          <td>${fmt(p.last_price)}</td><td>${usd(p.market_value)}</td>
-          <td class="${pnlClass(p.unrealized_pnl)}">${usd(p.unrealized_pnl)}</td>
-          <td class="${pnlClass(p.realized_pnl)}">${usd(p.realized_pnl)}</td></tr>`).join('');
+        makeTable(document.getElementById('open-table'),
+          ['Symbol', 'Qty', 'Avg price', 'Last', 'Market value', 'Unrealized', 'Realized (open)'],
+          r.open_positions.map(p => [
+            p.symbol, fmt(p.quantity), fmt(p.avg_price), fmt(p.last_price), usd(p.market_value),
+            { text: usd(p.unrealized_pnl), cls: deltaClass(p.unrealized_pnl) },
+            { text: usd(p.realized_pnl), cls: deltaClass(p.realized_pnl) },
+          ]));
       }
 
-      // ── Per-symbol summary ──
       const bySym = new Map();
-      r.trades.forEach(t => {
+      for (const t of r.trades) {
         const s = bySym.get(t.symbol) || { n: 0, wins: 0, pnl: 0 };
         s.n++; if (t.pnl > 0) s.wins++; s.pnl += t.pnl;
         bySym.set(t.symbol, s);
-      });
-      document.querySelector('#symbol-table tbody').innerHTML =
-        [...bySym.entries()].sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => `
-          <tr><td>${sym}</td><td>${s.n}</td><td>${fmt(s.wins / s.n * 100, 1)}%</td>
-          <td class="${pnlClass(s.pnl)}">${usd(s.pnl)}</td>
-          <td class="${pnlClass(s.pnl)}">${usd(s.pnl / s.n)}</td></tr>`).join('')
-        || '<tr><td colspan="5" id="empty">no completed trades</td></tr>';
+      }
+      makeTable(document.getElementById('symbol-table'),
+        ['Symbol', 'Trades', 'Win rate', 'Total PnL', 'Avg PnL'],
+        [...bySym.entries()].sort((a, b) => b[1].pnl - a[1].pnl).map(([sym, s]) => [
+          sym, String(s.n), pct(s.wins / s.n * 100),
+          { text: usd(s.pnl), cls: deltaClass(s.pnl) },
+          { text: usd(s.pnl / s.n), cls: deltaClass(s.pnl) },
+        ]), 'No completed trades');
 
-      // ── Trade log (most recent first) ──
       const short = t => t.replace('T', ' ').slice(0, 16);
-      document.querySelector('#trade-table tbody').innerHTML =
-        r.trades.slice().reverse().map((t, i) => `
-          <tr><td>${r.trades.length - i}</td><td>${t.symbol}</td>
-          <td><span class="badge ${t.direction}">${t.direction}</span>${t.exit_reason && t.exit_reason !== 'signal' ? ` <span class="badge forced">${t.exit_reason}</span>` : ''}</td>
-          <td>${fmt(t.quantity)}</td><td>${fmt(t.entry_price)}</td><td>${fmt(t.exit_price)}</td>
-          <td>${short(t.entry_time)}</td><td>${short(t.exit_time)}</td>
-          <td class="${pnlClass(t.pnl)}">${usd(t.pnl)}</td></tr>`).join('')
-        || '<tr><td colspan="9" id="empty">no completed trades</td></tr>';
+      makeTable(document.getElementById('trade-table'),
+        ['#', 'Symbol', 'Side', 'Qty', 'Entry', 'Exit', 'Entry time', 'Exit time', 'PnL'],
+        r.trades.slice().reverse().map((t, i) => [
+          String(r.trades.length - i), t.symbol,
+          h('span', {},
+            h('span', { class: `badge ${t.direction === 'short' ? 'short' : 'long'}` }, t.direction),
+            t.exit_reason && t.exit_reason !== 'signal' ? [' ', h('span', { class: 'badge forced' }, t.exit_reason)] : null),
+          fmt(t.quantity), fmt(t.entry_price), fmt(t.exit_price), short(t.entry_time), short(t.exit_time),
+          { text: usd(t.pnl), cls: deltaClass(t.pnl) },
+        ]), 'No completed trades');
     }
 
-    const fetchResult = f =>
-      fetch(f ? `/api/result?file=${encodeURIComponent(f)}` : '/api/result').then(r => r.json());
+    function render(r, cmp) {
+      redraws.length = 0;
+      for (const fig of document.querySelectorAll('figure.viz')) {
+        fig.querySelector('.tview').textContent = '';
+      }
+      renderOverview(r);
+      renderCompare(r, cmp);
+      renderEquity(r, cmp);
+      renderDrawdown(r);
+      renderMonthly(r);
+      renderHistogram(r);
+      renderTables(r);
+      document.getElementById('main').hidden = false;
+    }
+
+    /* ─────────────────────── theme toggle ─────────────────────── */
+
+    function setupTheme() {
+      const btn = document.getElementById('theme-btn');
+      const saved = localStorage.getItem('bt-theme');
+      if (saved) document.documentElement.dataset.theme = saved;
+      const label = () => {
+        const t = document.documentElement.dataset.theme;
+        btn.textContent = t === 'dark' ? 'Dark' : t === 'light' ? 'Light' : 'Auto';
+      };
+      btn.addEventListener('click', () => {
+        const cur = document.documentElement.dataset.theme || 'auto';
+        const next = cur === 'auto' ? 'light' : cur === 'light' ? 'dark' : 'auto';
+        if (next === 'auto') { delete document.documentElement.dataset.theme; localStorage.removeItem('bt-theme'); }
+        else { document.documentElement.dataset.theme = next; localStorage.setItem('bt-theme', next); }
+        label();
+      });
+      label();
+    }
+
+    /* ──────────────────────── data / boot ──────────────────────── */
+
+    const fetchResult = async f => {
+      const resp = await fetch(f ? `/api/result?file=${encodeURIComponent(f)}` : '/api/result');
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    };
 
     async function loadAndRender() {
       const primary = document.getElementById('result-picker').value;
       const compare = document.getElementById('compare-picker').value;
-      const r = await fetchResult(primary);
-      const cmp = compare && compare !== primary ? await fetchResult(compare) : null;
-      render(r, cmp);
+      const main = document.getElementById('main');
+      main.style.opacity = '.5';   // hold the previous render while refetching
+      try {
+        const r = await fetchResult(primary);
+        const cmp = compare && compare !== primary ? await fetchResult(compare) : null;
+        render(r, cmp);
+      } finally {
+        main.style.opacity = '';
+      }
     }
 
     async function boot() {
+      setupTheme();
+      setupToggles();
       const picker = document.getElementById('result-picker');
       const cmpPicker = document.getElementById('compare-picker');
       const { files, selected } = await (await fetch('/api/results')).json();
-      picker.innerHTML = files.map(f => `<option value="${f}">${f}</option>`).join('');
-      cmpPicker.innerHTML =
-        '<option value="">— none —</option>' + files.map(f => `<option value="${f}">${f}</option>`).join('');
+      const opt = (v, t) => { const o = h('option', { value: v }, t); return o; };
+      for (const f of files) picker.append(opt(f, f));
+      cmpPicker.append(opt('', '— none —'));
+      for (const f of files) cmpPicker.append(opt(f, f));
       if (selected) picker.value = selected;
-      picker.onchange = loadAndRender;
-      cmpPicker.onchange = loadAndRender;
+      picker.addEventListener('change', loadAndRender);
+      cmpPicker.addEventListener('change', loadAndRender);
       await loadAndRender();
     }
 
-    boot().catch(e => document.body.insertAdjacentHTML('afterbegin',
-      `<div class="panel neg">Failed to load result: ${e}</div>`));
+    boot().catch(e => {
+      const err = document.getElementById('error');
+      err.hidden = false;
+      err.textContent = `Failed to load result: ${e.message || e}`;
+    });
   </script>
 </body>
 </html>
