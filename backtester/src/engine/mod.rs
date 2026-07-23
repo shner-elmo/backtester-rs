@@ -10,6 +10,7 @@ mod run;
 
 use std::collections::{HashMap, HashSet};
 
+use run::{run_prepared, PendingActions};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -22,8 +23,6 @@ use crate::{
     error::BacktestError,
     stats::{BacktestStats, EquityPoint, OpenPositionSummary, Trade},
 };
-
-use run::{run_prepared, PendingActions};
 
 /// Everything a finished backtest produced. `run` prints a summary of this and
 /// writes it to disk; consume it directly (or via the JSON file) for custom

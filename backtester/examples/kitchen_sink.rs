@@ -19,8 +19,7 @@
 //! hourly trend, arm a protective stop under each entry, exit when overbought
 //! or the trend turns down, and always flatten five minutes before the close.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use backtester::{
     commission::PerShareCommission,

@@ -1,6 +1,6 @@
+use std::{env, fs::File};
+
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::env;
-use std::fs::File;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

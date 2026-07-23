@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
 
+use super::{ledger::OpenLifetime, run::Engine};
 use crate::{
     algorithm::Algorithm,
     broker::Position,
@@ -14,8 +15,6 @@ use crate::{
     stats::TRADING_DAYS_PER_YEAR,
     EPSILON,
 };
-
-use super::{ledger::OpenLifetime, run::Engine};
 
 /// Remove and return every pending action dated on or before `today`, oldest
 /// first.

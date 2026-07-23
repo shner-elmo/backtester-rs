@@ -1,17 +1,20 @@
 //! Split handling and delist liquidation, tested against synthetic Parquet
 //! fixtures written into a tempdir (same schema as the real dataset).
 
-use std::fs;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
+use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
-
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
 
 /// One synthetic minute bar: (ticker id, date, minute-of-day offset, price).
 /// o=h=l=c=price, volume=100, main session; bars sit at 15:00+offset UTC

@@ -26,20 +26,20 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
-use chrono::{Datelike, Months, NaiveDate, TimeZone, Utc};
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ArrowWriter;
-use tempfile::TempDir;
-
+use arrow::{
+    array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
 use backtester::{
     data::{iter_bars, load_ticker_map, sorted_parquet_files},
     indicators::{Ema, Next},
     run_backtest, Algorithm, Context, Slice,
 };
+use chrono::{Datelike, Months, NaiveDate, TimeZone, Utc};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ArrowWriter};
+use tempfile::TempDir;
 
 /// Roughly how many bars the replicated dataset should contain; the number of
 /// monthly replicas is derived from this and the fixture's row count.

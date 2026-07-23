@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Utc};
 
+use super::{ledger::OpenLifetime, run::Engine};
 use crate::{
     bar::Bar,
     context::{FillTiming, Order, OrderKind, RestingKind},
@@ -12,8 +13,6 @@ use crate::{
     slippage::FillContext,
     EPSILON,
 };
-
-use super::{ledger::OpenLifetime, run::Engine};
 
 impl Engine {
     /// Execute one order against the portfolio: resolve its target quantity,

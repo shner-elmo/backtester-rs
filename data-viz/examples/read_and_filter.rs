@@ -1,10 +1,10 @@
-use datafusion::arrow::datatypes::DataType;
-use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+use std::{sync::Arc, time::Instant};
+
+use datafusion::{
+    arrow::datatypes::DataType,
+    datasource::listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+    prelude::*,
 };
-use datafusion::prelude::*;
-use std::sync::Arc;
-use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> datafusion::error::Result<()> {
