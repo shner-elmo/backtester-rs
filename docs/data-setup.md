@@ -120,6 +120,9 @@ STONKS_DATA_ROOT=/path/to/data/output/minute \
 | `ema_cross` | backtester | The reference strategy ([backtesting.md](./backtesting.md)) |
 | `print_schema` | backtester | Dump a Parquet file's Arrow schema |
 | `list_parquet_files` | backtester | List discovered Parquet files in sorted order |
+| `check_sorted` | backtester | Verify every file is time-sorted (the engine's hard requirement); flags unreadable files |
+| `resort_parquet` | backtester | Repair unsorted files: stable re-sort by `(window_start, ticker)`, verified rewrite |
+| `noop_baseline` | backtester | Time a full-universe no-op backtest — the engine's floor cost in bars/s |
 | `make_test_fixture` | data-viz | Regenerate the committed fixture |
 | `read_and_filter` | data-viz | DataFusion query against the partitioned dataset |
 | `schema_debug` | data-viz | Inspect inferred schema via a ListingTable |
