@@ -150,6 +150,35 @@ fn out_of_order_bars_across_files_are_an_error() {
 }
 
 #[test]
+fn in_order_bars_across_files_run_clean() {
+    // The mirror of the out-of-order test: the same layout minus the rogue bar
+    // must stream every bar through on_data in order, with no error.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("encoded_tickers.json"), r#"{"1": "XYZ"}"#).unwrap();
+
+    let jun1 = NaiveDate::from_ymd_opt(2023, 6, 1).unwrap();
+    let jul3 = NaiveDate::from_ymd_opt(2023, 7, 3).unwrap();
+
+    write_part(
+        root,
+        2023,
+        6,
+        "part-0.parquet",
+        &[(jun1, 0, 10.0), (jun1, 1, 11.0), (jun1, 2, 12.0)],
+    );
+    write_part(root, 2023, 7, "part-0.parquet", &[(jul3, 0, 13.0)]);
+
+    let algo = RecordTimes::new("XYZ", None, None);
+    let times = algo.times.clone();
+    run_backtest(algo, root.to_str().unwrap()).unwrap();
+
+    let times = times.lock().unwrap();
+    assert_eq!(times.len(), 4, "expected every bar to reach on_data: {times:?}");
+    assert!(times.windows(2).all(|w| w[0] < w[1]), "bars arrived out of order: {times:?}");
+}
+
+#[test]
 fn unsorted_bars_within_a_file_are_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
