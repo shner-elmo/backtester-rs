@@ -1,442 +1,527 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>data-viz</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0d1117; color: #c9d1d9; font-family: 'Courier New', monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+<meta charset="UTF-8">
+<title>data-viz</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0d1117; color: #c9d1d9; font: 13px/1.4 "SF Mono", "Consolas", monospace; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
 
-    .controls { padding: 8px 14px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .ctrl-group { display: flex; align-items: center; gap: 4px; }
-    label { color: #8b949e; font-size: 12px; white-space: nowrap; }
-    input[type="text"], input[type="date"], input[type="number"] {
-      background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
-      padding: 4px 7px; border-radius: 6px; font-size: 12px; font-family: inherit;
-    }
-    input[type="date"] { color-scheme: dark; }
-    input:focus { outline: none; border-color: #58a6ff; }
-    button.icon-btn {
-      background: #21262d; color: #8b949e; border: 1px solid #30363d;
-      padding: 4px 7px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit; line-height: 1;
-    }
-    button.icon-btn:hover { background: #30363d; color: #c9d1d9; }
+  #toolbar {
+    flex: 0 0 auto;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 8px 10px;
+    background: #161b22; border-bottom: 1px solid #30363d;
+  }
+  #toolbar input[type=text] {
+    width: 80px; padding: 4px 6px;
+    background: #0d1117; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 4px;
+    text-transform: uppercase;
+  }
+  #toolbar input[type=date] {
+    width: 132px; padding: 4px 6px;
+    background: #0d1117; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 4px;
+  }
+  .tf-group { display: flex; gap: 2px; }
+  .tf-btn {
+    padding: 4px 7px; background: #0d1117; color: #8b949e;
+    border: 1px solid #30363d; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  .tf-btn.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  .tf-btn:hover:not(.active) { background: #21262d; }
+  button {
+    padding: 4px 10px; border: 1px solid #30363d; border-radius: 4px;
+    cursor: pointer; font-size: 12px; font-family: inherit;
+  }
+  #load-btn  { background: #238636; color: #fff; border-color: #238636; }
+  #load-btn:disabled { opacity: .5; cursor: default; }
+  #load-btn:hover:not(:disabled) { background: #2ea043; }
+  #cancel-btn { background: #b62324; color: #fff; border-color: #b62324; display: none; }
+  #cancel-btn:hover { background: #da3633; }
+  .nav-btn { padding: 4px 7px; background: #0d1117; color: #8b949e; }
+  .nav-btn:hover { background: #21262d; }
+  #status { font-size: 11px; color: #8b949e; margin-left: 4px; }
+  .sep { width: 1px; height: 20px; background: #30363d; margin: 0 2px; }
 
-    .tf-btns { display: flex; gap: 3px; }
-    .tf-btn {
-      background: #21262d; color: #8b949e; border: 1px solid #30363d;
-      padding: 4px 9px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit;
-    }
-    .tf-btn:hover { background: #30363d; color: #c9d1d9; }
-    .tf-btn.active { background: #1f3a5f; color: #58a6ff; border-color: #388bfd; }
+  #indicators-row {
+    flex: 0 0 auto;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 6px 10px;
+    background: #161b22; border-bottom: 1px solid #30363d;
+  }
+  #add-ind-btn { background: #0d1117; color: #8b949e; font-size: 12px; }
+  #add-ind-btn:hover { background: #21262d; }
+  .ind-chip {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 6px; border-radius: 4px;
+    background: #21262d; border: 1px solid #30363d;
+  }
+  .ind-chip select, .ind-chip input {
+    background: #0d1117; color: #c9d1d9;
+    border: 1px solid #30363d; border-radius: 3px;
+    padding: 2px 4px; font-size: 12px; font-family: inherit;
+  }
+  .ind-chip select { cursor: pointer; }
+  .ind-chip input { width: 44px; }
+  .ind-chip .rm { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+  .ind-chip .rm:hover { color: #f85149; }
 
-    .load-btn {
-      background: #238636; color: #fff; border: none;
-      padding: 5px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; font-family: inherit;
-    }
-    .load-btn:hover { background: #2ea043; }
-    .load-btn:disabled { background: #1b4d28; color: #8b949e; cursor: not-allowed; }
-    .load-status { font-size: 12px; min-width: 140px; }
-    .load-status.sent    { color: #f0883e; }
-    .load-status.loading { color: #58a6ff; }
-    .load-status.done    { color: #3fb950; }
-    .load-status.err     { color: #f85149; }
+  #charts { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+  #main-chart { flex: 1 1 auto; }
+  #osc-chart { flex: 0 0 140px; border-top: 1px solid #30363d; display: none; }
 
-    .ind-row { padding: 5px 14px; background: #0d1117; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 34px; }
-    .add-ind-btn {
-      background: #21262d; color: #8b949e; border: 1px solid #30363d;
-      padding: 3px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit;
-    }
-    .add-ind-btn:hover { background: #30363d; color: #c9d1d9; }
-    .ind-chip {
-      display: flex; align-items: center; gap: 5px;
-      background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 2px 8px; font-size: 12px;
-    }
-    .ind-chip select, .ind-chip input[type="number"] {
-      background: transparent; border: none; color: #c9d1d9; font-size: 12px;
-      font-family: inherit; outline: none; padding: 0;
-    }
-    .ind-chip select { color: #a371f7; cursor: pointer; }
-    .ind-chip .plbl { color: #8b949e; }
-    .ind-chip .rm { background: none; border: none; color: #6e7681; cursor: pointer; font-size: 13px; padding: 0 2px; }
-    .ind-chip .rm:hover { color: #f85149; }
-
-    .charts { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-    #chart-main { flex: 1; min-height: 0; }
-    .osc-pane { height: 160px; border-top: 1px solid #30363d; display: none; position: relative; }
-    .osc-pane.on { display: block; }
-    .osc-lbl { position: absolute; top: 4px; left: 8px; font-size: 10px; color: #6e7681; z-index: 10; pointer-events: none; }
-
-    .statusbar { padding: 3px 14px; font-size: 11px; color: #6e7681; background: #161b22; border-top: 1px solid #30363d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  </style>
+  #statusbar {
+    flex: 0 0 auto;
+    padding: 3px 10px; font-size: 11px; color: #6e7681;
+    background: #161b22; border-top: 1px solid #30363d;
+  }
+</style>
 </head>
 <body>
 
-  <div class="controls">
-    <div class="ctrl-group">
-      <label>Symbol&nbsp;</label>
-      <input id="symbol" type="text" value="AAPL" style="width:65px">
-    </div>
+<div id="toolbar">
+  <input id="symbol" type="text" value="AAPL" placeholder="Symbol">
+  <div class="sep"></div>
+  <div class="tf-group" id="tf-group"></div>
+  <div class="sep"></div>
+  <button class="nav-btn" onclick="shiftDate('start',-1)">&#9664;</button>
+  <input id="start" type="date" value="2021-01-01">
+  <button class="nav-btn" onclick="shiftDate('start', 1)">&#9654;</button>
+  <div class="sep"></div>
+  <button class="nav-btn" onclick="shiftDate('end',-1)">&#9664;</button>
+  <input id="end" type="date">
+  <button class="nav-btn" onclick="shiftDate('end', 1)">&#9654;</button>
+  <div class="sep"></div>
+  <button id="load-btn" onclick="load()">Load</button>
+  <button id="cancel-btn" onclick="cancel()">Cancel</button>
+  <span id="status"></span>
+</div>
 
-    <div class="ctrl-group">
-      <label>TF&nbsp;</label>
-      <div class="tf-btns">
-        <button class="tf-btn active" data-tf="minute" onclick="setTf(this)">1m</button>
-        <button class="tf-btn" data-tf="min5"   onclick="setTf(this)">5m</button>
-        <button class="tf-btn" data-tf="min15"  onclick="setTf(this)">15m</button>
-        <button class="tf-btn" data-tf="hour1"  onclick="setTf(this)">1h</button>
-        <button class="tf-btn" data-tf="hour4"  onclick="setTf(this)">4h</button>
-        <button class="tf-btn" data-tf="daily"  onclick="setTf(this)">1D</button>
-      </div>
-    </div>
+<div id="indicators-row">
+  <button id="add-ind-btn" onclick="addIndicator()">+ Add Indicator</button>
+</div>
 
-    <div class="ctrl-group">
-      <button class="icon-btn" onclick="shiftDate('start',-1)" title="Prev month">&#9664;</button>
-      <label>&nbsp;Start&nbsp;</label>
-      <input id="start" type="date" value="2021-01-01">
-      <button class="icon-btn" onclick="shiftDate('start',+1)" title="Next month">&#9654;</button>
-    </div>
+<div id="charts">
+  <div id="main-chart"></div>
+  <div id="osc-chart"></div>
+</div>
 
-    <div class="ctrl-group">
-      <button class="icon-btn" onclick="shiftDate('end',-1)" title="Prev month">&#9664;</button>
-      <label>&nbsp;End&nbsp;</label>
-      <input id="end" type="date">
-      <button class="icon-btn" onclick="shiftDate('end',+1)" title="Next month">&#9654;</button>
-    </div>
+<div id="statusbar">Ready</div>
 
-    <button class="load-btn" id="load-btn" onclick="load()">Load</button>
-    <span class="load-status" id="load-status"></span>
-  </div>
+<script>
+'use strict';
 
-  <div class="ind-row">
-    <button class="add-ind-btn" onclick="addIndicator()">+ Indicator</button>
-    <div id="ind-chips" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
-  </div>
+// ── Default end date: start + 1 month ──
+(function () {
+  const d = new Date('2021-01-01T00:00:00');
+  d.setMonth(d.getMonth() + 1);
+  document.getElementById('end').value = d.toISOString().slice(0, 10);
+})();
 
-  <div class="charts">
-    <div id="chart-main"></div>
-    <div id="chart-osc" class="osc-pane">
-      <span class="osc-lbl" id="osc-lbl"></span>
-    </div>
-  </div>
-
-  <div class="statusbar" id="statusbar">Ready</div>
-
-  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-  <script>
-    const THEME = {
-      layout:  { background: { color: '#0d1117' }, textColor: '#8b949e' },
-      grid:    { vertLines: { color: '#161b22' }, horzLines: { color: '#161b22' } },
-      crosshair: { mode: 1 },
-      rightPriceScale: { borderColor: '#30363d' },
-      timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+// ── Timeframe buttons ──
+const TIMEFRAMES = [
+  { key: 'minute', label: '1m' },
+  { key: 'min5',   label: '5m' },
+  { key: 'min15',  label: '15m' },
+  { key: 'hour1',  label: '1h' },
+  { key: 'hour4',  label: '4h' },
+  { key: 'daily',  label: '1D' },
+];
+let currentTf = 'minute';
+(function () {
+  const g = document.getElementById('tf-group');
+  for (const { key, label } of TIMEFRAMES) {
+    const btn = document.createElement('button');
+    btn.className = 'tf-btn' + (key === currentTf ? ' active' : '');
+    btn.textContent = label;
+    btn.dataset.tf = key;
+    btn.onclick = () => {
+      currentTf = key;
+      document.querySelectorAll('.tf-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.tf === key)
+      );
+      pendingKey = null;  // timeframe changed, allow reload
     };
+    g.appendChild(btn);
+  }
+})();
 
-    // ── State ────────────────────────────────────────────────────────────────
-    let currentTf   = 'minute';
-    let activeSrc   = null;
-    let indicators  = [];
-    let nextIndId   = 0;
-    let allRegBars  = [];
-    let allExtBars  = [];
-    let overlaySeries = [];
-    let oscChart    = null;
+function shiftDate(id, delta) {
+  const el = document.getElementById(id);
+  const d = new Date((el.value || '2021-01-01') + 'T00:00:00');
+  d.setDate(1);
+  d.setMonth(d.getMonth() + delta);
+  el.value = d.toISOString().slice(0, 10);
+  pendingKey = null;  // date changed, allow reload
+}
 
-    // ── Charts ───────────────────────────────────────────────────────────────
-    const mainChart = LightweightCharts.createChart(
-      document.getElementById('chart-main'), { ...THEME, autoSize: true }
-    );
-    const regSeries = mainChart.addCandlestickSeries({
-      upColor: '#3fb950', downColor: '#f85149',
-      borderUpColor: '#3fb950', borderDownColor: '#f85149',
-      wickUpColor: '#3fb950', wickDownColor: '#f85149',
-    });
-    const extSeries = mainChart.addCandlestickSeries({
-      upColor: '#2a3d2a', downColor: '#3d1f1f',
-      borderUpColor: '#2a3d2a', borderDownColor: '#3d1f1f',
-      wickUpColor: '#2a3d2a', wickDownColor: '#3d1f1f',
-    });
-    const regVolSeries = mainChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
-    const extVolSeries = mainChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
-    mainChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+// ── Charts ──
+const LC = LightweightCharts;
+const chartOpts = {
+  layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
+  grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+  crosshair: { mode: LC.CrosshairMode.Normal },
+  timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#30363d' },
+  rightPriceScale: { borderColor: '#30363d' },
+};
+const mainEl  = document.getElementById('main-chart');
+const oscEl   = document.getElementById('osc-chart');
+const mainChart = LC.createChart(mainEl, { ...chartOpts, width: mainEl.clientWidth, height: mainEl.clientHeight });
+const oscChart  = LC.createChart(oscEl,  { ...chartOpts, width: oscEl.clientWidth,  height: 140 });
 
-    // Default end = start + 1 month
-    const _defaultEnd = new Date('2021-01-01');
-    _defaultEnd.setMonth(_defaultEnd.getMonth() + 1);
-    document.getElementById('end').value = _defaultEnd.toISOString().slice(0, 10);
+// Sync time scales
+mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {
+  if (range) oscChart.timeScale().setVisibleRange(range);
+});
 
-    // ── Timeframe ────────────────────────────────────────────────────────────
-    function setTf(btn) {
-      document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentTf = btn.dataset.tf;
-    }
+new ResizeObserver(() => {
+  mainChart.applyOptions({ width: mainEl.clientWidth, height: mainEl.clientHeight });
+}).observe(mainEl);
+new ResizeObserver(() => {
+  oscChart.applyOptions({ width: oscEl.clientWidth });
+}).observe(oscEl);
 
-    // ── Date ± month ─────────────────────────────────────────────────────────
-    function shiftDate(id, delta) {
-      const el = document.getElementById(id);
-      const d  = new Date(el.value || new Date().toISOString().slice(0, 10));
-      d.setDate(1); // pin to first of month to avoid day overflow
-      d.setMonth(d.getMonth() + delta);
-      el.value = d.toISOString().slice(0, 10);
-    }
+// ── Series state ──
+let regSeries    = null;
+let extSeries    = null;
+let regVolSeries = null;
+let extVolSeries = null;
+const overlaySeries = {};
+const oscSeries     = {};
 
-    // ── Status ───────────────────────────────────────────────────────────────
-    function setLS(msg, cls) {
-      const el = document.getElementById('load-status');
-      el.textContent = msg;
-      el.className = 'load-status' + (cls ? ' ' + cls : '');
-    }
-    function setSB(msg) { document.getElementById('statusbar').textContent = msg; }
+function clearSeriesAndInit() {
+  for (const s of Object.values(overlaySeries)) mainChart.removeSeries(s);
+  Object.keys(overlaySeries).forEach(k => delete overlaySeries[k]);
+  for (const s of Object.values(oscSeries)) oscChart.removeSeries(s);
+  Object.keys(oscSeries).forEach(k => delete oscSeries[k]);
 
-    // ── Clear ────────────────────────────────────────────────────────────────
-    function clearChart() {
-      regSeries.setData([]); extSeries.setData([]);
-      regVolSeries.setData([]); extVolSeries.setData([]);
-      overlaySeries.forEach(s => mainChart.removeSeries(s));
-      overlaySeries = [];
-      if (oscChart) { oscChart.remove(); oscChart = null; }
-      document.getElementById('chart-osc').classList.remove('on');
-      document.getElementById('osc-lbl').textContent = '';
-      allRegBars = []; allExtBars = [];
-    }
+  if (regSeries)    mainChart.removeSeries(regSeries);
+  if (extSeries)    mainChart.removeSeries(extSeries);
+  if (regVolSeries) mainChart.removeSeries(regVolSeries);
+  if (extVolSeries) mainChart.removeSeries(extVolSeries);
 
-    function applyBarsToChart() {
-      const toC  = b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
-      const toV  = (b, up, dn) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? up : dn });
+  regVolSeries = mainChart.addHistogramSeries({
+    color: '#264c35', priceFormat: { type: 'volume' },
+    priceScaleId: 'vol', scaleMargins: { top: 0.85, bottom: 0 },
+  });
+  extVolSeries = mainChart.addHistogramSeries({
+    color: '#1e2c3a', priceFormat: { type: 'volume' },
+    priceScaleId: 'vol', scaleMargins: { top: 0.85, bottom: 0 },
+  });
+  regSeries = mainChart.addCandlestickSeries({
+    upColor: '#3fb950', downColor: '#f85149',
+    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+    priceScaleId: 'right', scaleMargins: { top: 0, bottom: 0.15 },
+  });
+  extSeries = mainChart.addCandlestickSeries({
+    upColor: '#2a3d2a', downColor: '#3d1f1f',
+    borderUpColor: '#2a3d2a', borderDownColor: '#3d1f1f',
+    wickUpColor: '#3d3d3d', wickDownColor: '#3d3d3d',
+    priceScaleId: 'right', scaleMargins: { top: 0, bottom: 0.15 },
+  });
+}
 
-      regSeries.setData(allRegBars.map(toC));
-      regVolSeries.setData(allRegBars.map(b => toV(b, '#3fb95033', '#f8514933')));
+// ── Bar and indicator accumulation ──
+let allRegBars = [];
+let allExtBars = [];
+let indAccum   = {};
+let rafPending = false;
 
-      if (currentTf !== 'daily') {
-        extSeries.setData(allExtBars.map(toC));
-        extVolSeries.setData(allExtBars.map(b => toV(b, '#2a3d2a44', '#3d1f1f44')));
-      } else {
-        extSeries.setData([]); extVolSeries.setData([]);
+function scheduleChartUpdate() {
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => {
+    rafPending = false;
+    applyBarsToChart();
+  });
+}
+
+function applyBarsToChart() {
+  regSeries.setData(allRegBars);
+  extSeries.setData(allExtBars);
+  regVolSeries.setData(allRegBars.map(b => ({
+    time: b.time, value: b.volume,
+    color: b.close >= b.open ? '#264c35' : '#3d2020',
+  })));
+  extVolSeries.setData(allExtBars.map(b => ({
+    time: b.time, value: b.volume, color: '#1e2c3a',
+  })));
+}
+
+function applyIndicatorsFromAccum() {
+  for (const ind of indicators) {
+    const spec = indSpec(ind);
+    const type = ind.type;
+
+    if (type === 'ema' || type === 'sma') {
+      const pts = indAccum[type];
+      if (!pts || pts.length === 0) continue;
+      if (!overlaySeries[spec]) {
+        overlaySeries[spec] = mainChart.addLineSeries({
+          color: type === 'ema' ? '#f0a500' : '#5d87cc',
+          lineWidth: 1, priceScaleId: 'right',
+        });
       }
+      overlaySeries[spec].setData(pts);
+
+    } else if (type === 'bbands') {
+      for (const [key, color] of [['upper','#c678dd'],['middle','#e5c07b'],['lower','#c678dd']]) {
+        const pts = indAccum[key];
+        if (!pts || pts.length === 0) continue;
+        const k = spec + '_' + key;
+        if (!overlaySeries[k]) {
+          overlaySeries[k] = mainChart.addLineSeries({ color, lineWidth: 1, priceScaleId: 'right' });
+        }
+        overlaySeries[k].setData(pts);
+      }
+
+    } else if (type === 'rsi') {
+      const pts = indAccum['rsi'];
+      if (!pts || pts.length === 0) continue;
+      if (!oscSeries[spec]) {
+        oscSeries[spec] = oscChart.addLineSeries({ color: '#61afef', lineWidth: 1 });
+      }
+      oscSeries[spec].setData(pts);
+      oscEl.style.display = 'block';
+      oscChart.applyOptions({ width: oscEl.clientWidth, height: 140 });
+
+    } else if (type === 'macd') {
+      const macdPts = indAccum['macd'];
+      const sigPts  = indAccum['signal'];
+      const histPts = indAccum['histogram'];
+      if (!macdPts || macdPts.length === 0) continue;
+      if (!oscSeries[spec + '_macd']) {
+        oscSeries[spec + '_macd']   = oscChart.addLineSeries({ color: '#61afef', lineWidth: 1 });
+        oscSeries[spec + '_signal'] = oscChart.addLineSeries({ color: '#e06c75', lineWidth: 1 });
+        oscSeries[spec + '_hist']   = oscChart.addHistogramSeries({ color: '#264c35' });
+      }
+      oscSeries[spec + '_macd'].setData(macdPts);
+      if (sigPts)  oscSeries[spec + '_signal'].setData(sigPts);
+      if (histPts) oscSeries[spec + '_hist'].setData(
+        histPts.map(p => ({ ...p, color: p.value >= 0 ? '#264c35' : '#3d2020' }))
+      );
+      oscEl.style.display = 'block';
+      oscChart.applyOptions({ width: oscEl.clientWidth, height: 140 });
+    }
+  }
+}
+
+// ── Request lifecycle ──
+let activeSrc  = null;
+let pendingKey = null;
+
+function buildQueryKey() {
+  const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+  const start  = document.getElementById('start').value;
+  const end    = document.getElementById('end').value;
+  const inds   = indicators.map(indSpec).join(',');
+  return `${symbol}|${currentTf}|${start}|${end}|${inds}`;
+}
+
+function setStatus(msg) { document.getElementById('status').textContent = msg; }
+function setSB(msg)     { document.getElementById('statusbar').textContent = msg; }
+
+function cancel() {
+  if (activeSrc) { activeSrc.close(); activeSrc = null; }
+  pendingKey = null;
+  document.getElementById('load-btn').disabled = false;
+  document.getElementById('cancel-btn').style.display = 'none';
+  setStatus('Cancelled');
+  setSB('Cancelled');
+}
+
+function load() {
+  const key = buildQueryKey();
+
+  // Dedup: same request already in-flight → do nothing
+  if (activeSrc !== null && key === pendingKey) return;
+
+  // Supersede any previous in-flight request
+  if (activeSrc !== null) { activeSrc.close(); activeSrc = null; }
+  pendingKey = key;
+
+  const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+  const start  = document.getElementById('start').value;
+  const end    = document.getElementById('end').value;
+  if (!symbol) { setStatus('Enter a symbol'); return; }
+
+  // Reset
+  allRegBars = []; allExtBars = [];
+  indAccum   = {};
+  oscEl.style.display = 'none';
+  clearSeriesAndInit();
+
+  const q = new URLSearchParams({ symbol, start, end, timeframe: currentTf });
+  for (const ind of indicators) q.append('ind', indSpec(ind));
+
+  document.getElementById('load-btn').disabled = true;
+  document.getElementById('cancel-btn').style.display = '';
+  setStatus('Sent!');
+  setSB('Connecting…');
+
+  const src = new EventSource('/api/stream/bars?' + q.toString());
+  activeSrc = src;
+
+  src.addEventListener('bars', e => {
+    if (activeSrc !== src) return;
+    const payload = JSON.parse(e.data);
+    const batch = payload.bars || [];
+
+    for (const b of batch) {
+      (b.is_extended ? allExtBars : allRegBars).push(b);
+    }
+    for (const [key, pts] of Object.entries(payload)) {
+      if (key === 'bars' || !Array.isArray(pts)) continue;
+      if (!indAccum[key]) indAccum[key] = [];
+      for (const p of pts) indAccum[key].push(p);
     }
 
-    // ── Load ─────────────────────────────────────────────────────────────────
-    function load() {
-      const symbol = document.getElementById('symbol').value.trim().toUpperCase();
-      const start  = document.getElementById('start').value;
-      const end    = document.getElementById('end').value;
-      if (!symbol) { setLS('Enter a symbol.', 'err'); return; }
+    const n = allRegBars.length + allExtBars.length;
+    setStatus('Loading… ' + n.toLocaleString() + ' bars');
+    setSB('Streaming — ' + n.toLocaleString() + ' bars received');
+    scheduleChartUpdate();
+  });
 
-      if (activeSrc) { activeSrc.close(); activeSrc = null; }
-      clearChart();
-      setLS('Sent!', 'sent');
-      document.getElementById('load-btn').disabled = true;
+  src.addEventListener('done', () => {
+    if (activeSrc !== src) return;
+    src.close(); activeSrc = null;
 
-      let q = `symbol=${encodeURIComponent(symbol)}&timeframe=${currentTf}`;
-      if (start) q += `&start=${start}`;
-      if (end)   q += `&end=${end}`;
+    applyBarsToChart();
+    mainChart.timeScale().fitContent();
+    applyIndicatorsFromAccum();
 
-      const src = new EventSource(`/api/stream/bars?${q}`);
-      activeSrc = src;
+    const total = allRegBars.length + allExtBars.length;
+    const msg = total === 0 ? 'No data for this range'
+                             : 'Done — ' + total.toLocaleString() + ' bars';
+    setStatus(msg); setSB(msg);
+    document.getElementById('load-btn').disabled = false;
+    document.getElementById('cancel-btn').style.display = 'none';
+    // Keep pendingKey set so the same params don't re-fire until something changes
+  });
 
-      src.addEventListener('bars', e => {
-        const batch = JSON.parse(e.data);
-        for (const b of batch) {
-          (b.is_extended ? allExtBars : allRegBars).push(b);
-        }
-        const n = allRegBars.length + allExtBars.length;
-        setLS(`Loading… ${n.toLocaleString()} bars`, 'loading');
-        setSB(`Streaming — ${n.toLocaleString()} bars received`);
-      });
+  src.addEventListener('error', e => {
+    if (activeSrc !== src) return;
+    let msg = 'Server error';
+    try { const d = JSON.parse(e.data); msg = d.message || msg; } catch (_) {}
+    setStatus('Error: ' + msg);
+    setSB('Error: ' + msg);
+    src.close(); activeSrc = null; pendingKey = null;
+    document.getElementById('load-btn').disabled = false;
+    document.getElementById('cancel-btn').style.display = 'none';
+  });
 
-      src.addEventListener('done', async () => {
-        src.close(); activeSrc = null;
-        applyBarsToChart();
-        mainChart.timeScale().fitContent();
+  src.onerror = () => {
+    if (activeSrc !== src) return;
+    src.close(); activeSrc = null; pendingKey = null;
+    setStatus('Connection lost');
+    document.getElementById('load-btn').disabled = false;
+    document.getElementById('cancel-btn').style.display = 'none';
+  };
+}
 
-        const total = allRegBars.length + allExtBars.length;
-        if (total === 0) {
-          setLS('No data', 'err');
-          setSB(`No data for ${symbol}`);
-        } else {
-          setLS(`Done — ${total.toLocaleString()} bars`, 'done');
-          setSB(`${symbol} · ${currentTf} · ${total.toLocaleString()} bars`);
-          if (indicators.length > 0) await fetchAllIndicators(symbol, start, end);
-        }
-        document.getElementById('load-btn').disabled = false;
-      });
+// Enter key in inputs triggers load
+['symbol','start','end'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') load();
+  });
+});
 
-      src.addEventListener('error', e => {
-        // Application-level error event from server
-        if (e.data) {
-          try { const d = JSON.parse(e.data); setSB(`Error: ${d.message}`); } catch(_) {}
-        }
-        if (src.readyState === EventSource.CLOSED || src.readyState === EventSource.CONNECTING) {
-          setLS('Error', 'err');
-          src.close(); activeSrc = null;
-          document.getElementById('load-btn').disabled = false;
-        }
-      });
+// Symbol input clears pendingKey when value changes
+document.getElementById('symbol').addEventListener('input', () => { pendingKey = null; });
+document.getElementById('start').addEventListener('change', () => { pendingKey = null; });
+document.getElementById('end').addEventListener('change',   () => { pendingKey = null; });
+
+// ── Multi-indicator chip UI ──
+let indicators = [];
+let nextIndId  = 0;
+
+const IND_PARAMS = {
+  ema:    [{ name: 'period', label: 'Period', def: 20, step: 1 }],
+  sma:    [{ name: 'period', label: 'Period', def: 20, step: 1 }],
+  rsi:    [{ name: 'period', label: 'Period', def: 14, step: 1 }],
+  macd:   [
+    { name: 'fast',   label: 'Fast',   def: 12, step: 1 },
+    { name: 'slow',   label: 'Slow',   def: 26, step: 1 },
+    { name: 'signal', label: 'Sig',    def:  9, step: 1 },
+  ],
+  bbands: [
+    { name: 'period', label: 'Period', def: 20,  step: 1   },
+    { name: 'mult',   label: 'σ', def: 2.0, step: 0.1 },
+  ],
+};
+
+function indSpec(ind) {
+  const ps = IND_PARAMS[ind.type] || [];
+  const vals = ps.map(p => ind[p.name] !== undefined ? ind[p.name] : p.def);
+  return [ind.type, ...vals].join(':');
+}
+
+function renderChips() {
+  const row = document.getElementById('indicators-row');
+  [...row.querySelectorAll('.ind-chip')].forEach(c => c.remove());
+
+  for (const ind of indicators) {
+    const chip = document.createElement('div');
+    chip.className = 'ind-chip';
+
+    const sel = document.createElement('select');
+    for (const t of Object.keys(IND_PARAMS)) {
+      const o = document.createElement('option');
+      o.value = t;
+      o.textContent = t.toUpperCase();
+      if (t === ind.type) o.selected = true;
+      sel.appendChild(o);
     }
-
-    // ── Indicators ───────────────────────────────────────────────────────────
-    const OSC_KEYS = new Set(['macd', 'signal', 'histogram', 'rsi']);
-    const COLORS   = {
-      ema: '#58a6ff', sma: '#f0883e',
-      upper: '#3fb950', middle: '#a371f7', lower: '#3fb950',
-      macd: '#58a6ff', signal: '#f0883e', histogram: '#888',
-      rsi: '#f85149',
+    sel.onchange = () => {
+      ind.type = sel.value;
+      for (const p of (IND_PARAMS[ind.type] || [])) ind[p.name] = p.def;
+      pendingKey = null;
+      renderChips();
     };
+    chip.appendChild(sel);
 
-    function defaultParams(type) {
-      if (type === 'ema' || type === 'sma')  return { period: 20 };
-      if (type === 'rsi')                    return { period: 14 };
-      if (type === 'macd')                   return { fast: 12, slow: 26, signal: 9 };
-      if (type === 'bbands')                 return { period: 20, mult: 2.0 };
-      return {};
+    for (const p of (IND_PARAMS[ind.type] || [])) {
+      const lbl = document.createElement('span');
+      lbl.textContent = p.label + ':';
+      lbl.style.color = '#6e7681';
+      chip.appendChild(lbl);
+
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.value = ind[p.name] !== undefined ? ind[p.name] : p.def;
+      inp.min = 1; inp.step = p.step;
+      inp.onchange = () => {
+        ind[p.name] = parseFloat(inp.value) || p.def;
+        pendingKey = null;
+      };
+      chip.appendChild(inp);
     }
 
-    function addIndicator() {
-      const id = nextIndId++;
-      indicators.push({ id, type: 'ema', params: { period: 20 } });
+    const rm = document.createElement('button');
+    rm.className = 'rm';
+    rm.textContent = '×';
+    rm.onclick = () => {
+      indicators = indicators.filter(i => i.id !== ind.id);
+      pendingKey = null;
       renderChips();
-    }
+    };
+    chip.appendChild(rm);
+    row.appendChild(chip);
+  }
+}
 
-    function removeIndicator(id) {
-      indicators = indicators.filter(i => i.id !== id);
-      renderChips();
-      refreshIndicators();
-    }
+function addIndicator() {
+  indicators.push({ id: nextIndId++, type: 'ema', period: 20 });
+  pendingKey = null;
+  renderChips();
+}
 
-    function updateIndType(id, type) {
-      const ind = indicators.find(i => i.id === id);
-      if (!ind) return;
-      ind.type = type; ind.params = defaultParams(type);
-      renderChips();
-    }
-
-    function updateParam(id, key, val) {
-      const ind = indicators.find(i => i.id === id);
-      if (ind) ind.params[key] = Number(val);
-    }
-
-    function paramsHtml(ind) {
-      const p = ind.params;
-      const n = ind.id;
-      if (ind.type === 'ema' || ind.type === 'sma')
-        return `<span class="plbl"> per=</span><input type="number" min="1" value="${p.period}" style="width:38px" onchange="updateParam(${n},'period',this.value)">`;
-      if (ind.type === 'rsi')
-        return `<span class="plbl"> per=</span><input type="number" min="1" value="${p.period}" style="width:38px" onchange="updateParam(${n},'period',this.value)">`;
-      if (ind.type === 'macd')
-        return `<span class="plbl"> f=</span><input type="number" min="1" value="${p.fast}" style="width:30px" onchange="updateParam(${n},'fast',this.value)">` +
-               `<span class="plbl"> s=</span><input type="number" min="1" value="${p.slow}" style="width:30px" onchange="updateParam(${n},'slow',this.value)">` +
-               `<span class="plbl"> sig=</span><input type="number" min="1" value="${p.signal}" style="width:30px" onchange="updateParam(${n},'signal',this.value)">`;
-      if (ind.type === 'bbands')
-        return `<span class="plbl"> per=</span><input type="number" min="1" value="${p.period}" style="width:38px" onchange="updateParam(${n},'period',this.value)">` +
-               `<span class="plbl"> σ=</span><input type="number" min="0.1" step="0.1" value="${p.mult}" style="width:38px" onchange="updateParam(${n},'mult',this.value)">`;
-      return '';
-    }
-
-    function renderChips() {
-      document.getElementById('ind-chips').innerHTML = indicators.map(ind => `
-        <div class="ind-chip">
-          <select onchange="updateIndType(${ind.id},this.value)">
-            <option value="ema"    ${ind.type==='ema'?'selected':''}>EMA</option>
-            <option value="sma"    ${ind.type==='sma'?'selected':''}>SMA</option>
-            <option value="rsi"    ${ind.type==='rsi'?'selected':''}>RSI</option>
-            <option value="macd"   ${ind.type==='macd'?'selected':''}>MACD</option>
-            <option value="bbands" ${ind.type==='bbands'?'selected':''}>BBands</option>
-          </select>
-          ${paramsHtml(ind)}
-          <button class="rm" onclick="removeIndicator(${ind.id})" title="Remove">&#x2715;</button>
-        </div>
-      `).join('');
-    }
-
-    async function fetchAllIndicators(symbol, start, end) {
-      overlaySeries.forEach(s => mainChart.removeSeries(s));
-      overlaySeries = [];
-      if (oscChart) { oscChart.remove(); oscChart = null; }
-      document.getElementById('chart-osc').classList.remove('on');
-      document.getElementById('osc-lbl').textContent = '';
-
-      const oscLabels = [];
-      for (const ind of indicators) {
-        const p = ind.params;
-        let url = `/api/indicators?symbol=${encodeURIComponent(symbol)}&type=${ind.type}&timeframe=${currentTf}`;
-        if (start)    url += `&start=${start}`;
-        if (end)      url += `&end=${end}`;
-        if (p.period) url += `&period=${p.period}`;
-        if (p.fast)   url += `&fast=${p.fast}`;
-        if (p.slow)   url += `&slow=${p.slow}`;
-        if (p.signal) url += `&signal=${p.signal}`;
-        if (p.mult)   url += `&mult=${p.mult}`;
-
-        let data;
-        try { const r = await fetch(url); if (!r.ok) continue; data = await r.json(); }
-        catch (_) { continue; }
-
-        for (const key of Object.keys(data).filter(k => !OSC_KEYS.has(k))) {
-          const s = mainChart.addLineSeries({
-            color: COLORS[key] ?? '#fff', lineWidth: 1,
-            priceLineVisible: false, lastValueVisible: false,
-          });
-          s.setData(data[key]);
-          overlaySeries.push(s);
-        }
-
-        for (const key of Object.keys(data).filter(k => OSC_KEYS.has(k))) {
-          if (!oscChart) {
-            document.getElementById('chart-osc').classList.add('on');
-            oscChart = LightweightCharts.createChart(
-              document.getElementById('chart-osc'), { ...THEME, autoSize: true }
-            );
-            mainChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
-              if (r && oscChart) oscChart.timeScale().setVisibleLogicalRange(r);
-            });
-            oscChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
-              if (r) mainChart.timeScale().setVisibleLogicalRange(r);
-            });
-          }
-          const s = key === 'histogram'
-            ? oscChart.addHistogramSeries({ color: COLORS[key], priceLineVisible: false, lastValueVisible: false })
-            : oscChart.addLineSeries({ color: COLORS[key] ?? '#ccc', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-          s.setData(data[key]);
-        }
-
-        if (Object.keys(data).some(k => OSC_KEYS.has(k))) {
-          const lbl = ind.type === 'macd'
-            ? `MACD(${p.fast},${p.slow},${p.signal})`
-            : `RSI(${p.period})`;
-          oscLabels.push(lbl);
-        }
-      }
-
-      if (oscChart) {
-        document.getElementById('osc-lbl').textContent = oscLabels.join('  ');
-        oscChart.timeScale().fitContent();
-      }
-    }
-
-    function refreshIndicators() {
-      const symbol = document.getElementById('symbol').value.trim().toUpperCase();
-      const start  = document.getElementById('start').value;
-      const end    = document.getElementById('end').value;
-      const total  = allRegBars.length + allExtBars.length;
-      if (total > 0 && symbol) {
-        if (indicators.length > 0) fetchAllIndicators(symbol, start, end);
-        else {
-          overlaySeries.forEach(s => mainChart.removeSeries(s));
-          overlaySeries = [];
-          if (oscChart) { oscChart.remove(); oscChart = null; }
-          document.getElementById('chart-osc').classList.remove('on');
-        }
-      }
-    }
-
-    // Enter key triggers load
-    document.querySelectorAll('.controls input').forEach(el =>
-      el.addEventListener('keydown', e => { if (e.key === 'Enter') load(); })
-    );
-
-    load();
-  </script>
+renderChips();
+</script>
 </body>
 </html>
