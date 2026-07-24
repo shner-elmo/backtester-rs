@@ -19,48 +19,67 @@ frontend.
 ### Run it
 
 ```bash
-# Point DATA_PATH at the directory that contains encoded_tickers.json and a
-# minute/ subdirectory (defaults to ../../data/output):
-DATA_PATH=/path/to/data/output cargo run -p data-viz
+# CLI arg takes precedence over DATA_DIR env var (default: ../../data/output):
+cargo run -p data-viz -- /path/to/data/output
+# or:
+DATA_DIR=/path/to/data/output cargo run -p data-viz
 # open http://localhost:3000   (override the port with PORT=8080)
 ```
 
-The server expects `DATA_PATH` to be a **data root** laid out as:
+The server expects the data root to contain:
 
 ```
-<DATA_PATH>/encoded_tickers.json
-<DATA_PATH>/minute/year=YYYY/month=M/part-0.parquet
+<data_root>/minute/encoded_tickers.json
+<data_root>/minute/year=YYYY/month=M/part-0.parquet
 ```
 
 (See [data-setup.md](./data-setup.md) for details.)
 
-### HTTP API
+### Features
 
-The frontend is driven by three endpoints, which you can also hit directly:
+- **Timeframes**: 1m (minute, default), 5m, 15m, 1h, 4h, 1D. Sub-daily
+  timeframes aggregate via `date_bin` SQL; daily uses `DATE_TRUNC`. Aggregation
+  is pushed into DataFusion — no BTree/HashMap in application code.
+- **Streaming**: bars are delivered via SSE (`/api/stream/bars`). The frontend
+  shows "Sent! → Loading… N bars → Done" status as data arrives.
+- **Extended hours**: sub-daily bars are split into two candlestick series
+  (regular green/red vs. muted pre/after-market). Highlighted using US/Eastern
+  timezone conversion via `chrono-tz`.
+- **Indicators**: multiple indicators with configurable parameters, added via
+  chip UI. Overlays (EMA, SMA, BBands) go on the main chart; oscillators
+  (RSI, MACD) open a pane below.
+- **Calendar navigation**: ◀/▶ buttons shift start/end dates by ±1 month.
+- **Partition pruning**: only the Hive-partitioned month-files covering the
+  requested date range are opened.
+
+### HTTP API
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | The chart HTML page ([`src/index.html`](../data-viz/src/index.html)) |
-| `GET /api/bars?symbol=AAPL&start=2023-01-01&end=2023-12-31` | OHLCV as JSON (`start`/`end` optional) |
-| `GET /api/indicators?symbol=AAPL&type=ema&period=20` | One indicator series aligned to the bars |
+| `GET /` | The chart HTML page |
+| `GET /api/stream/bars?symbol=AAPL&start=…&end=…&timeframe=minute` | SSE stream of bar batches (used by the frontend) |
+| `GET /api/bars?symbol=AAPL&start=…&end=…&timeframe=minute` | Same data, JSON array (for scripts/tests) |
+| `GET /api/indicators?symbol=AAPL&type=ema&period=20&timeframe=minute` | One indicator series |
 
-Supported `type` values: `ema`, `sma`, `rsi`, `macd`, `bbands`. `macd` returns
-`macd`/`signal`/`histogram` series; `bbands` returns `upper`/`middle`/`lower`;
-the rest return a single series under a key named after the type.
+`timeframe` values: `minute` (default), `min5`, `min15`, `hour1`, `hour4`, `daily`.
 
-Optional parameters: `period` for `ema`/`sma`/`bbands` (default 20) and `rsi`
-(default 14); `fast`/`slow`/`signal` for `macd` (defaults 12/26/9); `mult` for
-the `bbands` width in standard deviations (default 2.0). Invalid values (e.g.
-`period=0`) return `{"error": "invalid indicator parameters"}`.
+Each bar in `/api/bars` and the SSE stream has the shape:
+```json
+{"time": 1672736400, "open": 130.28, "high": 131.0, "low": 130.28, "close": 131.0, "volume": 8174.0, "is_extended": true}
+```
+`time` is a Unix timestamp in seconds. `is_extended` is `false` for daily bars.
+
+Supported indicator `type` values: `ema`, `sma`, `rsi`, `macd`, `bbands`.
+Optional params: `period` (default 20 / 14 for RSI), `fast`/`slow`/`signal` for
+MACD (12/26/9), `mult` for BBands width in σ (2.0). All accept `start`/`end`/`timeframe`.
 
 ```bash
-curl 'http://localhost:3000/api/bars?symbol=AAPL&start=2023-01-01&end=2023-01-05'
-curl 'http://localhost:3000/api/indicators?symbol=AAPL&type=macd'
+# Non-streaming JSON (e.g. scripts):
+curl 'http://localhost:3000/api/bars?symbol=AAPL&start=2023-01-01&end=2023-01-05&timeframe=minute'
+curl 'http://localhost:3000/api/indicators?symbol=AAPL&type=macd&timeframe=daily'
 ```
 
-The request/response behavior is covered by
-[`data-viz/tests/integration.rs`](../data-viz/tests/integration.rs), which runs
-against the committed fixture (no external data required):
+Integration tests run against the committed fixture (no external data required):
 
 ```bash
 cargo test -p data-viz
@@ -73,7 +92,7 @@ cargo test -p data-viz
 layer:
 
 - `create_app(data_root) -> Router` — the axum app.
-- `load_daily_bars(data_root, symbol, start, end) -> Vec<OhlcBar>` — bars
+- `load_bars(data_root, symbol, start, end, Timeframe) -> Vec<OhlcBar>` — bars
   straight from Parquet via DataFusion.
 
 ## ui — the results dashboard

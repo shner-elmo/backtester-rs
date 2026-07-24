@@ -6,8 +6,9 @@
 //!
 //! ```text
 //! tests/fixtures/
-//!   encoded_tickers.json          {"47": "AAPL"}
-//!   minute/year=2023/month=1/part-0.parquet
+//!   minute/
+//!     encoded_tickers.json            {"47": "AAPL"}
+//!     year=2023/month=1/part-0.parquet
 //! ```
 //!
 //! Usage (source path may be overridden as the first arg):
@@ -34,8 +35,8 @@ async fn main() -> datafusion::error::Result<()> {
     let month_dir = fixtures.join("minute/year=2023/month=1");
     fs::create_dir_all(&month_dir).unwrap();
 
-    // encoded_tickers.json — only the tickers present in the fixture.
-    fs::write(fixtures.join("encoded_tickers.json"), "{\n  \"47\": \"AAPL\"\n}\n").unwrap();
+    // encoded_tickers.json lives in minute/ alongside the parquet files, mirroring live data layout.
+    fs::write(fixtures.join("minute/encoded_tickers.json"), "{\n  \"47\": \"AAPL\"\n}\n").unwrap();
 
     let ctx = SessionContext::new();
     let df = ctx
