@@ -1,10 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Json, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, IntoResponse, Json, Response,
+    },
     routing::get,
     Router,
 };
@@ -72,13 +74,94 @@ impl Timeframe {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OhlcBar {
-    pub time: i64, // Unix seconds
+    pub time: i64,
     pub open: f64,
     pub high: f64,
     pub low: f64,
     pub close: f64,
     pub volume: f64,
     pub is_extended: bool,
+}
+
+// ── Inline indicator state ────────────────────────────────────────────────────
+
+// Encoded as "ema:20", "sma:20", "rsi:14", "macd:12:26:9", "bbands:20:2.0"
+enum IndState {
+    Ema(ExponentialMovingAverage),
+    Sma(SimpleMovingAverage),
+    Rsi(RelativeStrengthIndex),
+    Macd(MovingAverageConvergenceDivergence),
+    Bbands(BollingerBands),
+}
+
+impl IndState {
+    fn from_spec(spec: &str) -> Option<Self> {
+        let p: Vec<&str> = spec.splitn(5, ':').collect();
+        let pu = |i: usize| -> usize { p.get(i).and_then(|s| s.parse().ok()).unwrap_or(0) };
+        let pf = |i: usize| -> f64 { p.get(i).and_then(|s| s.parse().ok()).unwrap_or(0.0) };
+        match *p.first()? {
+            "ema" => ExponentialMovingAverage::new(pu(1).max(2)).ok().map(Self::Ema),
+            "sma" => SimpleMovingAverage::new(pu(1).max(2)).ok().map(Self::Sma),
+            "rsi" => RelativeStrengthIndex::new(pu(1).max(2)).ok().map(Self::Rsi),
+            "macd" => {
+                MovingAverageConvergenceDivergence::new(pu(1).max(2), pu(2).max(2), pu(3).max(2))
+                    .ok()
+                    .map(Self::Macd)
+            }
+            "bbands" => BollingerBands::new(pu(1).max(2), pf(2).max(0.1)).ok().map(Self::Bbands),
+            _ => None,
+        }
+    }
+
+    fn apply_to(&mut self, bars: &[OhlcBar], out: &mut serde_json::Map<String, Value>) {
+        match self {
+            Self::Ema(ind) => {
+                let pts: Vec<Value> = bars
+                    .iter()
+                    .map(|b| json!({"time": b.time, "value": ind.next(b.close)}))
+                    .collect();
+                out.insert("ema".into(), Value::Array(pts));
+            }
+            Self::Sma(ind) => {
+                let pts: Vec<Value> = bars
+                    .iter()
+                    .map(|b| json!({"time": b.time, "value": ind.next(b.close)}))
+                    .collect();
+                out.insert("sma".into(), Value::Array(pts));
+            }
+            Self::Rsi(ind) => {
+                let pts: Vec<Value> = bars
+                    .iter()
+                    .map(|b| json!({"time": b.time, "value": ind.next(b.close)}))
+                    .collect();
+                out.insert("rsi".into(), Value::Array(pts));
+            }
+            Self::Macd(ind) => {
+                let (mut ml, mut sl, mut hl) = (vec![], vec![], vec![]);
+                for b in bars {
+                    let o = ind.next(b.close);
+                    ml.push(json!({"time": b.time, "value": o.macd}));
+                    sl.push(json!({"time": b.time, "value": o.signal}));
+                    hl.push(json!({"time": b.time, "value": o.histogram}));
+                }
+                out.insert("macd".into(), Value::Array(ml));
+                out.insert("signal".into(), Value::Array(sl));
+                out.insert("histogram".into(), Value::Array(hl));
+            }
+            Self::Bbands(ind) => {
+                let (mut ul, mut ml, mut ll) = (vec![], vec![], vec![]);
+                for b in bars {
+                    let o = ind.next(b.close);
+                    ul.push(json!({"time": b.time, "value": o.upper}));
+                    ml.push(json!({"time": b.time, "value": o.average}));
+                    ll.push(json!({"time": b.time, "value": o.lower}));
+                }
+                out.insert("upper".into(), Value::Array(ul));
+                out.insert("middle".into(), Value::Array(ml));
+                out.insert("lower".into(), Value::Array(ll));
+            }
+        }
+    }
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -92,8 +175,9 @@ async fn make_ctx_and_ticker_map(data_root: &str) -> (SessionContext, HashMap<u1
     let ticker_map = load_ticker_map(&format!("{data_root}/minute"))
         .unwrap_or_else(|e| panic!("failed to load ticker map: {e}"));
 
-    // target_partitions(1) ensures sequential file reads, preserving sort order.
-    let config = SessionConfig::new().with_target_partitions(1);
+    // target_partitions(1): sequential file reads preserve sort order.
+    // batch_size(2048): smaller batches so the first SSE event arrives fast.
+    let config = SessionConfig::new().with_target_partitions(1).with_batch_size(2048);
     let ctx = SessionContext::new_with_config(config);
 
     let minute_url = ListingTableUrl::parse(format!("{}/minute/", data_root))
@@ -282,6 +366,18 @@ pub async fn load_bars(
 
 // ── SSE streaming ─────────────────────────────────────────────────────────────
 
+#[derive(Deserialize)]
+struct BarsParams {
+    symbol: Option<String>,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    #[serde(default)]
+    timeframe: Timeframe,
+    /// Repeatable indicator specs, e.g. `&ind=ema:20&ind=rsi:14`
+    #[serde(default)]
+    ind: Vec<String>,
+}
+
 async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -> Response {
     let Some(symbol) = p.symbol else {
         return (StatusCode::BAD_REQUEST, "missing required query param: symbol").into_response();
@@ -290,7 +386,6 @@ async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppSta
     let Some((&ticker_id, _)) =
         state.ticker_map.iter().find(|(_, v)| v.as_str() == symbol.as_str())
     else {
-        // Symbol not found: send a done event with count 0
         let s = async_stream::stream! {
             yield Ok::<Event, axum::BoxError>(
                 Event::default().event("done").data(r#"{"count":0}"#)
@@ -304,8 +399,15 @@ async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppSta
 
     let ctx = Arc::clone(&state.ctx);
     let tf = p.timeframe;
+    let ind_specs = p.ind;
 
     let sse_stream = async_stream::stream! {
+        // Parse indicator states here (inside the stream so they're local to this request).
+        let mut ind_states: Vec<IndState> = ind_specs
+            .iter()
+            .filter_map(|s| IndState::from_spec(s))
+            .collect();
+
         let df = match ctx.sql(&sql).await {
             Ok(df) => df,
             Err(e) => {
@@ -331,17 +433,25 @@ async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppSta
             match batch_result {
                 Ok(batch) => {
                     let bars = batch_to_bars(&batch, tf);
+                    if bars.is_empty() { continue; }
                     total += bars.len();
-                    match serde_json::to_string(&bars) {
+
+                    let mut ev = serde_json::Map::new();
+                    ev.insert("bars".into(), json!(bars));
+                    for state in &mut ind_states {
+                        state.apply_to(&bars, &mut ev);
+                    }
+
+                    match serde_json::to_string(&Value::Object(ev)) {
                         Ok(data) => yield Ok(Event::default().event("bars").data(data)),
-                        Err(e) => yield Ok(Event::default().event("error").data(
-                            format!(r#"{{"message":"serialize: {e}"}}"#)
-                        )),
+                        Err(e) => yield Ok(Event::default().event("error")
+                            .data(format!(r#"{{"message":"serialize: {e}"}}"#))),
                     }
                 }
                 Err(e) => {
                     tracing::error!("batch error: {e}");
-                    yield Ok(Event::default().event("error").data(format!(r#"{{"message":"{e}"}}"#)));
+                    yield Ok(Event::default().event("error")
+                        .data(format!(r#"{{"message":"{e}"}}"#)));
                 }
             }
         }
@@ -358,15 +468,6 @@ async fn index() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
 
-#[derive(Deserialize)]
-struct BarsParams {
-    symbol: Option<String>,
-    start: Option<NaiveDate>,
-    end: Option<NaiveDate>,
-    #[serde(default)]
-    timeframe: Timeframe,
-}
-
 async fn bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -> Response {
     let Some(symbol) = p.symbol else {
         return (StatusCode::BAD_REQUEST, "missing required query param: symbol").into_response();
@@ -376,7 +477,7 @@ async fn bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -
     Json(bars).into_response()
 }
 
-// ── Indicators ────────────────────────────────────────────────────────────────
+// ── Indicators (kept for tests / direct API use) ──────────────────────────────
 
 #[derive(Deserialize)]
 struct IndicatorParams {
