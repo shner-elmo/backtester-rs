@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -7,17 +8,22 @@ use axum::{
     routing::get,
     Router,
 };
-use backtester::data::{load_ticker_map, sorted_parquet_files};
-use chrono::{NaiveDate, TimeZone, Utc};
+use backtester::data::load_ticker_map;
+use chrono::{Datelike, NaiveDate, TimeZone, Timelike, Utc};
+use chrono_tz::US::Eastern;
 use datafusion::{
-    arrow::array::{Float64Array, TimestampNanosecondArray},
+    arrow::{
+        array::{Float64Array, TimestampNanosecondArray},
+        datatypes::DataType,
+    },
     datasource::{
         file_format::parquet::ParquetFormat,
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
+    execution::context::SessionConfig,
     prelude::*,
-    scalar::ScalarValue,
 };
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ta::{
@@ -28,45 +34,86 @@ use ta::{
     Next,
 };
 
+// ── Timeframe ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Timeframe {
+    #[default]
+    Minute,
+    Min5,
+    Min15,
+    Hour1,
+    Hour4,
+    Daily,
+}
+
+impl Timeframe {
+    fn interval_sql(self) -> Option<&'static str> {
+        match self {
+            Timeframe::Min5 => Some("5 minutes"),
+            Timeframe::Min15 => Some("15 minutes"),
+            Timeframe::Hour1 => Some("1 hour"),
+            Timeframe::Hour4 => Some("4 hours"),
+            _ => None,
+        }
+    }
+
+    fn is_aggregated(self) -> bool {
+        !matches!(self, Timeframe::Minute)
+    }
+
+    fn has_extended_hours(self) -> bool {
+        !matches!(self, Timeframe::Daily)
+    }
+}
+
+// ── Bar type ──────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OhlcBar {
-    pub time: String,
+    pub time: i64, // Unix seconds
     pub open: f64,
     pub high: f64,
     pub low: f64,
     pub close: f64,
+    pub volume: f64,
+    pub is_extended: bool,
 }
+
+// ── App state ─────────────────────────────────────────────────────────────────
 
 struct AppState {
     ctx: Arc<SessionContext>,
-    ticker_map: HashMap<u16, String>,
+    ticker_map: Arc<HashMap<u16, String>>,
 }
 
 async fn make_ctx_and_ticker_map(data_root: &str) -> (SessionContext, HashMap<u16, String>) {
-    let ticker_map =
-        load_ticker_map(data_root).unwrap_or_else(|e| panic!("failed to load ticker map: {e}"));
-    let ctx = SessionContext::new();
-    let minute_dir = format!("{}/minute", data_root);
-    let files = sorted_parquet_files(&minute_dir);
-    assert!(!files.is_empty(), "no parquet files found under {}", minute_dir);
-    let table_urls: Vec<ListingTableUrl> =
-        files.iter().map(|p| ListingTableUrl::parse(p.to_str().unwrap()).unwrap()).collect();
+    let ticker_map = load_ticker_map(&format!("{data_root}/minute"))
+        .unwrap_or_else(|e| panic!("failed to load ticker map: {e}"));
+
+    // target_partitions(1) ensures sequential file reads, preserving sort order.
+    let config = SessionConfig::new().with_target_partitions(1);
+    let ctx = SessionContext::new_with_config(config);
+
+    let minute_url = ListingTableUrl::parse(format!("{}/minute/", data_root))
+        .unwrap_or_else(|e| panic!("invalid minute dir URL: {e}"));
     let format = Arc::new(ParquetFormat::default());
-    let listing_opts = ListingOptions::new(format).with_file_extension(".parquet");
-    let schema = listing_opts
-        .infer_schema(&ctx.state(), &table_urls[0])
+    let listing_opts =
+        ListingOptions::new(format).with_file_extension(".parquet").with_table_partition_cols(
+            vec![("year".to_string(), DataType::Int32), ("month".to_string(), DataType::Int32)],
+        );
+    let cfg = ListingTableConfig::new(minute_url)
+        .with_listing_options(listing_opts)
+        .infer_schema(&ctx.state())
         .await
         .unwrap_or_else(|e| panic!("schema inference failed: {}", e));
-    let config = ListingTableConfig::new_with_multi_paths(table_urls)
-        .with_listing_options(listing_opts)
-        .with_schema(schema);
-    let table = ListingTable::try_new(config).unwrap();
+    let table = ListingTable::try_new(cfg).unwrap();
     ctx.register_table("bars", Arc::new(table))
         .unwrap_or_else(|e| panic!("failed to register table: {}", e));
     tracing::info!(
-        "Registered parquet table 'bars' ({} tickers, {} files) from {}/minute",
+        "Registered Hive-partitioned parquet table 'bars' ({} tickers) from {}/minute",
         ticker_map.len(),
-        files.len(),
         data_root,
     );
     (ctx, ticker_map)
@@ -74,23 +121,123 @@ async fn make_ctx_and_ticker_map(data_root: &str) -> (SessionContext, HashMap<u1
 
 pub async fn create_app(data_root: String) -> Router {
     let (ctx, ticker_map) = make_ctx_and_ticker_map(&data_root).await;
-    let state = Arc::new(AppState { ctx: Arc::new(ctx), ticker_map });
+    let state = Arc::new(AppState { ctx: Arc::new(ctx), ticker_map: Arc::new(ticker_map) });
     Router::new()
         .route("/", get(index))
         .route("/api/bars", get(bars))
+        .route("/api/stream/bars", get(stream_bars))
         .route("/api/indicators", get(indicators))
         .with_state(state)
 }
 
-pub async fn load_daily_bars(
-    data_root: &str,
-    symbol: &str,
+// ── SQL building ──────────────────────────────────────────────────────────────
+
+fn build_conditions(
+    ticker_id: u16,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
-) -> Vec<OhlcBar> {
-    let (ctx, ticker_map) = make_ctx_and_ticker_map(data_root).await;
-    query_bars(&ctx, &ticker_map, symbol, start, end).await
+) -> Vec<String> {
+    let mut conds = vec![format!("ticker = {ticker_id}")];
+    if let Some(s) = start {
+        let (y, m) = (s.year(), s.month() as i32);
+        conds.push(format!("(year > {y} OR (year = {y} AND month >= {m}))"));
+        conds.push(format!("window_start >= to_timestamp('{}')", s.format("%Y-%m-%d")));
+    }
+    if let Some(e) = end {
+        let next = e.succ_opt().unwrap_or(e);
+        let (y, m) = (e.year(), e.month() as i32);
+        conds.push(format!("(year < {y} OR (year = {y} AND month <= {m}))"));
+        conds.push(format!("window_start < to_timestamp('{}')", next.format("%Y-%m-%d")));
+    }
+    conds
 }
+
+fn build_sql(
+    ticker_id: u16,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    tf: Timeframe,
+) -> String {
+    let where_clause = build_conditions(ticker_id, start, end).join(" AND ");
+    match tf {
+        Timeframe::Minute => format!(
+            "SELECT window_start, open, high, low, close, CAST(volume AS DOUBLE) AS volume \
+             FROM bars WHERE {where_clause}"
+        ),
+        Timeframe::Daily => format!(
+            "SELECT DATE_TRUNC('day', window_start) AS bucket, \
+               FIRST_VALUE(open ORDER BY window_start) AS open, \
+               MAX(high) AS high, MIN(low) AS low, \
+               LAST_VALUE(close ORDER BY window_start) AS close, \
+               CAST(SUM(volume) AS DOUBLE) AS volume \
+             FROM bars WHERE {where_clause} GROUP BY bucket ORDER BY bucket"
+        ),
+        _ => {
+            let interval = tf.interval_sql().unwrap();
+            format!(
+                "SELECT date_bin(INTERVAL '{interval}', window_start, TIMESTAMP '1970-01-01T00:00:00') AS bucket, \
+                   FIRST_VALUE(open ORDER BY window_start) AS open, \
+                   MAX(high) AS high, MIN(low) AS low, \
+                   LAST_VALUE(close ORDER BY window_start) AS close, \
+                   CAST(SUM(volume) AS DOUBLE) AS volume \
+                 FROM bars WHERE {where_clause} GROUP BY bucket ORDER BY bucket"
+            )
+        }
+    }
+}
+
+// ── Batch → bars ──────────────────────────────────────────────────────────────
+
+fn batch_to_bars(
+    batch: &datafusion::arrow::record_batch::RecordBatch,
+    tf: Timeframe,
+) -> Vec<OhlcBar> {
+    let time_col = if tf.is_aggregated() { "bucket" } else { "window_start" };
+
+    let ts = batch
+        .column_by_name(time_col)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<TimestampNanosecondArray>()
+        .unwrap();
+    let open =
+        batch.column_by_name("open").unwrap().as_any().downcast_ref::<Float64Array>().unwrap();
+    let high =
+        batch.column_by_name("high").unwrap().as_any().downcast_ref::<Float64Array>().unwrap();
+    let low = batch.column_by_name("low").unwrap().as_any().downcast_ref::<Float64Array>().unwrap();
+    let close =
+        batch.column_by_name("close").unwrap().as_any().downcast_ref::<Float64Array>().unwrap();
+    let volume =
+        batch.column_by_name("volume").unwrap().as_any().downcast_ref::<Float64Array>().unwrap();
+
+    let check_ext = tf.has_extended_hours();
+
+    (0..batch.num_rows())
+        .filter_map(|i| {
+            let ns = ts.value(i);
+            let utc =
+                Utc.timestamp_opt(ns / 1_000_000_000, (ns % 1_000_000_000) as u32).single()?;
+            let is_extended = if check_ext {
+                let et = utc.with_timezone(&Eastern);
+                let mins = et.hour() * 60 + et.minute();
+                mins < 9 * 60 + 30 || mins >= 16 * 60
+            } else {
+                false
+            };
+            Some(OhlcBar {
+                time: utc.timestamp(),
+                open: open.value(i),
+                high: high.value(i),
+                low: low.value(i),
+                close: close.value(i),
+                volume: volume.value(i),
+                is_extended,
+            })
+        })
+        .collect()
+}
+
+// ── Shared query helper ───────────────────────────────────────────────────────
 
 async fn query_bars(
     ctx: &SessionContext,
@@ -98,112 +245,114 @@ async fn query_bars(
     symbol: &str,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
+    tf: Timeframe,
 ) -> Vec<OhlcBar> {
     let Some((&ticker_id, _)) = ticker_map.iter().find(|(_, v)| v.as_str() == symbol) else {
         tracing::warn!("symbol '{}' not found in ticker map", symbol);
         return vec![];
     };
-
-    let mut df = ctx
-        .table("bars")
-        .await
-        .unwrap()
-        .filter(col("ticker").eq(lit(ScalarValue::UInt16(Some(ticker_id)))))
-        .unwrap();
-
-    if let Some(s) = start {
-        let ts_ns = s.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_nanos_opt().unwrap();
-        df = df
-            .filter(
-                col("window_start").gt_eq(lit(ScalarValue::TimestampNanosecond(Some(ts_ns), None))),
-            )
-            .unwrap();
+    let sql = build_sql(ticker_id, start, end, tf);
+    tracing::debug!("query: {}", sql);
+    match ctx.sql(&sql).await {
+        Ok(df) => match df.collect().await {
+            Ok(batches) => batches.iter().flat_map(|b| batch_to_bars(b, tf)).collect(),
+            Err(e) => {
+                tracing::error!("collect error: {e}");
+                vec![]
+            }
+        },
+        Err(e) => {
+            tracing::error!("sql error: {e}");
+            vec![]
+        }
     }
-    if let Some(e) = end {
-        let ts_ns = e
-            .and_hms_nano_opt(23, 59, 59, 999_999_999)
-            .unwrap()
-            .and_utc()
-            .timestamp_nanos_opt()
-            .unwrap();
-        df = df
-            .filter(
-                col("window_start").lt_eq(lit(ScalarValue::TimestampNanosecond(Some(ts_ns), None))),
-            )
-            .unwrap();
-    }
-
-    let batches = df
-        .select_columns(&["open", "high", "low", "close", "window_start"])
-        .unwrap()
-        // .sort(vec![col("window_start").sort(true, true)])
-        // .unwrap()
-        .collect()
-        .await
-        .unwrap();
-
-    tracing::info!(
-        "symbol='{}' got {} batches (start={:?} end={:?})",
-        symbol,
-        batches.len(),
-        start,
-        end,
-    );
-
-    batches
-        .into_iter()
-        .flat_map(|batch| {
-            let open = batch
-                .column_by_name("open")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap();
-            let high = batch
-                .column_by_name("high")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap();
-            let low = batch
-                .column_by_name("low")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap();
-            let close = batch
-                .column_by_name("close")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap();
-            let ts = batch
-                .column_by_name("window_start")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<TimestampNanosecondArray>()
-                .unwrap();
-
-            (0..batch.num_rows())
-                .filter_map(|i| {
-                    let ns = ts.value(i);
-                    let dt = Utc
-                        .timestamp_opt(ns / 1_000_000_000, (ns % 1_000_000_000) as u32)
-                        .single()?;
-                    Some(OhlcBar {
-                        time: dt.to_rfc3339(),
-                        open: open.value(i),
-                        high: high.value(i),
-                        low: low.value(i),
-                        close: close.value(i),
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+/// Public helper for integration tests.
+pub async fn load_bars(
+    data_root: &str,
+    symbol: &str,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    tf: Timeframe,
+) -> Vec<OhlcBar> {
+    let (ctx, ticker_map) = make_ctx_and_ticker_map(data_root).await;
+    query_bars(&ctx, &ticker_map, symbol, start, end, tf).await
+}
+
+// ── SSE streaming ─────────────────────────────────────────────────────────────
+
+async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -> Response {
+    let Some(symbol) = p.symbol else {
+        return (StatusCode::BAD_REQUEST, "missing required query param: symbol").into_response();
+    };
+
+    let Some((&ticker_id, _)) =
+        state.ticker_map.iter().find(|(_, v)| v.as_str() == symbol.as_str())
+    else {
+        // Symbol not found: send a done event with count 0
+        let s = async_stream::stream! {
+            yield Ok::<Event, axum::BoxError>(
+                Event::default().event("done").data(r#"{"count":0}"#)
+            );
+        };
+        return Sse::new(s).keep_alive(KeepAlive::default()).into_response();
+    };
+
+    let sql = build_sql(ticker_id, p.start, p.end, p.timeframe);
+    tracing::debug!("stream query: {}", sql);
+
+    let ctx = Arc::clone(&state.ctx);
+    let tf = p.timeframe;
+
+    let sse_stream = async_stream::stream! {
+        let df = match ctx.sql(&sql).await {
+            Ok(df) => df,
+            Err(e) => {
+                tracing::error!("sql error: {e}");
+                yield Ok::<Event, axum::BoxError>(
+                    Event::default().event("error").data(format!(r#"{{"message":"{e}"}}"#))
+                );
+                return;
+            }
+        };
+
+        let mut record_stream = match df.execute_stream().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("execute_stream error: {e}");
+                yield Ok(Event::default().event("error").data(format!(r#"{{"message":"{e}"}}"#)));
+                return;
+            }
+        };
+
+        let mut total = 0usize;
+        while let Some(batch_result) = record_stream.next().await {
+            match batch_result {
+                Ok(batch) => {
+                    let bars = batch_to_bars(&batch, tf);
+                    total += bars.len();
+                    match serde_json::to_string(&bars) {
+                        Ok(data) => yield Ok(Event::default().event("bars").data(data)),
+                        Err(e) => yield Ok(Event::default().event("error").data(
+                            format!(r#"{{"message":"serialize: {e}"}}"#)
+                        )),
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("batch error: {e}");
+                    yield Ok(Event::default().event("error").data(format!(r#"{{"message":"{e}"}}"#)));
+                }
+            }
+        }
+
+        yield Ok(Event::default().event("done").data(format!(r#"{{"count":{total}}}"#)));
+    };
+
+    Sse::new(sse_stream).keep_alive(KeepAlive::default()).into_response()
+}
+
+// ── HTTP handlers ─────────────────────────────────────────────────────────────
 
 async fn index() -> Html<&'static str> {
     Html(include_str!("index.html"))
@@ -214,47 +363,51 @@ struct BarsParams {
     symbol: Option<String>,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
+    #[serde(default)]
+    timeframe: Timeframe,
 }
 
-async fn bars(Query(params): Query<BarsParams>, State(state): State<Arc<AppState>>) -> Response {
-    let Some(symbol) = params.symbol else {
+async fn bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -> Response {
+    let Some(symbol) = p.symbol else {
         return (StatusCode::BAD_REQUEST, "missing required query param: symbol").into_response();
     };
-    let bars = query_bars(&state.ctx, &state.ticker_map, &symbol, params.start, params.end).await;
+    let bars =
+        query_bars(&state.ctx, &state.ticker_map, &symbol, p.start, p.end, p.timeframe).await;
     Json(bars).into_response()
 }
+
+// ── Indicators ────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct IndicatorParams {
     symbol: Option<String>,
     #[serde(rename = "type")]
     indicator_type: Option<String>,
-    /// Lookback for `ema`/`sma` (default 20), `rsi` (14), and `bbands` (20).
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    #[serde(default)]
+    timeframe: Timeframe,
     period: Option<usize>,
-    /// MACD periods (defaults 12 / 26 / 9).
     fast: Option<usize>,
     slow: Option<usize>,
     signal: Option<usize>,
-    /// Bollinger band width in standard deviations (default 2.0).
     mult: Option<f64>,
 }
 
 async fn indicators(
-    Query(params): Query<IndicatorParams>,
+    Query(p): Query<IndicatorParams>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let Some(symbol) = params.symbol.as_deref() else {
+    let Some(symbol) = p.symbol.as_deref() else {
         return (StatusCode::BAD_REQUEST, "missing required query param: symbol").into_response();
     };
-    let Some(indicator_type) = params.indicator_type.as_deref() else {
+    let Some(indicator_type) = p.indicator_type.as_deref() else {
         return (StatusCode::BAD_REQUEST, "missing required query param: type").into_response();
     };
-    let bars = query_bars(&state.ctx, &state.ticker_map, symbol, None, None).await;
-    Json(compute_indicator(&bars, indicator_type, &params)).into_response()
+    let bars = query_bars(&state.ctx, &state.ticker_map, symbol, p.start, p.end, p.timeframe).await;
+    Json(compute_indicator(&bars, indicator_type, &p)).into_response()
 }
 
-/// A rejected parameter set (e.g. `period=0`) returns this payload instead of
-/// panicking the handler.
 fn invalid_params() -> Value {
     json!({ "error": "invalid indicator parameters" })
 }
