@@ -361,7 +361,8 @@ function load() {
 
   document.getElementById('load-btn').disabled = true;
   document.getElementById('cancel-btn').style.display = '';
-  setStatus('Sent!');
+  const isAggregated = currentTf !== 'minute';
+  setStatus(isAggregated ? 'Aggregating… (this takes ~1min on large datasets)' : 'Sent!');
   setSB('Connecting…');
 
   const src = new EventSource('/api/stream/bars?' + q.toString());
