@@ -400,3 +400,5 @@ async fn bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -
 
     Json(BarsResponse { symbol, timeframe: p.tf, bars, indicators }).into_response()
 }
+
+// it takes 104 seconds to scan 5 years of parquet data (plus 5 different indicators)

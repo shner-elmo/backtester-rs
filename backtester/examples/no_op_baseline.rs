@@ -82,3 +82,9 @@ fn main() {
     println!("throughput: {:.0} bars/s", bars as f64 / elapsed.as_secs_f64());
     println!("final equity: {:.2} (should equal starting cash)", result.final_equity);
 }
+
+// elapsed:    35.4s
+// ticks:      19206
+// bars:       33960794
+// throughput: 958657 bars/s
+// final equity: 100000.00 (should equal starting cash)
