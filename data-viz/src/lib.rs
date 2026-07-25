@@ -175,9 +175,8 @@ async fn make_ctx_and_ticker_map(data_root: &str) -> (SessionContext, HashMap<u1
     let ticker_map = load_ticker_map(&format!("{data_root}/minute"))
         .unwrap_or_else(|e| panic!("failed to load ticker map: {e}"));
 
-    // target_partitions(1): sequential file reads preserve sort order.
-    // batch_size(2048): smaller batches so the first SSE event arrives fast.
-    let config = SessionConfig::new().with_target_partitions(1).with_batch_size(2048);
+    // target_partitions(1): sequential reads preserve sort order for minute streaming (no ORDER BY).
+    let config = SessionConfig::new().with_target_partitions(1);
     let ctx = SessionContext::new_with_config(config);
 
     let minute_url = ListingTableUrl::parse(format!("{}/minute/", data_root))
@@ -402,7 +401,6 @@ async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppSta
     let ind_specs = p.ind;
 
     let sse_stream = async_stream::stream! {
-        // Parse indicator states here (inside the stream so they're local to this request).
         let mut ind_states: Vec<IndState> = ind_specs
             .iter()
             .filter_map(|s| IndState::from_spec(s))
@@ -419,39 +417,69 @@ async fn stream_bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppSta
             }
         };
 
-        let mut record_stream = match df.execute_stream().await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("execute_stream error: {e}");
-                yield Ok(Event::default().event("error").data(format!(r#"{{"message":"{e}"}}"#)));
-                return;
-            }
-        };
-
         let mut total = 0usize;
-        while let Some(batch_result) = record_stream.next().await {
-            match batch_result {
-                Ok(batch) => {
-                    let bars = batch_to_bars(&batch, tf);
-                    if bars.is_empty() { continue; }
-                    total += bars.len();
 
-                    let mut ev = serde_json::Map::new();
-                    ev.insert("bars".into(), json!(bars));
-                    for state in &mut ind_states {
-                        state.apply_to(&bars, &mut ev);
-                    }
-
-                    match serde_json::to_string(&Value::Object(ev)) {
-                        Ok(data) => yield Ok(Event::default().event("bars").data(data)),
-                        Err(e) => yield Ok(Event::default().event("error")
-                            .data(format!(r#"{{"message":"serialize: {e}"}}"#))),
-                    }
-                }
+        if tf.is_aggregated() {
+            // GROUP BY + ORDER BY must buffer everything before emitting; collect() is equivalent
+            // to execute_stream() here but avoids the streaming overhead.
+            match df.collect().await {
                 Err(e) => {
-                    tracing::error!("batch error: {e}");
+                    tracing::error!("collect error: {e}");
                     yield Ok(Event::default().event("error")
                         .data(format!(r#"{{"message":"{e}"}}"#)));
+                }
+                Ok(batches) => {
+                    let bars: Vec<OhlcBar> = batches.iter()
+                        .flat_map(|b| batch_to_bars(b, tf))
+                        .collect();
+                    if !bars.is_empty() {
+                        total = bars.len();
+                        let mut ev = serde_json::Map::new();
+                        ev.insert("bars".into(), json!(bars));
+                        for state in &mut ind_states { state.apply_to(&bars, &mut ev); }
+                        match serde_json::to_string(&Value::Object(ev)) {
+                            Ok(data) => yield Ok(Event::default().event("bars").data(data)),
+                            Err(e) => yield Ok(Event::default().event("error")
+                                .data(format!(r#"{{"message":"serialize: {e}"}}"#))),
+                        }
+                    }
+                }
+            }
+        } else {
+            // Minute: true streaming — first batch arrives after first row group is decoded.
+            let mut record_stream = match df.execute_stream().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("execute_stream error: {e}");
+                    yield Ok(Event::default().event("error")
+                        .data(format!(r#"{{"message":"{e}"}}"#)));
+                    return;
+                }
+            };
+
+            while let Some(batch_result) = record_stream.next().await {
+                match batch_result {
+                    Ok(batch) => {
+                        let bars = batch_to_bars(&batch, tf);
+                        if bars.is_empty() { continue; }
+                        total += bars.len();
+
+                        let mut ev = serde_json::Map::new();
+                        ev.insert("bars".into(), json!(bars));
+                        for state in &mut ind_states { state.apply_to(&bars, &mut ev); }
+
+                        match serde_json::to_string(&Value::Object(ev)) {
+                            Ok(data) => yield Ok(Event::default().event("bars").data(data)),
+                            Err(e) => yield Ok(Event::default().event("error")
+                                .data(format!(r#"{{"message":"serialize: {e}"}}"#))),
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("batch error: {e}");
+                        yield Ok(Event::default().event("error")
+                            .data(format!(r#"{{"message":"{e}"}}"#)));
+                        break;
+                    }
                 }
             }
         }

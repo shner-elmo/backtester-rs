@@ -183,3 +183,43 @@ async fn indicators_missing_type_returns_400() {
     let (status, _) = get(app().await, "/api/indicators?symbol=AAPL").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn bars_daily_timeframe_returns_data() {
+    let (status, json) = get_json(
+        app().await,
+        "/api/bars?symbol=AAPL&start=2023-01-01&end=2023-01-31&timeframe=daily",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = json.as_array().expect("expected JSON array");
+    assert!(!arr.is_empty(), "daily bars returned empty — SQL or type issue");
+    let first = &arr[0];
+    eprintln!("daily first bar: {first}");
+    assert!(first["time"].is_number());
+    assert!(first["is_extended"].as_bool() == Some(false));
+}
+
+
+#[tokio::test]
+async fn daily_stream_via_sse_endpoint() {
+    // This tests the SSE path indirectly: we read the full SSE response body and check
+    // that the `done` event carries a non-zero count. If it's 0, there's an error in
+    // the streaming aggregation path (execute_stream vs collect).
+    let (_, bytes) = get(
+        app().await,
+        "/api/stream/bars?symbol=AAPL&start=2023-01-01&end=2023-01-31&timeframe=daily",
+    )
+    .await;
+    let body = String::from_utf8(bytes).unwrap();
+    eprintln!("SSE body:\n{body}");
+    assert!(body.contains("event:done") || body.contains("event: done"), "no done event");
+    // Extract count from done event
+    let count_line = body
+        .lines()
+        .skip_while(|l| !l.starts_with("event:done") && !l.starts_with("event: done"))
+        .nth(1)
+        .unwrap_or("");
+    eprintln!("done data line: {count_line}");
+    assert!(!count_line.contains(r#""count":0"#), "count=0 means streaming aggregation failed — check for error events above");
+}
