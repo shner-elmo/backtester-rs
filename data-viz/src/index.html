@@ -161,9 +161,15 @@ for (const [key, label] of TIMEFRAMES) {
   b.onclick = () => {
     timeframe = key;
     document.querySelectorAll('.tf').forEach(x => x.classList.toggle('on', x.dataset.tf === key));
-    load();
   };
   document.getElementById('tfs').appendChild(b);
+}
+
+// Format a Date as YYYY-MM-DD in local time. `toISOString` renders in UTC, which
+// rolls back a day in any timezone east of UTC and corrupted the month stepping.
+function isoDate(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 function shiftMonth(id, delta) {
@@ -171,8 +177,7 @@ function shiftMonth(id, delta) {
   const d = new Date((el.value || '2021-01-01') + 'T00:00:00');
   d.setDate(1);
   d.setMonth(d.getMonth() + delta);
-  el.value = d.toISOString().slice(0, 10);
-  load();
+  el.value = isoDate(d);
 }
 
 for (const id of ['symbol', 'start', 'end']) {
@@ -217,7 +222,6 @@ const specOf = chip => [chip.type, ...IND_PARAMS[chip.type].map(([name]) => chip
 function addChip() {
   chips.push({ type: 'ema', period: 20 });
   renderChips();
-  load();
 }
 
 function renderChips() {
@@ -236,7 +240,6 @@ function renderChips() {
       chip.type = type.value;
       for (const [name, , def] of IND_PARAMS[chip.type]) chip[name] = def;
       renderChips();
-      load();
     };
     el.appendChild(type);
 
@@ -251,14 +254,14 @@ function renderChips() {
       input.min = 1;
       input.step = name === 'mult' ? 0.1 : 1;
       input.value = chip[name];
-      input.onchange = () => { chip[name] = parseFloat(input.value) || def; load(); };
+      input.onchange = () => { chip[name] = parseFloat(input.value) || def; };
       el.appendChild(input);
     }
 
     const rm = document.createElement('button');
     rm.className = 'rm';
     rm.textContent = '×';
-    rm.onclick = () => { chips = chips.filter(c => c !== chip); renderChips(); load(); };
+    rm.onclick = () => { chips = chips.filter(c => c !== chip); renderChips(); };
     el.appendChild(rm);
 
     row.appendChild(el);
@@ -326,30 +329,53 @@ function draw({ bars, indicators }) {
   })));
 
   const live = new Set();
-  let needsOsc = false;
 
   const order = chips.map(specOf);
 
+  // Each oscillator indicator (RSI, MACD, …) gets its own price scale so they never
+  // share a y-axis — RSI's 0–100 range would otherwise flatten MACD to a line at zero.
+  // The osc pane is then split into equal horizontal bands, one per indicator, so they
+  // stack vertically instead of overlapping.
+  const oscSpecs = order.filter(spec => {
+    const lines = indicators[spec];
+    return lines && Object.keys(lines).some(name => LINES[name] && LINES[name].pane === 'osc');
+  });
+  const needsOsc = oscSpecs.length > 0;
+
   for (const [spec, lines] of Object.entries(indicators)) {
     const hue = PALETTE[Math.max(order.indexOf(spec), 0) % PALETTE.length];
+    const oscScaleId = 'osc/' + spec;
     for (const [name, values] of Object.entries(lines)) {
       const style = LINES[name];
       if (!style) continue;
       const color = tint(hue, style.alpha);
       const key = spec + '/' + name;
       live.add(key);
-      if (style.pane === 'osc') needsOsc = true;
 
       const chart = style.pane === 'osc' ? oscChart : priceChart;
+      const scaleId = style.pane === 'osc' ? oscScaleId : 'right';
       const series = extraSeries(key, chart, () =>
         style.histogram
-          ? chart.addHistogramSeries({ color, priceLineVisible: false })
-          : chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }));
+          ? chart.addHistogramSeries({ priceScaleId: scaleId, color, priceLineVisible: false })
+          : chart.addLineSeries({ priceScaleId: scaleId, color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }));
       series.applyOptions({ color });
-      series.setData(values.map((value, i) => ({ time: bars[i].time, value })));
+      series.setData(values.map((value, i) => {
+        const point = { time: bars[i].time, value };
+        // MACD histogram: green above zero, red below — same convention as the candles.
+        if (style.histogram && value != null) point.color = value >= 0 ? UP : DOWN;
+        return point;
+      }));
     }
   }
   dropUnusedExtras(live);
+
+  // Assign each oscillator its horizontal band within the osc pane.
+  const n = oscSpecs.length;
+  oscSpecs.forEach((spec, i) => {
+    oscChart.priceScale('osc/' + spec).applyOptions({
+      scaleMargins: { top: i / n + 0.04, bottom: (n - 1 - i) / n + 0.04 },
+    });
+  });
 
   oscVisible = false;   // keep the panes unlinked until both hold the same bars
   oscEl.style.display = needsOsc ? 'block' : 'none';
