@@ -37,8 +37,11 @@
   .chip .rm:hover { color: #ef5350; }
 
   #panes { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
-  #price { flex: 1 1 auto; }
-  #osc { flex: 0 0 150px; border-top: 1px solid #2a2e39; display: none; }
+  /* min-height:0 lets the price pane shrink below its canvas's height when the osc pane
+     appears — without it the default min-height:auto pins it to the full height and the
+     osc pane overflows below the fold. */
+  #price { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  #osc { flex: 0 0 150px; min-height: 0; overflow: hidden; border-top: 1px solid #2a2e39; display: none; }
 </style>
 </head>
 <body>
@@ -350,6 +353,11 @@ function draw({ bars, indicators }) {
 
   oscVisible = false;   // keep the panes unlinked until both hold the same bars
   oscEl.style.display = needsOsc ? 'block' : 'none';
+  // Toggling the osc pane re-splits #panes but leaves its size unchanged, so the
+  // ResizeObserver never fires. Resize both charts to their new heights explicitly —
+  // otherwise the price canvas keeps its old full height and shoves the osc pane
+  // (and its RSI/MACD lines) off the bottom of the viewport.
+  priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
   oscChart.applyOptions({ width: oscEl.clientWidth, height: oscEl.clientHeight || 150 });
 
   priceChart.timeScale().fitContent();
