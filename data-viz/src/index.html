@@ -2,527 +2,366 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>data-viz</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; background: #0d1117; color: #c9d1d9; font: 13px/1.4 "SF Mono", "Consolas", monospace; }
+  html, body { height: 100%; background: #131722; color: #d1d4dc; font-family: sans-serif; font-size: 13px; }
   body { display: flex; flex-direction: column; overflow: hidden; }
 
-  #toolbar {
-    flex: 0 0 auto;
-    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-    padding: 8px 10px;
-    background: #161b22; border-bottom: 1px solid #30363d;
+  #controls, #indicators {
+    flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 8px 16px; background: #1e222d;
   }
-  #toolbar input[type=text] {
-    width: 80px; padding: 4px 6px;
-    background: #0d1117; color: #c9d1d9;
-    border: 1px solid #30363d; border-radius: 4px;
-    text-transform: uppercase;
+  #indicators { padding-top: 0; gap: 6px; }
+  input, select {
+    background: #2a2e39; border: 1px solid #363a45; color: #d1d4dc;
+    padding: 5px 8px; border-radius: 4px; font: inherit; font-size: 12px;
   }
-  #toolbar input[type=date] {
-    width: 132px; padding: 4px 6px;
-    background: #0d1117; color: #c9d1d9;
-    border: 1px solid #30363d; border-radius: 4px;
-  }
-  .tf-group { display: flex; gap: 2px; }
-  .tf-btn {
-    padding: 4px 7px; background: #0d1117; color: #8b949e;
-    border: 1px solid #30363d; border-radius: 4px; cursor: pointer; font-size: 12px;
-  }
-  .tf-btn.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-  .tf-btn:hover:not(.active) { background: #21262d; }
-  button {
-    padding: 4px 10px; border: 1px solid #30363d; border-radius: 4px;
-    cursor: pointer; font-size: 12px; font-family: inherit;
-  }
-  #load-btn  { background: #238636; color: #fff; border-color: #238636; }
-  #load-btn:disabled { opacity: .5; cursor: default; }
-  #load-btn:hover:not(:disabled) { background: #2ea043; }
-  #cancel-btn { background: #b62324; color: #fff; border-color: #b62324; display: none; }
-  #cancel-btn:hover { background: #da3633; }
-  .nav-btn { padding: 4px 7px; background: #0d1117; color: #8b949e; }
-  .nav-btn:hover { background: #21262d; }
-  #status { font-size: 11px; color: #8b949e; margin-left: 4px; }
-  .sep { width: 1px; height: 20px; background: #30363d; margin: 0 2px; }
+  #symbol { width: 90px; text-transform: uppercase; }
+  button { border: 1px solid #363a45; border-radius: 4px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 12px; }
+  #load { background: #2962ff; color: #fff; border-color: #2962ff; padding: 5px 16px; }
+  #load:disabled { opacity: .55; cursor: default; }
+  .ghost { background: #2a2e39; color: #b2b5be; }
+  .ghost:hover { background: #363a45; }
+  .tf.on { background: #2962ff; color: #fff; border-color: #2962ff; }
+  .sep { width: 1px; height: 20px; background: #363a45; }
+  #status { color: #787b86; font-size: 12px; }
 
-  #indicators-row {
-    flex: 0 0 auto;
-    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-    padding: 6px 10px;
-    background: #161b22; border-bottom: 1px solid #30363d;
-  }
-  #add-ind-btn { background: #0d1117; color: #8b949e; font-size: 12px; }
-  #add-ind-btn:hover { background: #21262d; }
-  .ind-chip {
-    display: flex; align-items: center; gap: 4px;
-    padding: 3px 6px; border-radius: 4px;
-    background: #21262d; border: 1px solid #30363d;
-  }
-  .ind-chip select, .ind-chip input {
-    background: #0d1117; color: #c9d1d9;
-    border: 1px solid #30363d; border-radius: 3px;
-    padding: 2px 4px; font-size: 12px; font-family: inherit;
-  }
-  .ind-chip select { cursor: pointer; }
-  .ind-chip input { width: 44px; }
-  .ind-chip .rm { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
-  .ind-chip .rm:hover { color: #f85149; }
+  .chip { display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 4px; background: #2a2e39; border: 1px solid #363a45; }
+  .chip input { width: 46px; padding: 2px 4px; }
+  .chip select { padding: 2px 4px; }
+  .chip label { color: #787b86; font-size: 11px; }
+  .chip .rm { background: none; border: none; color: #787b86; font-size: 15px; line-height: 1; padding: 0 2px; }
+  .chip .rm:hover { color: #ef5350; }
 
-  #charts { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
-  #main-chart { flex: 1 1 auto; }
-  #osc-chart { flex: 0 0 140px; border-top: 1px solid #30363d; display: none; }
-
-  #statusbar {
-    flex: 0 0 auto;
-    padding: 3px 10px; font-size: 11px; color: #6e7681;
-    background: #161b22; border-top: 1px solid #30363d;
-  }
+  #panes { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+  #price { flex: 1 1 auto; }
+  #osc { flex: 0 0 150px; border-top: 1px solid #2a2e39; display: none; }
 </style>
 </head>
 <body>
 
-<div id="toolbar">
+<div id="controls">
   <input id="symbol" type="text" value="AAPL" placeholder="Symbol">
   <div class="sep"></div>
-  <div class="tf-group" id="tf-group"></div>
+  <span id="tfs"></span>
   <div class="sep"></div>
-  <button class="nav-btn" onclick="shiftDate('start',-1)">&#9664;</button>
+  <button class="ghost" onclick="shiftMonth('start', -1)">&#9664;</button>
   <input id="start" type="date" value="2021-01-01">
-  <button class="nav-btn" onclick="shiftDate('start', 1)">&#9654;</button>
+  <button class="ghost" onclick="shiftMonth('start', 1)">&#9654;</button>
+  <span style="color:#787b86">&rarr;</span>
+  <button class="ghost" onclick="shiftMonth('end', -1)">&#9664;</button>
+  <input id="end" type="date" value="2021-02-01">
+  <button class="ghost" onclick="shiftMonth('end', 1)">&#9654;</button>
   <div class="sep"></div>
-  <button class="nav-btn" onclick="shiftDate('end',-1)">&#9664;</button>
-  <input id="end" type="date">
-  <button class="nav-btn" onclick="shiftDate('end', 1)">&#9654;</button>
-  <div class="sep"></div>
-  <button id="load-btn" onclick="load()">Load</button>
-  <button id="cancel-btn" onclick="cancel()">Cancel</button>
+  <button id="load" onclick="load()">Load</button>
   <span id="status"></span>
 </div>
 
-<div id="indicators-row">
-  <button id="add-ind-btn" onclick="addIndicator()">+ Add Indicator</button>
+<div id="indicators">
+  <button class="ghost" onclick="addChip()">+ Indicator</button>
 </div>
 
-<div id="charts">
-  <div id="main-chart"></div>
-  <div id="osc-chart"></div>
+<div id="panes">
+  <div id="price"></div>
+  <div id="osc"></div>
 </div>
-
-<div id="statusbar">Ready</div>
 
 <script>
 'use strict';
 
-// ── Default end date: start + 1 month ──
-(function () {
-  const d = new Date('2021-01-01T00:00:00');
-  d.setMonth(d.getMonth() + 1);
-  document.getElementById('end').value = d.toISOString().slice(0, 10);
-})();
+const LC = LightweightCharts;
 
-// ── Timeframe buttons ──
-const TIMEFRAMES = [
-  { key: 'minute', label: '1m' },
-  { key: 'min5',   label: '5m' },
-  { key: 'min15',  label: '15m' },
-  { key: 'hour1',  label: '1h' },
-  { key: 'hour4',  label: '4h' },
-  { key: 'daily',  label: '1D' },
-];
-let currentTf = 'minute';
-(function () {
-  const g = document.getElementById('tf-group');
-  for (const { key, label } of TIMEFRAMES) {
-    const btn = document.createElement('button');
-    btn.className = 'tf-btn' + (key === currentTf ? ' active' : '');
-    btn.textContent = label;
-    btn.dataset.tf = key;
-    btn.onclick = () => {
-      currentTf = key;
-      document.querySelectorAll('.tf-btn').forEach(b =>
-        b.classList.toggle('active', b.dataset.tf === key)
-      );
-      pendingKey = null;  // timeframe changed, allow reload
-    };
-    g.appendChild(btn);
+// Bar times are US/Eastern wall-clock seconds (see OhlcBar::time), so Lightweight
+// Charts' UTC rendering lands on market-local time with no formatter overrides.
+const UP = '#26a69a', DOWN = '#ef5350';
+const EXT_UP = 'rgba(38,166,154,.42)', EXT_DOWN = 'rgba(239,83,80,.42)';
+const EXT_WICK = 'rgba(120,130,140,.5)';
+const VOL_UP = 'rgba(38,166,154,.4)', VOL_DOWN = 'rgba(239,83,80,.4)';
+const VOL_EXT = 'rgba(120,130,140,.28)';
+
+const THEME = {
+  layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+  grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+  crosshair: { mode: LC.CrosshairMode.Normal },
+  // minBarSpacing defaults to 0.5px, which silently caps fitContent() at ~3k bars —
+  // a month of minutes (~18k) would only ever show its last few days.
+  timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a2e39', minBarSpacing: 0.02 },
+  rightPriceScale: { borderColor: '#2a2e39' },
+};
+
+// ── Charts and series: built once, never torn down ────────────────────────────
+
+const priceEl = document.getElementById('price');
+const oscEl = document.getElementById('osc');
+
+const priceChart = LC.createChart(priceEl, { ...THEME, width: priceEl.clientWidth, height: priceEl.clientHeight });
+const oscChart = LC.createChart(oscEl, { ...THEME, width: oscEl.clientWidth, height: 150 });
+
+const candles = priceChart.addCandlestickSeries({
+  upColor: UP, downColor: DOWN,
+  borderUpColor: UP, borderDownColor: DOWN,
+  wickUpColor: UP, wickDownColor: DOWN,
+});
+priceChart.priceScale('right').applyOptions({ scaleMargins: { top: 0.08, bottom: 0.22 } });
+
+const volume = priceChart.addHistogramSeries({
+  priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false,
+});
+priceChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+
+// Both panes plot the same bar array, so logical ranges keep them locked together
+// regardless of gaps — a shared time range drifts once the series lengths differ.
+// The sync stays off while the oscillator pane is empty: an empty chart clamps the
+// range it is handed and echoes that back, which would undo fitContent().
+let oscVisible = false;
+let syncing = false;
+const sync = to => range => {
+  if (!oscVisible || syncing || !range) return;
+  syncing = true;
+  to.timeScale().setVisibleLogicalRange(range);
+  syncing = false;
+};
+priceChart.timeScale().subscribeVisibleLogicalRangeChange(sync(oscChart));
+oscChart.timeScale().subscribeVisibleLogicalRangeChange(sync(priceChart));
+
+new ResizeObserver(() => {
+  priceChart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
+  oscChart.applyOptions({ width: oscEl.clientWidth, height: oscEl.clientHeight || 150 });
+}).observe(document.getElementById('panes'));
+
+// Overlay/oscillator series are keyed by "spec/line" and reused across loads.
+const extras = new Map();
+function extraSeries(key, chart, factory) {
+  let s = extras.get(key);
+  if (!s) { s = { chart, series: factory() }; extras.set(key, s); }
+  return s.series;
+}
+function dropUnusedExtras(live) {
+  for (const [key, { chart, series }] of extras) {
+    if (!live.has(key)) { chart.removeSeries(series); extras.delete(key); }
   }
-})();
+}
 
-function shiftDate(id, delta) {
+// ── Toolbar ───────────────────────────────────────────────────────────────────
+
+const TIMEFRAMES = [['min1', '1m'], ['min5', '5m'], ['daily', '1D'], ['weekly', '1W']];
+let timeframe = 'min1';
+
+for (const [key, label] of TIMEFRAMES) {
+  const b = document.createElement('button');
+  b.className = 'tf ghost' + (key === timeframe ? ' on' : '');
+  b.textContent = label;
+  b.dataset.tf = key;
+  b.onclick = () => {
+    timeframe = key;
+    document.querySelectorAll('.tf').forEach(x => x.classList.toggle('on', x.dataset.tf === key));
+    load();
+  };
+  document.getElementById('tfs').appendChild(b);
+}
+
+function shiftMonth(id, delta) {
   const el = document.getElementById(id);
   const d = new Date((el.value || '2021-01-01') + 'T00:00:00');
   d.setDate(1);
   d.setMonth(d.getMonth() + delta);
   el.value = d.toISOString().slice(0, 10);
-  pendingKey = null;  // date changed, allow reload
+  load();
 }
 
-// ── Charts ──
-const LC = LightweightCharts;
-const chartOpts = {
-  layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
-  grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
-  crosshair: { mode: LC.CrosshairMode.Normal },
-  timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#30363d' },
-  rightPriceScale: { borderColor: '#30363d' },
-};
-const mainEl  = document.getElementById('main-chart');
-const oscEl   = document.getElementById('osc-chart');
-const mainChart = LC.createChart(mainEl, { ...chartOpts, width: mainEl.clientWidth, height: mainEl.clientHeight });
-const oscChart  = LC.createChart(oscEl,  { ...chartOpts, width: oscEl.clientWidth,  height: 140 });
-
-// Sync time scales
-mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {
-  if (range) oscChart.timeScale().setVisibleRange(range);
-});
-
-new ResizeObserver(() => {
-  mainChart.applyOptions({ width: mainEl.clientWidth, height: mainEl.clientHeight });
-}).observe(mainEl);
-new ResizeObserver(() => {
-  oscChart.applyOptions({ width: oscEl.clientWidth });
-}).observe(oscEl);
-
-// ── Series state ──
-let regSeries    = null;
-let extSeries    = null;
-let regVolSeries = null;
-let extVolSeries = null;
-const overlaySeries = {};
-const oscSeries     = {};
-
-function clearSeriesAndInit() {
-  for (const s of Object.values(overlaySeries)) mainChart.removeSeries(s);
-  Object.keys(overlaySeries).forEach(k => delete overlaySeries[k]);
-  for (const s of Object.values(oscSeries)) oscChart.removeSeries(s);
-  Object.keys(oscSeries).forEach(k => delete oscSeries[k]);
-
-  if (regSeries)    mainChart.removeSeries(regSeries);
-  if (extSeries)    mainChart.removeSeries(extSeries);
-  if (regVolSeries) mainChart.removeSeries(regVolSeries);
-  if (extVolSeries) mainChart.removeSeries(extVolSeries);
-
-  regVolSeries = mainChart.addHistogramSeries({
-    color: '#264c35', priceFormat: { type: 'volume' },
-    priceScaleId: 'vol', scaleMargins: { top: 0.85, bottom: 0 },
-  });
-  extVolSeries = mainChart.addHistogramSeries({
-    color: '#1e2c3a', priceFormat: { type: 'volume' },
-    priceScaleId: 'vol', scaleMargins: { top: 0.85, bottom: 0 },
-  });
-  regSeries = mainChart.addCandlestickSeries({
-    upColor: '#3fb950', downColor: '#f85149',
-    borderUpColor: '#3fb950', borderDownColor: '#f85149',
-    wickUpColor: '#3fb950', wickDownColor: '#f85149',
-    priceScaleId: 'right', scaleMargins: { top: 0, bottom: 0.15 },
-  });
-  extSeries = mainChart.addCandlestickSeries({
-    upColor: '#2a3d2a', downColor: '#3d1f1f',
-    borderUpColor: '#2a3d2a', borderDownColor: '#3d1f1f',
-    wickUpColor: '#3d3d3d', wickDownColor: '#3d3d3d',
-    priceScaleId: 'right', scaleMargins: { top: 0, bottom: 0.15 },
-  });
+for (const id of ['symbol', 'start', 'end']) {
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
 }
 
-// ── Bar and indicator accumulation ──
-let allRegBars = [];
-let allExtBars = [];
-let indAccum   = {};
-let rafPending = false;
+const setStatus = msg => { document.getElementById('status').textContent = msg; };
 
-function scheduleChartUpdate() {
-  if (rafPending) return;
-  rafPending = true;
-  requestAnimationFrame(() => {
-    rafPending = false;
-    applyBarsToChart();
-  });
-}
-
-function applyBarsToChart() {
-  regSeries.setData(allRegBars);
-  extSeries.setData(allExtBars);
-  regVolSeries.setData(allRegBars.map(b => ({
-    time: b.time, value: b.volume,
-    color: b.close >= b.open ? '#264c35' : '#3d2020',
-  })));
-  extVolSeries.setData(allExtBars.map(b => ({
-    time: b.time, value: b.volume, color: '#1e2c3a',
-  })));
-}
-
-function applyIndicatorsFromAccum() {
-  for (const ind of indicators) {
-    const spec = indSpec(ind);
-    const type = ind.type;
-
-    if (type === 'ema' || type === 'sma') {
-      const pts = indAccum[type];
-      if (!pts || pts.length === 0) continue;
-      if (!overlaySeries[spec]) {
-        overlaySeries[spec] = mainChart.addLineSeries({
-          color: type === 'ema' ? '#f0a500' : '#5d87cc',
-          lineWidth: 1, priceScaleId: 'right',
-        });
-      }
-      overlaySeries[spec].setData(pts);
-
-    } else if (type === 'bbands') {
-      for (const [key, color] of [['upper','#c678dd'],['middle','#e5c07b'],['lower','#c678dd']]) {
-        const pts = indAccum[key];
-        if (!pts || pts.length === 0) continue;
-        const k = spec + '_' + key;
-        if (!overlaySeries[k]) {
-          overlaySeries[k] = mainChart.addLineSeries({ color, lineWidth: 1, priceScaleId: 'right' });
-        }
-        overlaySeries[k].setData(pts);
-      }
-
-    } else if (type === 'rsi') {
-      const pts = indAccum['rsi'];
-      if (!pts || pts.length === 0) continue;
-      if (!oscSeries[spec]) {
-        oscSeries[spec] = oscChart.addLineSeries({ color: '#61afef', lineWidth: 1 });
-      }
-      oscSeries[spec].setData(pts);
-      oscEl.style.display = 'block';
-      oscChart.applyOptions({ width: oscEl.clientWidth, height: 140 });
-
-    } else if (type === 'macd') {
-      const macdPts = indAccum['macd'];
-      const sigPts  = indAccum['signal'];
-      const histPts = indAccum['histogram'];
-      if (!macdPts || macdPts.length === 0) continue;
-      if (!oscSeries[spec + '_macd']) {
-        oscSeries[spec + '_macd']   = oscChart.addLineSeries({ color: '#61afef', lineWidth: 1 });
-        oscSeries[spec + '_signal'] = oscChart.addLineSeries({ color: '#e06c75', lineWidth: 1 });
-        oscSeries[spec + '_hist']   = oscChart.addHistogramSeries({ color: '#264c35' });
-      }
-      oscSeries[spec + '_macd'].setData(macdPts);
-      if (sigPts)  oscSeries[spec + '_signal'].setData(sigPts);
-      if (histPts) oscSeries[spec + '_hist'].setData(
-        histPts.map(p => ({ ...p, color: p.value >= 0 ? '#264c35' : '#3d2020' }))
-      );
-      oscEl.style.display = 'block';
-      oscChart.applyOptions({ width: oscEl.clientWidth, height: 140 });
-    }
-  }
-}
-
-// ── Request lifecycle ──
-let activeSrc  = null;
-let pendingKey = null;
-
-function buildQueryKey() {
-  const symbol = document.getElementById('symbol').value.trim().toUpperCase();
-  const start  = document.getElementById('start').value;
-  const end    = document.getElementById('end').value;
-  const inds   = indicators.map(indSpec).join(',');
-  return `${symbol}|${currentTf}|${start}|${end}|${inds}`;
-}
-
-function setStatus(msg) { document.getElementById('status').textContent = msg; }
-function setSB(msg)     { document.getElementById('statusbar').textContent = msg; }
-
-function cancel() {
-  if (activeSrc) { activeSrc.close(); activeSrc = null; }
-  pendingKey = null;
-  document.getElementById('load-btn').disabled = false;
-  document.getElementById('cancel-btn').style.display = 'none';
-  setStatus('Cancelled');
-  setSB('Cancelled');
-}
-
-function load() {
-  const key = buildQueryKey();
-
-  // Dedup: same request already in-flight → do nothing
-  if (activeSrc !== null && key === pendingKey) return;
-
-  // Supersede any previous in-flight request
-  if (activeSrc !== null) { activeSrc.close(); activeSrc = null; }
-  pendingKey = key;
-
-  const symbol = document.getElementById('symbol').value.trim().toUpperCase();
-  const start  = document.getElementById('start').value;
-  const end    = document.getElementById('end').value;
-  if (!symbol) { setStatus('Enter a symbol'); return; }
-
-  // Reset
-  allRegBars = []; allExtBars = [];
-  indAccum   = {};
-  oscEl.style.display = 'none';
-  clearSeriesAndInit();
-
-  const q = new URLSearchParams({ symbol, start, end, timeframe: currentTf });
-  for (const ind of indicators) q.append('ind', indSpec(ind));
-
-  document.getElementById('load-btn').disabled = true;
-  document.getElementById('cancel-btn').style.display = '';
-  const isAggregated = currentTf !== 'minute';
-  setStatus(isAggregated ? 'Aggregating… (this takes ~1min on large datasets)' : 'Sent!');
-  setSB('Connecting…');
-
-  const src = new EventSource('/api/stream/bars?' + q.toString());
-  activeSrc = src;
-
-  src.addEventListener('bars', e => {
-    if (activeSrc !== src) return;
-    const payload = JSON.parse(e.data);
-    const batch = payload.bars || [];
-
-    for (const b of batch) {
-      (b.is_extended ? allExtBars : allRegBars).push(b);
-    }
-    for (const [key, pts] of Object.entries(payload)) {
-      if (key === 'bars' || !Array.isArray(pts)) continue;
-      if (!indAccum[key]) indAccum[key] = [];
-      for (const p of pts) indAccum[key].push(p);
-    }
-
-    const n = allRegBars.length + allExtBars.length;
-    setStatus('Loading… ' + n.toLocaleString() + ' bars');
-    setSB('Streaming — ' + n.toLocaleString() + ' bars received');
-    scheduleChartUpdate();
-  });
-
-  src.addEventListener('done', () => {
-    if (activeSrc !== src) return;
-    src.close(); activeSrc = null;
-
-    applyBarsToChart();
-    mainChart.timeScale().fitContent();
-    applyIndicatorsFromAccum();
-
-    const total = allRegBars.length + allExtBars.length;
-    const msg = total === 0 ? 'No data for this range'
-                             : 'Done — ' + total.toLocaleString() + ' bars';
-    setStatus(msg); setSB(msg);
-    document.getElementById('load-btn').disabled = false;
-    document.getElementById('cancel-btn').style.display = 'none';
-    // Keep pendingKey set so the same params don't re-fire until something changes
-  });
-
-  src.addEventListener('error', e => {
-    if (activeSrc !== src) return;
-    let msg = 'Server error';
-    try { const d = JSON.parse(e.data); msg = d.message || msg; } catch (_) {}
-    setStatus('Error: ' + msg);
-    setSB('Error: ' + msg);
-    src.close(); activeSrc = null; pendingKey = null;
-    document.getElementById('load-btn').disabled = false;
-    document.getElementById('cancel-btn').style.display = 'none';
-  });
-
-  src.onerror = () => {
-    if (activeSrc !== src) return;
-    src.close(); activeSrc = null; pendingKey = null;
-    setStatus('Connection lost');
-    document.getElementById('load-btn').disabled = false;
-    document.getElementById('cancel-btn').style.display = 'none';
-  };
-}
-
-// Enter key in inputs triggers load
-['symbol','start','end'].forEach(id => {
-  document.getElementById(id).addEventListener('keydown', e => {
-    if (e.key === 'Enter') load();
-  });
-});
-
-// Symbol input clears pendingKey when value changes
-document.getElementById('symbol').addEventListener('input', () => { pendingKey = null; });
-document.getElementById('start').addEventListener('change', () => { pendingKey = null; });
-document.getElementById('end').addEventListener('change',   () => { pendingKey = null; });
-
-// ── Multi-indicator chip UI ──
-let indicators = [];
-let nextIndId  = 0;
+// ── Indicator chips ───────────────────────────────────────────────────────────
 
 const IND_PARAMS = {
-  ema:    [{ name: 'period', label: 'Period', def: 20, step: 1 }],
-  sma:    [{ name: 'period', label: 'Period', def: 20, step: 1 }],
-  rsi:    [{ name: 'period', label: 'Period', def: 14, step: 1 }],
-  macd:   [
-    { name: 'fast',   label: 'Fast',   def: 12, step: 1 },
-    { name: 'slow',   label: 'Slow',   def: 26, step: 1 },
-    { name: 'signal', label: 'Sig',    def:  9, step: 1 },
-  ],
-  bbands: [
-    { name: 'period', label: 'Period', def: 20,  step: 1   },
-    { name: 'mult',   label: 'σ', def: 2.0, step: 0.1 },
-  ],
+  ema:    [['period', 'Period', 20]],
+  sma:    [['period', 'Period', 20]],
+  rsi:    [['period', 'Period', 14]],
+  macd:   [['fast', 'Fast', 12], ['slow', 'Slow', 26], ['signal', 'Sig', 9]],
+  bbands: [['period', 'Period', 20], ['mult', 'σ', 2]],
 };
+// line name → which pane it belongs to, and how strongly it is tinted. The hue comes
+// from the chip's slot in PALETTE, so `ema:20` and `ema:50` never share a colour.
+const LINES = {
+  ema:       { pane: 'price', alpha: 1 },
+  sma:       { pane: 'price', alpha: 1 },
+  middle:    { pane: 'price', alpha: 1 },
+  upper:     { pane: 'price', alpha: 0.55 },
+  lower:     { pane: 'price', alpha: 0.55 },
+  rsi:       { pane: 'osc', alpha: 1 },
+  macd:      { pane: 'osc', alpha: 1 },
+  signal:    { pane: 'osc', alpha: 0.6 },
+  histogram: { pane: 'osc', alpha: 0.35, histogram: true },
+};
+const PALETTE = ['#f0a500', '#61afef', '#c678dd', '#98c379', '#e06c75', '#56b6c2'];
 
-function indSpec(ind) {
-  const ps = IND_PARAMS[ind.type] || [];
-  const vals = ps.map(p => ind[p.name] !== undefined ? ind[p.name] : p.def);
-  return [ind.type, ...vals].join(':');
+function tint(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${alpha})`;
+}
+
+let chips = [];
+
+const specOf = chip => [chip.type, ...IND_PARAMS[chip.type].map(([name]) => chip[name])].join(':');
+
+function addChip() {
+  chips.push({ type: 'ema', period: 20 });
+  renderChips();
+  load();
 }
 
 function renderChips() {
-  const row = document.getElementById('indicators-row');
-  [...row.querySelectorAll('.ind-chip')].forEach(c => c.remove());
+  const row = document.getElementById('indicators');
+  row.querySelectorAll('.chip').forEach(c => c.remove());
 
-  for (const ind of indicators) {
-    const chip = document.createElement('div');
-    chip.className = 'ind-chip';
+  for (const chip of chips) {
+    const el = document.createElement('div');
+    el.className = 'chip';
 
-    const sel = document.createElement('select');
+    const type = document.createElement('select');
     for (const t of Object.keys(IND_PARAMS)) {
-      const o = document.createElement('option');
-      o.value = t;
-      o.textContent = t.toUpperCase();
-      if (t === ind.type) o.selected = true;
-      sel.appendChild(o);
+      type.add(new Option(t.toUpperCase(), t, false, t === chip.type));
     }
-    sel.onchange = () => {
-      ind.type = sel.value;
-      for (const p of (IND_PARAMS[ind.type] || [])) ind[p.name] = p.def;
-      pendingKey = null;
+    type.onchange = () => {
+      chip.type = type.value;
+      for (const [name, , def] of IND_PARAMS[chip.type]) chip[name] = def;
       renderChips();
+      load();
     };
-    chip.appendChild(sel);
+    el.appendChild(type);
 
-    for (const p of (IND_PARAMS[ind.type] || [])) {
-      const lbl = document.createElement('span');
-      lbl.textContent = p.label + ':';
-      lbl.style.color = '#6e7681';
-      chip.appendChild(lbl);
+    for (const [name, label, def] of IND_PARAMS[chip.type]) {
+      if (chip[name] === undefined) chip[name] = def;
+      const lbl = document.createElement('label');
+      lbl.textContent = label;
+      el.appendChild(lbl);
 
-      const inp = document.createElement('input');
-      inp.type = 'number';
-      inp.value = ind[p.name] !== undefined ? ind[p.name] : p.def;
-      inp.min = 1; inp.step = p.step;
-      inp.onchange = () => {
-        ind[p.name] = parseFloat(inp.value) || p.def;
-        pendingKey = null;
-      };
-      chip.appendChild(inp);
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = 1;
+      input.step = name === 'mult' ? 0.1 : 1;
+      input.value = chip[name];
+      input.onchange = () => { chip[name] = parseFloat(input.value) || def; load(); };
+      el.appendChild(input);
     }
 
     const rm = document.createElement('button');
     rm.className = 'rm';
     rm.textContent = '×';
-    rm.onclick = () => {
-      indicators = indicators.filter(i => i.id !== ind.id);
-      pendingKey = null;
-      renderChips();
-    };
-    chip.appendChild(rm);
-    row.appendChild(chip);
+    rm.onclick = () => { chips = chips.filter(c => c !== chip); renderChips(); load(); };
+    el.appendChild(rm);
+
+    row.appendChild(el);
   }
 }
 
-function addIndicator() {
-  indicators.push({ id: nextIndId++, type: 'ema', period: 20 });
-  pendingKey = null;
-  renderChips();
+// ── Load ──────────────────────────────────────────────────────────────────────
+
+let inFlight = null;
+
+async function load() {
+  const symbol = document.getElementById('symbol').value.trim().toUpperCase();
+  if (!symbol) { setStatus('Enter a symbol'); return; }
+
+  // A newer request supersedes the older one; no request bookkeeping beyond this.
+  if (inFlight) inFlight.abort();
+  const ctl = new AbortController();
+  inFlight = ctl;
+
+  const q = new URLSearchParams({
+    symbol,
+    tf: timeframe,
+    start: document.getElementById('start').value,
+    end: document.getElementById('end').value,
+  });
+  const specs = chips.map(specOf);
+  if (specs.length) q.set('ind', specs.join(','));
+
+  document.getElementById('load').disabled = true;
+  setStatus('Loading…');
+
+  let payload;
+  try {
+    const res = await fetch('/api/bars?' + q, { signal: ctl.signal });
+    payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || res.statusText);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    setStatus('Error: ' + e.message);
+    document.getElementById('load').disabled = false;
+    return;
+  }
+  if (inFlight !== ctl) return;
+  inFlight = null;
+  document.getElementById('load').disabled = false;
+
+  draw(payload);
+}
+
+function draw({ bars, indicators }) {
+  // One pass per series, one setData each — the whole point of dropping streaming.
+  candles.setData(bars.map(b => b.is_extended ? {
+    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+    color: b.close >= b.open ? EXT_UP : EXT_DOWN,
+    borderColor: b.close >= b.open ? EXT_UP : EXT_DOWN,
+    wickColor: EXT_WICK,
+  } : {
+    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+  }));
+
+  volume.setData(bars.map(b => ({
+    time: b.time,
+    value: b.volume,
+    color: b.is_extended ? VOL_EXT : (b.close >= b.open ? VOL_UP : VOL_DOWN),
+  })));
+
+  const live = new Set();
+  let needsOsc = false;
+
+  const order = chips.map(specOf);
+
+  for (const [spec, lines] of Object.entries(indicators)) {
+    const hue = PALETTE[Math.max(order.indexOf(spec), 0) % PALETTE.length];
+    for (const [name, values] of Object.entries(lines)) {
+      const style = LINES[name];
+      if (!style) continue;
+      const color = tint(hue, style.alpha);
+      const key = spec + '/' + name;
+      live.add(key);
+      if (style.pane === 'osc') needsOsc = true;
+
+      const chart = style.pane === 'osc' ? oscChart : priceChart;
+      const series = extraSeries(key, chart, () =>
+        style.histogram
+          ? chart.addHistogramSeries({ color, priceLineVisible: false })
+          : chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }));
+      series.applyOptions({ color });
+      series.setData(values.map((value, i) => ({ time: bars[i].time, value })));
+    }
+  }
+  dropUnusedExtras(live);
+
+  oscVisible = false;   // keep the panes unlinked until both hold the same bars
+  oscEl.style.display = needsOsc ? 'block' : 'none';
+  oscChart.applyOptions({ width: oscEl.clientWidth, height: oscEl.clientHeight || 150 });
+
+  priceChart.timeScale().fitContent();
+  if (needsOsc) {
+    oscChart.timeScale().fitContent();
+    oscVisible = true;
+  }
+  setStatus(bars.length ? bars.length.toLocaleString() + ' bars' : 'No data for this range');
 }
 
 renderChips();
+load();
 </script>
 </body>
 </html>
