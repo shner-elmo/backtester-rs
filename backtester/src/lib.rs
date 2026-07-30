@@ -5,6 +5,15 @@
 //! (symbols, dates, cash), trade in `on_data`, and hand it to [`run`] or
 //! [`run_backtest`]. See `examples/ema_cross.rs` for a complete strategy.
 //!
+//! # Symbols
+//!
+//! Instruments are identified by [`Symbol`] — a `Copy` integer handle
+//! returned by [`Context::add_equity`]. Ticker strings are converted exactly
+//! twice: there, and again when results are written out. Everything in
+//! between (slices, orders, positions, history, corporate actions) is keyed
+//! by the handle, so streaming a bar costs no allocation and no string
+//! hashing. See [`symbol`] for the details.
+//!
 //! # Execution models
 //!
 //! Fill friction and buying power are pluggable, and all three follow the
@@ -32,6 +41,7 @@ pub mod margin;
 pub mod slice;
 pub mod slippage;
 pub mod stats;
+pub mod symbol;
 #[cfg(test)]
 mod test_util;
 
@@ -45,3 +55,4 @@ pub use margin::{MarginContext, MarginModel, MaxLeverage, NoMargin};
 pub use slice::Slice;
 pub use slippage::{FillContext, FixedSlippage, NoSlippage, PercentSlippage, SlippageModel};
 pub use stats::{BacktestStats, EquityPoint, Trade};
+pub use symbol::{Symbol, SymbolMap, SymbolTable, SymbolVec};

@@ -34,7 +34,7 @@ use arrow::{
 use backtester::{
     data::{iter_bars, load_ticker_map, sorted_parquet_files},
     indicators::{Ema, Next},
-    run_backtest, Algorithm, Context, Slice,
+    run_backtest, Algorithm, Context, Slice, Symbol,
 };
 use chrono::{Datelike, Months, NaiveDate, TimeZone, Utc};
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
@@ -227,24 +227,24 @@ fn generate_dataset() -> (TempDir, u64) {
 /// EMA-cross over the traded symbol(s): exercises indicator updates and the
 /// order path without dominating the run with strategy work.
 struct EmaCross {
-    legs: Vec<(String, Ema, Ema)>,
+    tickers: Vec<String>,
+    /// One leg per subscribed symbol, keyed by the handle `add_equity`
+    /// returned in `initialize`.
+    legs: Vec<(Symbol, Ema, Ema)>,
 }
 
 impl EmaCross {
     fn new(symbols: &[String]) -> Self {
-        let legs = symbols
-            .iter()
-            .map(|s| (s.clone(), Ema::new(10).unwrap(), Ema::new(30).unwrap()))
-            .collect();
-        Self { legs }
+        Self { tickers: symbols.to_vec(), legs: Vec::new() }
     }
 }
 
 impl Algorithm for EmaCross {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
-        for (s, _, _) in &self.legs {
-            ctx.add_equity(s);
+        for ticker in std::mem::take(&mut self.tickers) {
+            let symbol = ctx.add_equity(&ticker);
+            self.legs.push((symbol, Ema::new(10).unwrap(), Ema::new(30).unwrap()));
         }
     }
 
@@ -254,9 +254,9 @@ impl Algorithm for EmaCross {
             let f = fast.next(bar.close);
             let s = slow.next(bar.close);
             if f > s {
-                ctx.set_holdings(symbol, 0.2);
+                ctx.set_holdings(*symbol, 0.2);
             } else {
-                ctx.liquidate(symbol);
+                ctx.liquidate(*symbol);
             }
         }
     }

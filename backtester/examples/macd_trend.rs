@@ -6,11 +6,11 @@
 
 use backtester::{
     indicators::{Macd, Next},
-    run, Algorithm, Context, Slice,
+    run, Algorithm, Context, Slice, Symbol,
 };
 
 struct MacdTrend {
-    symbol: String,
+    symbol: Option<Symbol>,
     macd: Macd,
     slow: usize,
     bars_seen: usize,
@@ -21,11 +21,12 @@ impl Algorithm for MacdTrend {
         ctx.set_start_date(2023, 1, 1);
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
-        ctx.add_equity(&self.symbol.clone());
+        self.symbol = Some(ctx.add_equity("AAPL"));
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        let Some(bar) = data.bars.get(&self.symbol) else { return };
+        let Some(symbol) = self.symbol else { return };
+        let Some(bar) = data.bars.get(&symbol) else { return };
         let macd = self.macd.next(bar.close);
 
         // Give the slow EMA a full period to converge before trading.
@@ -35,9 +36,9 @@ impl Algorithm for MacdTrend {
         }
 
         if macd.histogram > 0.0 {
-            ctx.set_holdings(&self.symbol.clone(), 1.0); // MACD above signal — trend up
+            ctx.set_holdings(symbol, 1.0); // MACD above signal — trend up
         } else {
-            ctx.liquidate(&self.symbol.clone()); // crossed below — exit
+            ctx.liquidate(symbol); // crossed below — exit
         }
     }
 }
@@ -48,7 +49,7 @@ fn main() {
 
     let (fast, slow, signal) = (12, 26, 9);
     let algo = MacdTrend {
-        symbol: "AAPL".to_string(),
+        symbol: None,
         macd: Macd::new(fast, slow, signal).unwrap(),
         slow,
         bars_seen: 0,

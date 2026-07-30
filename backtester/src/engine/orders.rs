@@ -11,6 +11,7 @@ use crate::{
     margin::MarginContext,
     slice::Slice,
     slippage::FillContext,
+    symbol::Symbol,
     EPSILON,
 };
 
@@ -47,7 +48,7 @@ impl Engine {
             return 0.0;
         }
         if self.ctx.max_volume_participation > 0.0 {
-            *self.participation_used.entry(order.symbol.clone()).or_insert(0.0) += qty.abs();
+            *self.participation_used.entry(order.symbol).or_insert(0.0) += qty.abs();
         }
 
         // Actual execution price after the user's slippage model. Sizing
@@ -55,7 +56,7 @@ impl Engine {
         // affects the fill — except that a limit order never fills through
         // its limit.
         let fill_ctx =
-            FillContext { symbol: &order.symbol, quantity: qty, price: exec_price, bar: fill_bar };
+            FillContext { symbol: order.symbol, quantity: qty, price: exec_price, bar: fill_bar };
         let fill_price = self.ctx.slippage.fill_price(&fill_ctx);
         let fill_price = match limit_bound {
             Some(bound) if qty > 0.0 => fill_price.min(bound),
@@ -68,15 +69,15 @@ impl Engine {
             eprintln!(
                 "[fill] {} {} {:+.2} @ {:.4}, commission {:.2}",
                 tick_time.to_rfc3339(),
-                order.symbol,
+                self.ctx.symbols.name(order.symbol),
                 qty,
                 fill_price,
                 commission
             );
         }
 
-        self.record_fill(&order.symbol, qty, fill_price, commission, current_qty, tick_time);
-        self.ctx.portfolio.apply_fill(&order.symbol, qty, fill_price);
+        self.record_fill(order.symbol, qty, fill_price, commission, current_qty, tick_time);
+        self.ctx.portfolio.apply_fill(order.symbol, qty, fill_price);
         self.ctx.portfolio.cash -= commission;
         qty
     }
@@ -134,11 +135,11 @@ impl Engine {
                 .filter(|p| p.symbol != order.symbol)
                 .map(|p| {
                     p.quantity.abs()
-                        * self.last_known_prices.get(&p.symbol).copied().unwrap_or(p.avg_price)
+                        * self.last_known_prices.copied(p.symbol).unwrap_or(p.avg_price)
                 })
                 .sum();
             let allowed = self.ctx.margin.allowed_quantity(&MarginContext {
-                symbol: &order.symbol,
+                symbol: order.symbol,
                 quantity: qty,
                 price: exec_price,
                 current_qty,
@@ -159,7 +160,7 @@ impl Engine {
     /// `Trade` when the position returns to flat.
     fn record_fill(
         &mut self,
-        symbol: &str,
+        symbol: Symbol,
         qty: f64,
         fill_price: f64,
         commission: f64,
@@ -167,7 +168,7 @@ impl Engine {
         tick_time: DateTime<Utc>,
     ) {
         let avg_price =
-            self.ctx.portfolio.positions.get(symbol).map(|p| p.avg_price).unwrap_or(0.0);
+            self.ctx.portfolio.positions.get(&symbol).map(|p| p.avg_price).unwrap_or(0.0);
         let new_qty = current_qty + qty;
 
         if current_qty == 0.0 {
@@ -176,12 +177,12 @@ impl Engine {
             lt.entry_qty = qty.abs();
             lt.entry_value = qty.abs() * fill_price;
             lt.realized_pnl = -commission;
-            self.lifetimes.insert(symbol.to_string(), lt);
+            self.lifetimes.insert(symbol, lt);
         } else if qty * current_qty > 0.0 {
             // Added in the same direction: grow the open lifetime.
             let lt = self
                 .lifetimes
-                .entry(symbol.to_string())
+                .entry(symbol)
                 .or_insert_with(|| OpenLifetime::new(tick_time, current_qty.signum()));
             lt.entry_qty += qty.abs();
             lt.entry_value += qty.abs() * fill_price;
@@ -193,7 +194,7 @@ impl Engine {
             let realized = (fill_price - avg_price) * closed_now * current_qty.signum();
             let lt = self
                 .lifetimes
-                .entry(symbol.to_string())
+                .entry(symbol)
                 .or_insert_with(|| OpenLifetime::new(tick_time, current_qty.signum()));
             lt.closed_qty += closed_now;
             lt.close_value += closed_now * fill_price;
@@ -207,7 +208,7 @@ impl Engine {
                     let mut fresh = OpenLifetime::new(tick_time, new_qty.signum());
                     fresh.entry_qty = new_qty.abs();
                     fresh.entry_value = new_qty.abs() * fill_price;
-                    self.lifetimes.insert(symbol.to_string(), fresh);
+                    self.lifetimes.insert(symbol, fresh);
                 }
             }
         }
@@ -218,7 +219,7 @@ impl Engine {
     /// strategy sees the current bar — sizing marks the portfolio at the
     /// prior closes the order was decided on, no look-ahead into the bar
     /// being filled.
-    pub(super) fn fill_deferred(&mut self, bars: &[(String, Bar)], tick_time: DateTime<Utc>) {
+    pub(super) fn fill_deferred(&mut self, bars: &[(Symbol, Bar)], tick_time: DateTime<Utc>) {
         if self.deferred.is_empty() {
             return;
         }
@@ -233,7 +234,7 @@ impl Engine {
     /// Resting limit/stop orders: fill (possibly partially) any whose trigger
     /// this bar's range trades through; keep the remainder resting. Decided
     /// on prior bars, so filling here is not look-ahead.
-    pub(super) fn fill_resting(&mut self, bars: &[(String, Bar)], tick_time: DateTime<Utc>) {
+    pub(super) fn fill_resting(&mut self, bars: &[(Symbol, Bar)], tick_time: DateTime<Utc>) {
         if self.resting_book.is_empty() {
             return;
         }
@@ -243,7 +244,7 @@ impl Engine {
             for mut ro in orders {
                 match resting_fill_price(&ro.kind, ro.qty, bar) {
                     Some(price) => {
-                        let mkt = Order { symbol: symbol.clone(), kind: OrderKind::Market(ro.qty) };
+                        let mkt = Order { symbol: *symbol, kind: OrderKind::Market(ro.qty) };
                         let bound = match ro.kind {
                             RestingKind::Limit(p) => Some(p),
                             RestingKind::Stop(_) => None,
@@ -258,7 +259,7 @@ impl Engine {
                 }
             }
             if !still_resting.is_empty() {
-                self.resting_book.insert(symbol.clone(), still_resting);
+                self.resting_book.insert(*symbol, still_resting);
             }
         }
     }
@@ -284,13 +285,13 @@ impl Engine {
                 // Hold each order until its symbol's next bar, where it fills
                 // at the open (see fill_deferred).
                 for order in orders {
-                    self.deferred.entry(order.symbol.clone()).or_default().push(order);
+                    self.deferred.entry(order.symbol).or_default().push(order);
                 }
             }
         }
 
         for ro in std::mem::take(&mut self.ctx.resting_orders) {
-            self.resting_book.entry(ro.symbol.clone()).or_default().push(ro);
+            self.resting_book.entry(ro.symbol).or_default().push(ro);
         }
     }
 }

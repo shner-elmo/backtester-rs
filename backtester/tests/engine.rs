@@ -23,8 +23,9 @@ impl Algorithm for RebalanceEveryBar {
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        if data.bars.contains_key("AAPL") {
-            ctx.set_holdings("AAPL", 0.9);
+        let sym = ctx.symbol("AAPL").expect("subscribed in initialize");
+        if data.bars.contains_key(&sym) {
+            ctx.set_holdings(sym, 0.9);
         }
     }
 }
@@ -41,13 +42,14 @@ impl Algorithm for OneRoundTrip {
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        if !data.bars.contains_key("AAPL") {
+        let sym = ctx.symbol("AAPL").expect("subscribed in initialize");
+        if !data.bars.contains_key(&sym) {
             return;
         }
         self.bars_seen += 1;
         match self.bars_seen {
-            1 => ctx.set_holdings("AAPL", 0.5),
-            6 => ctx.liquidate("AAPL"),
+            1 => ctx.set_holdings(sym, 0.5),
+            6 => ctx.liquidate(sym),
             _ => {}
         }
     }
@@ -141,9 +143,10 @@ fn intraday_equity_is_opt_in_and_finer_than_the_daily_curve() {
             ctx.set_track_intraday_equity(true);
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.bought && data.bars.contains_key("AAPL") {
+            let sym = ctx.symbol("AAPL").expect("subscribed in initialize");
+            if !self.bought && data.bars.contains_key(&sym) {
                 self.bought = true;
-                ctx.set_holdings("AAPL", 1.0);
+                ctx.set_holdings(sym, 1.0);
             }
         }
     }

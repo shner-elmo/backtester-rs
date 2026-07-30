@@ -6,11 +6,11 @@
 
 use backtester::{
     indicators::{BollingerBands, Next},
-    run, Algorithm, Context, Slice,
+    run, Algorithm, Context, Slice, Symbol,
 };
 
 struct BollingerReversion {
-    symbol: String,
+    symbol: Option<Symbol>,
     bands: BollingerBands,
     period: usize,
     bars_seen: usize,
@@ -21,11 +21,12 @@ impl Algorithm for BollingerReversion {
         ctx.set_start_date(2023, 1, 1);
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
-        ctx.add_equity(&self.symbol.clone());
+        self.symbol = Some(ctx.add_equity("AAPL"));
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        let Some(bar) = data.bars.get(&self.symbol) else { return };
+        let Some(symbol) = self.symbol else { return };
+        let Some(bar) = data.bars.get(&symbol) else { return };
         let bands = self.bands.next(bar.close);
 
         // Let the bands fill their lookback window before trading on them.
@@ -34,11 +35,11 @@ impl Algorithm for BollingerReversion {
             return;
         }
 
-        let invested = ctx.portfolio.get(&self.symbol).is_some();
+        let invested = ctx.portfolio.get(symbol).is_some();
         if !invested && bar.close < bands.lower {
-            ctx.set_holdings(&self.symbol.clone(), 1.0); // stretched below — buy
+            ctx.set_holdings(symbol, 1.0); // stretched below — buy
         } else if invested && bar.close > bands.average {
-            ctx.liquidate(&self.symbol.clone()); // back to the mean — take profit
+            ctx.liquidate(symbol); // back to the mean — take profit
         }
     }
 }
@@ -49,7 +50,7 @@ fn main() {
 
     let period = 20;
     let algo = BollingerReversion {
-        symbol: "AAPL".to_string(),
+        symbol: None,
         bands: BollingerBands::new(period, 2.0).unwrap(),
         period,
         bars_seen: 0,

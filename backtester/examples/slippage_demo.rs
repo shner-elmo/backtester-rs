@@ -13,11 +13,11 @@ use backtester::{
     indicators::{Ema, Next},
     run,
     slippage::{FillContext, PercentSlippage},
-    Algorithm, Context, Slice,
+    Algorithm, Context, Slice, Symbol,
 };
 
 struct EmaCross {
-    symbol: String,
+    symbol: Option<Symbol>,
     fast: Ema,
     slow: Ema,
 }
@@ -28,7 +28,7 @@ impl Algorithm for EmaCross {
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
         ctx.set_warm_up(30);
-        ctx.add_equity(&self.symbol.clone());
+        self.symbol = Some(ctx.add_equity("AAPL"));
 
         // A flat 10 bps against the aggressor:
         ctx.set_slippage(PercentSlippage::bps(10.0));
@@ -46,14 +46,15 @@ impl Algorithm for EmaCross {
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        let Some(bar) = data.bars.get(&self.symbol) else { return };
+        let Some(symbol) = self.symbol else { return };
+        let Some(bar) = data.bars.get(&symbol) else { return };
         let fast_val = self.fast.next(bar.close);
         let slow_val = self.slow.next(bar.close);
 
         if fast_val > slow_val {
-            ctx.set_holdings(&self.symbol.clone(), 1.0);
+            ctx.set_holdings(symbol, 1.0);
         } else {
-            ctx.liquidate(&self.symbol.clone());
+            ctx.liquidate(symbol);
         }
     }
 }
@@ -62,11 +63,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
 
-    let algo = EmaCross {
-        symbol: "AAPL".to_string(),
-        fast: Ema::new(10).unwrap(),
-        slow: Ema::new(30).unwrap(),
-    };
+    let algo = EmaCross { symbol: None, fast: Ema::new(10).unwrap(), slow: Ema::new(30).unwrap() };
 
     run(algo, data_path).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");

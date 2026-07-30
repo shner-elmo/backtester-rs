@@ -8,7 +8,7 @@ mod ledger;
 mod orders;
 mod run;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use run::{run_prepared, PendingActions};
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use crate::{
     context::Context,
     data::{
         load_dividends_from, load_renames_from, load_splits_from, load_ticker_map_from,
-        DIVIDENDS_FILE, RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
+        TickerResolver, DIVIDENDS_FILE, RENAMES_FILE, SPLITS_FILE, TICKER_MAP_FILE,
     },
     error::BacktestError,
     stats::{BacktestStats, EquityPoint, OpenPositionSummary, Trade},
@@ -134,45 +134,68 @@ fn resolve_data_file(
     }
 }
 
-/// Load the ticker map and queue every corporate action (splits, dividends,
-/// renames) for the subscribed symbols by date. Rename targets are subscribed
-/// up front so their bars stream from the start (the position is only
-/// transferred on the effective date); this also covers a successor that
-/// begins trading in the same month-file as the rename.
+/// Resolve the run's symbols and queue every corporate action (splits,
+/// dividends, renames) for the subscribed ones by date. Rename targets are
+/// interned and subscribed up front so their bars stream from the start (the
+/// position is only transferred on the effective date); this also covers a
+/// successor that begins trading in the same month-file as the rename.
+///
+/// This is the string boundary of a run: the metadata files are matched by
+/// ticker name here, once, and everything handed back — the queued actions
+/// and the [`TickerResolver`] the bar stream reads through — is keyed by
+/// [`Symbol`](crate::Symbol).
 fn load_pending_actions(
-    ctx: &Context,
+    ctx: &mut Context,
     data_path: &str,
-    subscribed: &mut HashSet<String>,
-) -> Result<(HashMap<u16, String>, PendingActions), BacktestError> {
+) -> Result<(TickerResolver, PendingActions), BacktestError> {
     let (ticker_map_path, _) = resolve_data_file(data_path, &ctx.ticker_map_file, TICKER_MAP_FILE);
     let ticker_map = load_ticker_map_from(&ticker_map_path)?;
+
+    // The metadata loaders filter by ticker name, so hand them the names of
+    // what is subscribed.
+    let mut names: HashSet<String> =
+        ctx.subscribed_symbols.iter().map(|&s| ctx.symbols.name(s).to_string()).collect();
 
     let mut pending = PendingActions::default();
 
     let (renames_path, renames_required) =
         resolve_data_file(data_path, &ctx.renames_file, RENAMES_FILE);
-    for (date, pairs) in load_renames_from(&renames_path, subscribed, renames_required)? {
+    for (date, pairs) in load_renames_from(&renames_path, &names, renames_required)? {
         for (old, new) in pairs {
-            subscribed.insert(new.clone());
-            pending.renames.entry(date).or_default().push((old, new));
+            let (old, new_symbol) = (ctx.symbols.intern(&old), ctx.add_equity(&new));
+            names.insert(new);
+            pending.renames.entry(date).or_default().push((old, new_symbol));
         }
     }
 
     let (splits_path, splits_required) =
         resolve_data_file(data_path, &ctx.splits_file, SPLITS_FILE);
-    for (symbol, by_date) in load_splits_from(&splits_path, subscribed, splits_required)? {
+    for (symbol, by_date) in load_splits_from(&splits_path, &names, splits_required)? {
+        let symbol = ctx.symbols.intern(&symbol);
         for (date, ratio) in by_date {
-            pending.splits.entry(date).or_default().push((symbol.clone(), ratio));
+            pending.splits.entry(date).or_default().push((symbol, ratio));
         }
     }
 
     let (dividends_path, dividends_required) =
         resolve_data_file(data_path, &ctx.dividends_file, DIVIDENDS_FILE);
-    for (symbol, by_date) in load_dividends_from(&dividends_path, subscribed, dividends_required)? {
+    for (symbol, by_date) in load_dividends_from(&dividends_path, &names, dividends_required)? {
+        let symbol = ctx.symbols.intern(&symbol);
         for (date, amount) in by_date {
-            pending.dividends.entry(date).or_default().push((symbol.clone(), amount));
+            pending.dividends.entry(date).or_default().push((symbol, amount));
         }
     }
 
-    Ok((ticker_map, pending))
+    // Ticker ids → symbols, for the subscribed symbols only: one array index
+    // per row replaces the per-bar map lookup and subscription check.
+    let mut resolver = TickerResolver::new();
+    for (ticker_id, name) in &ticker_map {
+        if let Some(symbol) = ctx.symbols.get(name) {
+            if ctx.subscribed_symbols.contains(&symbol) {
+                resolver.insert(*ticker_id, symbol);
+            }
+        }
+    }
+
+    Ok((resolver, pending))
 }

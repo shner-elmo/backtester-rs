@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    path::PathBuf,
-};
+use std::{collections::VecDeque, path::PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -14,6 +11,7 @@ use crate::{
     logging::LogConfig,
     margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
+    symbol::{Symbol, SymbolSet, SymbolTable, SymbolVec},
 };
 
 pub(crate) enum OrderKind {
@@ -37,14 +35,14 @@ pub enum FillTiming {
 }
 
 pub(crate) struct Order {
-    pub symbol: String,
+    pub symbol: Symbol,
     pub kind: OrderKind,
 }
 
 /// A resting order that fills intrabar when the price trades through its
 /// trigger, rather than at the bar close/open like a market order.
 pub(crate) struct RestingOrder {
-    pub symbol: String,
+    pub symbol: Symbol,
     /// Remaining signed quantity (shrinks as partial fills chip away at it).
     pub qty: f64,
     pub kind: RestingKind,
@@ -69,13 +67,17 @@ pub(crate) struct ScheduledTimeEntry {
 
 pub struct Context {
     pub portfolio: Portfolio,
-    pub(crate) history_store: HashMap<String, VecDeque<Bar>>,
+    /// The run's string ↔ [`Symbol`] mapping. Every ticker string entering
+    /// the engine is interned here once, in `initialize` (plus rename targets
+    /// as they take effect); nothing downstream touches text again.
+    pub(crate) symbols: SymbolTable,
+    pub(crate) history_store: SymbolVec<VecDeque<Bar>>,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
     pub(crate) warm_up_remaining: usize,
     pub(crate) start_date: Option<NaiveDate>,
     pub(crate) end_date: Option<NaiveDate>,
-    pub(crate) subscribed_symbols: HashSet<String>,
+    pub(crate) subscribed_symbols: SymbolSet,
     pub(crate) pending_orders: Vec<Order>,
     pub(crate) resting_orders: Vec<RestingOrder>,
     pub(crate) max_volume_participation: f64,
@@ -103,13 +105,14 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             portfolio: Portfolio::default(),
-            history_store: HashMap::new(),
+            symbols: SymbolTable::default(),
+            history_store: SymbolVec::new(),
             consolidators: Vec::new(),
             time_callbacks: Vec::new(),
             warm_up_remaining: 0,
             start_date: None,
             end_date: None,
-            subscribed_symbols: HashSet::new(),
+            subscribed_symbols: SymbolSet::default(),
             pending_orders: Vec::new(),
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
@@ -158,8 +161,32 @@ impl Context {
         }
     }
 
-    pub fn add_equity(&mut self, symbol: &str) {
-        self.subscribed_symbols.insert(symbol.to_string());
+    /// Subscribe a ticker's bars and return the [`Symbol`] that stands for it
+    /// everywhere else — orders, history, slices, callbacks. This is the one
+    /// place a strategy spells a ticker out; keep the returned handle.
+    ///
+    /// Subscribing the same ticker twice returns the same symbol.
+    pub fn add_equity(&mut self, symbol: &str) -> Symbol {
+        let symbol = self.symbols.intern(symbol);
+        self.subscribed_symbols.insert(symbol);
+        symbol
+    }
+
+    /// The symbol for an already-known ticker, or `None` if nothing
+    /// subscribed (or was renamed to) it. For strategies that would rather
+    /// look a ticker up than carry the handle around — a hash lookup on your
+    /// side of the API, not the engine's.
+    pub fn symbol(&self, name: &str) -> Option<Symbol> {
+        self.symbols.get(name)
+    }
+
+    /// The ticker string behind a symbol, for logging and reporting.
+    ///
+    /// # Panics
+    ///
+    /// If `symbol` came from a different backtest's `Context`.
+    pub fn symbol_name(&self, symbol: Symbol) -> &str {
+        self.symbols.name(symbol)
     }
 
     /// Set the slippage model applied to every fill (built-in, trait impl, or
@@ -310,7 +337,7 @@ impl Context {
         self.lot_size = lot;
     }
 
-    pub fn history(&self, symbol: &str, n: usize) -> Vec<Bar> {
+    pub fn history(&self, symbol: Symbol, n: usize) -> Vec<Bar> {
         self.history_store
             .get(symbol)
             .map(|deque| deque.iter().take(n).cloned().collect())
@@ -319,11 +346,11 @@ impl Context {
 
     pub fn consolidate(
         &mut self,
-        symbol: &str,
+        symbol: Symbol,
         period: ConsolidatorPeriod,
         cb: impl FnMut(&Bar) + 'static,
     ) {
-        self.consolidators.push(ConsolidatorEntry::new(symbol.to_string(), period, Box::new(cb)));
+        self.consolidators.push(ConsolidatorEntry::new(symbol, period, Box::new(cb)));
     }
 
     /// Schedule a callback to fire once per trading day when the bar stream first
@@ -366,18 +393,16 @@ impl Context {
         }
     }
 
-    pub fn market_order(&mut self, symbol: &str, qty: f64) {
-        self.pending_orders
-            .push(Order { symbol: symbol.to_string(), kind: OrderKind::Market(qty) });
+    pub fn market_order(&mut self, symbol: Symbol, qty: f64) {
+        self.pending_orders.push(Order { symbol, kind: OrderKind::Market(qty) });
     }
 
-    pub fn set_holdings(&mut self, symbol: &str, pct: f64) {
-        self.pending_orders
-            .push(Order { symbol: symbol.to_string(), kind: OrderKind::SetHoldings(pct) });
+    pub fn set_holdings(&mut self, symbol: Symbol, pct: f64) {
+        self.pending_orders.push(Order { symbol, kind: OrderKind::SetHoldings(pct) });
     }
 
-    pub fn liquidate(&mut self, symbol: &str) {
-        self.pending_orders.push(Order { symbol: symbol.to_string(), kind: OrderKind::Liquidate });
+    pub fn liquidate(&mut self, symbol: Symbol) {
+        self.pending_orders.push(Order { symbol, kind: OrderKind::Liquidate });
     }
 
     /// Place a resting **limit** order: a buy (`qty > 0`) fills only at
@@ -385,13 +410,13 @@ impl Context {
     /// It rests across bars until the price trades through the limit (or the
     /// backtest ends), filling intrabar off the bar's range — independent of
     /// `set_fill_timing`.
-    pub fn limit_order(&mut self, symbol: &str, qty: f64, limit_price: f64) {
+    pub fn limit_order(&mut self, symbol: Symbol, qty: f64, limit_price: f64) {
         // A zero-quantity order can never trigger; don't let it rest forever.
         if qty == 0.0 {
             return;
         }
         self.resting_orders.push(RestingOrder {
-            symbol: symbol.to_string(),
+            symbol,
             qty,
             kind: RestingKind::Limit(limit_price),
         });
@@ -400,16 +425,12 @@ impl Context {
     /// Place a resting **stop** order: a buy (`qty > 0`) triggers to a market
     /// fill when the price rises to `stop_price`, a sell (`qty < 0`) when it
     /// falls to it. Rests across bars until triggered (or the backtest ends).
-    pub fn stop_order(&mut self, symbol: &str, qty: f64, stop_price: f64) {
+    pub fn stop_order(&mut self, symbol: Symbol, qty: f64, stop_price: f64) {
         // A zero-quantity order can never trigger; don't let it rest forever.
         if qty == 0.0 {
             return;
         }
-        self.resting_orders.push(RestingOrder {
-            symbol: symbol.to_string(),
-            qty,
-            kind: RestingKind::Stop(stop_price),
-        });
+        self.resting_orders.push(RestingOrder { symbol, qty, kind: RestingKind::Stop(stop_price) });
     }
 
     /// Cap every fill at this fraction of the filling bar's volume, modeling

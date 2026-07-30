@@ -110,18 +110,19 @@ impl Algorithm for RestOnce {
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        if self.placed || !data.bars.contains_key("SYM") {
+        let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+        if self.placed || !data.bars.contains_key(&sym) {
             return;
         }
         self.placed = true;
         if let Some(q) = self.market_first {
-            ctx.market_order("SYM", q);
+            ctx.market_order(sym, q);
         }
         if let Some((q, p)) = self.limit {
-            ctx.limit_order("SYM", q, p);
+            ctx.limit_order(sym, q, p);
         }
         if let Some((q, p)) = self.stop {
-            ctx.stop_order("SYM", q, p);
+            ctx.stop_order(sym, q, p);
         }
     }
 }
@@ -213,9 +214,10 @@ fn limit_fill_is_never_worse_than_the_limit_even_with_slippage() {
             ctx.set_slippage(PercentSlippage::bps(10.0));
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.placed && data.bars.contains_key("SYM") {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !self.placed && data.bars.contains_key(&sym) {
                 self.placed = true;
-                ctx.limit_order("SYM", 100.0, 95.0);
+                ctx.limit_order(sym, 100.0, 95.0);
             }
         }
     }
@@ -281,11 +283,12 @@ fn volume_participation_is_shared_across_orders_on_the_same_bar() {
             ctx.set_max_volume_participation(0.1);
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.placed && data.bars.contains_key("SYM") {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !self.placed && data.bars.contains_key(&sym) {
                 self.placed = true;
-                ctx.limit_order("SYM", 100.0, 95.0);
-                ctx.limit_order("SYM", 100.0, 95.0);
-                ctx.limit_order("SYM", 100.0, 95.0);
+                ctx.limit_order(sym, 100.0, 95.0);
+                ctx.limit_order(sym, 100.0, 95.0);
+                ctx.limit_order(sym, 100.0, 95.0);
             }
         }
     }

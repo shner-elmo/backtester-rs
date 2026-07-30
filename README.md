@@ -47,9 +47,13 @@ cargo run --release --example ema_cross -- /path/to/data/output
 ## Writing a strategy (at a glance)
 
 ```rust
-use backtester::{run, Algorithm, Context, Slice};
+use backtester::{run, Algorithm, Context, Slice, Symbol};
 
-struct MyStrategy;
+struct MyStrategy {
+    // `add_equity` returns a `Symbol` — a Copy integer handle. Ticker strings
+    // are converted once, in `initialize`; the engine trades handles.
+    symbol: Option<Symbol>,
+}
 
 impl Algorithm for MyStrategy {
     fn initialize(&mut self, ctx: &mut Context) {
@@ -57,18 +61,19 @@ impl Algorithm for MyStrategy {
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
         ctx.set_warm_up(20);        // bars to skip before on_data fires
-        ctx.add_equity("AAPL");
+        self.symbol = Some(ctx.add_equity("AAPL"));
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        let Some(bar) = data.bars.get("AAPL") else { return };
+        let Some(symbol) = self.symbol else { return };
+        let Some(bar) = data.bars.get(&symbol) else { return };
         // bar.open/high/low/close/volume, bar.time, bar.session()
-        ctx.set_holdings("AAPL", 1.0);   // go 100% long
+        ctx.set_holdings(symbol, 1.0);   // go 100% long
     }
 }
 
 fn main() {
-    run(MyStrategy, "backtester/tests/fixtures");
+    run(MyStrategy { symbol: None }, "backtester/tests/fixtures");
 }
 ```
 

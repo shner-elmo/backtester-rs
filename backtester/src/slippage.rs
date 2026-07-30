@@ -23,12 +23,14 @@
 //! });
 //! ```
 
-use crate::bar::Bar;
+use crate::{bar::Bar, symbol::Symbol};
 
 /// Everything a slippage model needs to price a single fill.
 pub struct FillContext<'a> {
-    /// Symbol being traded.
-    pub symbol: &'a str,
+    /// Symbol being traded — compare it against the handles
+    /// `Context::add_equity` returned, or resolve it for logging with
+    /// `Context::symbol_name`.
+    pub symbol: Symbol,
     /// Signed order quantity: positive = buy, negative = sell.
     pub quantity: f64,
     /// Reference price before slippage (the bar close).

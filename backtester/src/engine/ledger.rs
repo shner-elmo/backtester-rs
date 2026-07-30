@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 
 use super::run::Engine;
-use crate::{logging::LogConfig, stats::Trade};
+use crate::{logging::LogConfig, stats::Trade, symbol::Symbol};
 
 /// The full lifetime of one position, from flat to flat. Rebalance fills that
 /// grow or trim the position accumulate here instead of each emitting a
@@ -60,12 +60,15 @@ impl Engine {
     /// record it. No-op if no lifetime is open.
     pub(super) fn close_lifetime(
         &mut self,
-        symbol: &str,
+        symbol: Symbol,
         exit_time: DateTime<Utc>,
         exit_reason: &str,
     ) {
-        if let Some(lt) = self.lifetimes.remove(symbol) {
-            let trade = lt.into_trade(symbol, exit_time, exit_reason);
+        if let Some(lt) = self.lifetimes.remove(&symbol) {
+            // A completed trade is reported, so this is where the symbol
+            // becomes a ticker string again — once per round trip, not once
+            // per bar.
+            let trade = lt.into_trade(self.ctx.symbols.name(symbol), exit_time, exit_reason);
             log_trade(&self.ctx.log_config, &trade);
             self.trades.push(trade);
         }
