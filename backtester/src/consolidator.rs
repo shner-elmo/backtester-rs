@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::US::Eastern;
 
-use crate::bar::Bar;
+use crate::{bar::Bar, symbol::Symbol};
 
 pub enum ConsolidatorPeriod {
     Minutes(u32),
@@ -10,7 +10,7 @@ pub enum ConsolidatorPeriod {
 }
 
 pub(crate) struct ConsolidatorEntry {
-    pub symbol: String,
+    pub symbol: Symbol,
     period: ConsolidatorPeriod,
     period_start: Option<DateTime<Utc>>,
     current_bar: Option<Bar>,
@@ -18,7 +18,7 @@ pub(crate) struct ConsolidatorEntry {
 }
 
 impl ConsolidatorEntry {
-    pub fn new(symbol: String, period: ConsolidatorPeriod, callback: Box<dyn FnMut(&Bar)>) -> Self {
+    pub fn new(symbol: Symbol, period: ConsolidatorPeriod, callback: Box<dyn FnMut(&Bar)>) -> Self {
         Self { symbol, period, period_start: None, current_bar: None, callback }
     }
 
@@ -111,8 +111,9 @@ mod tests {
         // which fires when the first Jan 4 (ET) bar arrives.
         let fired: Arc<Mutex<Vec<Bar>>> = Arc::new(Mutex::new(Vec::new()));
         let f = fired.clone();
+        let mut table = crate::symbol::SymbolTable::default();
         let mut c = ConsolidatorEntry::new(
-            "SYM".into(),
+            table.intern("SYM"),
             ConsolidatorPeriod::Daily,
             Box::new(move |b: &Bar| f.lock().unwrap().push(b.clone())),
         );

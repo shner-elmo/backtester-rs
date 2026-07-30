@@ -109,14 +109,16 @@ impl Algorithm for SizeAgainstStale {
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        if !self.bought && data.bars.contains_key("GROW") {
+        let grow = ctx.symbol("GROW").expect("subscribed in initialize");
+        let othr = ctx.symbol("OTHR").expect("subscribed in initialize");
+        if !self.bought && data.bars.contains_key(&grow) {
             self.bought = true;
-            ctx.market_order("GROW", 100.0);
+            ctx.market_order(grow, 100.0);
             return;
         }
-        if self.bought && !self.rebalanced && !data.bars.contains_key("GROW") {
+        if self.bought && !self.rebalanced && !data.bars.contains_key(&grow) {
             self.rebalanced = true;
-            ctx.set_holdings("OTHR", 0.5);
+            ctx.set_holdings(othr, 0.5);
         }
     }
 }

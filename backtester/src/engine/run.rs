@@ -2,10 +2,7 @@
 //! the methods in `orders.rs` / `corporate_actions.rs`, and assembles the
 //! final [`BacktestResult`].
 
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 use chrono_tz::US::Eastern;
@@ -14,20 +11,24 @@ use super::{ledger::OpenLifetime, load_pending_actions, BacktestResult};
 use crate::{
     algorithm::Algorithm,
     bar::Bar,
+    broker::PriceTable,
     context::{Context, Order, RestingOrder},
     data::{file_year_month, sorted_parquet_files, TickReader},
     error::BacktestError,
     slice::Slice,
     stats::{compute_stats, EquityPoint, OpenPositionSummary, Trade},
+    symbol::{Symbol, SymbolMap, SymbolVec},
 };
 
 /// Corporate actions queued by their effective date, drained at day
-/// boundaries as the backtest clock reaches them.
+/// boundaries as the backtest clock reaches them. Symbols are resolved when
+/// the metadata files are read, so the day-boundary work never parses a
+/// ticker string.
 #[derive(Default)]
 pub(super) struct PendingActions {
-    pub(super) splits: BTreeMap<NaiveDate, Vec<(String, f64)>>,
-    pub(super) dividends: BTreeMap<NaiveDate, Vec<(String, f64)>>,
-    pub(super) renames: BTreeMap<NaiveDate, Vec<(String, String)>>,
+    pub(super) splits: BTreeMap<NaiveDate, Vec<(Symbol, f64)>>,
+    pub(super) dividends: BTreeMap<NaiveDate, Vec<(Symbol, f64)>>,
+    pub(super) renames: BTreeMap<NaiveDate, Vec<(Symbol, Symbol)>>,
 }
 
 /// All mutable state of a running backtest. Phase methods live in
@@ -39,30 +40,34 @@ pub(super) struct Engine {
     pub(super) initial_cash: f64,
     // PnL ledger: one open lifetime per held symbol, netted into a `Trade`
     // when the position returns to flat.
-    pub(super) lifetimes: HashMap<String, OpenLifetime>,
+    pub(super) lifetimes: SymbolMap<OpenLifetime>,
     pub(super) trades: Vec<Trade>,
     pub(super) total_commission: f64,
     // Marks and equity curves.
-    pub(super) last_known_prices: HashMap<String, f64>,
+    pub(super) last_known_prices: PriceTable,
     pub(super) equity_curve: Vec<EquityPoint>,
     pub(super) intraday_equity: Vec<EquityPoint>,
     /// Last trading date processed post-warm-up (never set during warm-up).
     pub(super) last_date: Option<NaiveDate>,
     // Order books: orders awaiting the next bar under FillTiming::NextBarOpen,
     // and resting limit/stop orders filled intrabar, one queue per symbol.
-    pub(super) deferred: HashMap<String, Vec<Order>>,
-    pub(super) resting_book: HashMap<String, Vec<RestingOrder>>,
+    pub(super) deferred: SymbolMap<Vec<Order>>,
+    pub(super) resting_book: SymbolMap<Vec<RestingOrder>>,
     /// Bar volume already consumed per symbol this tick, so all fills against
     /// one bar share the volume-participation cap. Cleared every tick.
-    pub(super) participation_used: HashMap<String, f64>,
+    pub(super) participation_used: SymbolMap<f64>,
     // Corporate actions and delist detection.
     pub(super) pending: PendingActions,
     /// Last calendar date seen by the stream (including warm-up), gating the
     /// once-per-date day-start work.
     pub(super) global_last_date: Option<NaiveDate>,
     pub(super) day_index: u64,
-    /// Which trading day (by index) each symbol last printed a bar on.
-    pub(super) last_seen_day: HashMap<String, u64>,
+    /// Which trading day (by index) each symbol last printed a bar on;
+    /// `None` until it prints its first.
+    pub(super) last_seen_day: SymbolVec<Option<u64>>,
+    /// The slice map handed to `on_data`, kept between ticks so a tick's
+    /// bars reuse one allocation instead of building a fresh map.
+    slice_bars: SymbolMap<Bar>,
 }
 
 impl Engine {
@@ -70,20 +75,21 @@ impl Engine {
         Self {
             initial_cash: ctx.portfolio.cash,
             ctx,
-            lifetimes: HashMap::new(),
+            lifetimes: SymbolMap::default(),
             trades: Vec::new(),
             total_commission: 0.0,
-            last_known_prices: HashMap::new(),
+            last_known_prices: PriceTable::new(),
             equity_curve: Vec::new(),
             intraday_equity: Vec::new(),
             last_date: None,
-            deferred: HashMap::new(),
-            resting_book: HashMap::new(),
-            participation_used: HashMap::new(),
+            deferred: SymbolMap::default(),
+            resting_book: SymbolMap::default(),
+            participation_used: SymbolMap::default(),
             pending,
             global_last_date: None,
             day_index: 0,
-            last_seen_day: HashMap::new(),
+            last_seen_day: SymbolVec::new(),
+            slice_bars: SymbolMap::default(),
         }
     }
 
@@ -94,7 +100,7 @@ impl Engine {
         algo: &mut A,
         tick_time: DateTime<Utc>,
         tick_date: NaiveDate,
-        bars: Vec<(String, Bar)>,
+        bars: Vec<(Symbol, Bar)>,
     ) {
         self.participation_used.clear();
 
@@ -113,8 +119,8 @@ impl Engine {
         // pre-split state) and before the new day's bars touch anything.
         self.start_new_day(algo, tick_date, tick_time);
 
-        for (symbol, _) in &bars {
-            self.last_seen_day.insert(symbol.clone(), self.day_index);
+        for &(symbol, _) in &bars {
+            self.last_seen_day.set(symbol, Some(self.day_index));
         }
 
         self.fill_deferred(&bars, tick_time);
@@ -124,7 +130,7 @@ impl Engine {
         // their sizing values the portfolio at the prior closes the orders
         // were decided on — no look-ahead into the bar being filled.
         for (symbol, bar) in &bars {
-            self.last_known_prices.insert(symbol.clone(), bar.close);
+            self.last_known_prices.set(*symbol, Some(bar.close));
         }
 
         self.record_history(&bars);
@@ -150,10 +156,16 @@ impl Engine {
         // Fire scheduled time callbacks (times are US Eastern).
         self.ctx.fire_time_callbacks(&tick_time, tick_date);
 
-        let slice = Slice { time: tick_time, bars: bars.into_iter().collect() };
+        // Reuse the previous tick's map allocation: a wide universe rebuilds
+        // this every minute, and the capacity is the same every time.
+        let mut slice = Slice { time: tick_time, bars: std::mem::take(&mut self.slice_bars) };
+        slice.bars.extend(bars);
         algo.on_data(&mut self.ctx, &slice);
 
         self.route_new_orders(&slice, tick_time);
+
+        self.slice_bars = slice.bars;
+        self.slice_bars.clear();
 
         // Optional per-bar equity mark, after this bar's fills.
         if self.ctx.track_intraday_equity {
@@ -182,13 +194,16 @@ impl Engine {
     /// Append this tick's bars to the per-symbol history and feed the
     /// consolidators. Runs during warm-up too, so history and consolidator
     /// state (e.g. a 60-min bar) build up over the warm-up period.
-    fn record_history(&mut self, bars: &[(String, Bar)]) {
+    fn record_history(&mut self, bars: &[(Symbol, Bar)]) {
         for (symbol, bar) in bars {
-            let hist = self.ctx.history_store.entry(symbol.clone()).or_default();
+            let hist = self.ctx.history_store.slot(*symbol);
             hist.push_front(bar.clone());
             if hist.len() > self.ctx.max_history {
                 hist.pop_back();
             }
+        }
+        if self.ctx.consolidators.is_empty() {
+            return;
         }
         for (symbol, bar) in bars {
             for c in self.ctx.consolidators.iter_mut() {
@@ -199,7 +214,7 @@ impl Engine {
         }
     }
 
-    fn log_startup(&self, files: &[PathBuf], subscribed: &HashSet<String>) {
+    fn log_startup(&self, files: &[PathBuf]) {
         // A date range extending beyond the months the data source has is
         // worth flagging but not fatal: the backtest simply runs over the
         // overlap. `files` is sorted by (year, month), so coverage is
@@ -229,7 +244,8 @@ impl Engine {
         }
 
         if self.ctx.log_config.run_summary {
-            let mut symbols: Vec<&String> = subscribed.iter().collect();
+            let mut symbols: Vec<&str> =
+                self.ctx.subscribed_symbols.iter().map(|&s| self.ctx.symbols.name(s)).collect();
             symbols.sort();
             let fmt = |d: Option<NaiveDate>| d.map_or("open".to_string(), |d| d.to_string());
             eprintln!(
@@ -275,10 +291,11 @@ impl Engine {
             .positions
             .values()
             .map(|p| {
-                let last_price =
-                    self.last_known_prices.get(&p.symbol).copied().unwrap_or(p.avg_price);
+                let last_price = self.last_known_prices.copied(p.symbol).unwrap_or(p.avg_price);
                 OpenPositionSummary {
-                    symbol: p.symbol.clone(),
+                    // Back to a ticker string: the result JSON is the other
+                    // end of the run, where symbols leave the engine.
+                    symbol: self.ctx.symbols.name(p.symbol).to_string(),
                     quantity: p.quantity,
                     avg_price: p.avg_price,
                     last_price,
@@ -313,7 +330,7 @@ impl Engine {
 /// `ctx` has already been through the algorithm's `initialize`.
 pub(super) fn run_prepared<A: Algorithm>(
     mut algo: A,
-    ctx: Context,
+    mut ctx: Context,
     data_path: &str,
 ) -> Result<BacktestResult, BacktestError> {
     // An inverted date range is a configuration mistake, not a data problem:
@@ -324,8 +341,10 @@ pub(super) fn run_prepared<A: Algorithm>(
         }
     }
 
-    let mut subscribed = ctx.subscribed_symbols.clone();
-    let (ticker_map, pending) = load_pending_actions(&ctx, data_path, &mut subscribed)?;
+    // The last place ticker strings are read: the metadata files resolve to
+    // symbols here, and the encoded ticker ids in the data get an array
+    // mapping into them.
+    let (resolver, pending) = load_pending_actions(&mut ctx, data_path)?;
 
     let files = sorted_parquet_files(data_path);
     if files.is_empty() {
@@ -333,7 +352,7 @@ pub(super) fn run_prepared<A: Algorithm>(
     }
 
     let mut eng = Engine::new(ctx, pending);
-    eng.log_startup(&files, &subscribed);
+    eng.log_startup(&files);
 
     let mut mask = None;
 
@@ -361,7 +380,7 @@ pub(super) fn run_prepared<A: Algorithm>(
             }
         }
 
-        let mut ticks = TickReader::new(file_path, &ticker_map, &mut mask, &subscribed)?;
+        let mut ticks = TickReader::new(file_path, &resolver, &mut mask)?;
         while let Some((ts_ns, bars)) = ticks.next_tick()? {
             let secs = ts_ns / 1_000_000_000;
             let nanos = (ts_ns % 1_000_000_000) as u32;

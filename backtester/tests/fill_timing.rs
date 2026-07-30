@@ -96,9 +96,10 @@ impl Algorithm for BuyOnceThenHold {
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        if !self.bought && data.bars.contains_key("SYM") {
+        let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+        if !self.bought && data.bars.contains_key(&sym) {
             self.bought = true;
-            ctx.market_order("SYM", 100.0);
+            ctx.market_order(sym, 100.0);
         }
     }
 }

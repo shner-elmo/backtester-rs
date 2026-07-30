@@ -27,12 +27,16 @@
 //! });
 //! ```
 
+use crate::symbol::Symbol;
+
 /// Everything a margin model needs to size a single proposed fill. All values
 /// are marked at the same prices order sizing uses (no look-ahead into the
 /// fill bar under next-bar-open timing).
-pub struct MarginContext<'a> {
-    /// Symbol being traded.
-    pub symbol: &'a str,
+pub struct MarginContext {
+    /// Symbol being traded — compare it against the handles
+    /// `Context::add_equity` returned, or resolve it for logging with
+    /// `Context::symbol_name`.
+    pub symbol: Symbol,
     /// Proposed signed fill quantity: positive = buy, negative = sell.
     pub quantity: f64,
     /// Reference fill price for this order (pre-slippage).
@@ -128,14 +132,9 @@ impl MarginModel for MaxLeverage {
 mod tests {
     use super::*;
 
-    fn ctx(
-        quantity: f64,
-        current_qty: f64,
-        equity: f64,
-        other_exposure: f64,
-    ) -> MarginContext<'static> {
+    fn ctx(quantity: f64, current_qty: f64, equity: f64, other_exposure: f64) -> MarginContext {
         MarginContext {
-            symbol: "AAPL",
+            symbol: Symbol::from_index(0),
             quantity,
             price: 100.0,
             current_qty,

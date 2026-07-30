@@ -8,15 +8,19 @@
 //!   cargo run --example gap_short -- backtester/tests/fixtures
 //!
 //! There is no universe-selection API: `main` loads the ticker map and
-//! subscribes every symbol in the dataset, so `on_data` slices carry them all.
-//! A symbol with no 9:30 bar that day has no open to fade and is skipped. The
-//! committed fixture holds only AAPL — which never doubles overnight — so a
-//! fixture run completes with zero trades; point it at a real dataset for
-//! signals.
+//! `initialize` subscribes every symbol in the dataset, so `on_data` slices
+//! carry them all. Per-symbol state is keyed by the `Symbol` handles
+//! `add_equity` returns — integers, so the maps below never hash a ticker
+//! string. A symbol with no 9:30 bar that day has no open to fade and is
+//! skipped. The committed fixture holds only AAPL — which never doubles
+//! overnight — so a fixture run completes with zero trades; point it at a
+//! real dataset for signals.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use backtester::{bar::MarketSession, data::load_ticker_map, run, Algorithm, Context, Slice};
+use backtester::{
+    bar::MarketSession, data::load_ticker_map, run, Algorithm, Context, Slice, Symbol, SymbolMap,
+};
 use chrono::Timelike;
 use chrono_tz::US::Eastern;
 
@@ -30,17 +34,18 @@ const MIN_PREMARKET_DOLLAR_VOLUME: f64 = 1_000_000.0;
 const MIN_PRICE: f64 = 5.0;
 
 struct GapShort {
-    /// Every symbol in the dataset, discovered from the ticker map in `main`.
-    symbols: Vec<String>,
+    /// Every ticker in the dataset, read from the ticker map in `main` and
+    /// exchanged for symbols in `initialize`.
+    tickers: Vec<String>,
     /// Latest regular-session close seen per symbol, updated on every Main bar.
-    last_close: HashMap<String, f64>,
+    last_close: SymbolMap<f64>,
     /// Snapshot of `last_close` at each day boundary — "yesterday's close".
-    prev_close: HashMap<String, f64>,
+    prev_close: SymbolMap<f64>,
     /// Dollar volume (close x shares) traded pre-market today, per symbol.
-    premarket_dollar_vol: HashMap<String, f64>,
+    premarket_dollar_vol: SymbolMap<f64>,
     /// Symbols shorted this morning. `Rc<RefCell<..>>` because the 15:55
     /// scheduled closure must be `'static` and so can't borrow the struct.
-    shorted_today: Rc<RefCell<Vec<String>>>,
+    shorted_today: Rc<RefCell<Vec<Symbol>>>,
 }
 
 impl Algorithm for GapShort {
@@ -48,15 +53,15 @@ impl Algorithm for GapShort {
         ctx.set_start_date(2023, 1, 1);
         ctx.set_end_date(2024, 12, 31);
         ctx.set_cash(100_000.0);
-        for symbol in &self.symbols {
-            ctx.add_equity(symbol);
+        for ticker in std::mem::take(&mut self.tickers) {
+            ctx.add_equity(&ticker);
         }
 
         // Cover every short opened this morning at 15:55 ET.
         let shorted = self.shorted_today.clone();
         ctx.on_time(15, 55, move |ctx| {
             for symbol in shorted.borrow_mut().drain(..) {
-                ctx.liquidate(&symbol);
+                ctx.liquidate(symbol);
             }
         });
     }
@@ -64,7 +69,7 @@ impl Algorithm for GapShort {
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
         let et = data.time.with_timezone(&Eastern);
         if et.hour() == 9 && et.minute() == 30 {
-            let candidates: Vec<&String> = data
+            let candidates: Vec<Symbol> = data
                 .bars
                 .iter()
                 .filter(|(symbol, bar)| {
@@ -79,25 +84,25 @@ impl Algorithm for GapShort {
                             .get(*symbol)
                             .is_some_and(|close| bar.open >= GAP_MULTIPLE * close)
                 })
-                .map(|(symbol, _)| symbol)
+                .map(|(symbol, _)| *symbol)
                 .collect();
 
             if !candidates.is_empty() {
                 let weight = -SHORT_BUDGET / candidates.len() as f64;
                 for symbol in candidates {
                     ctx.set_holdings(symbol, weight);
-                    self.shorted_today.borrow_mut().push(symbol.clone());
+                    self.shorted_today.borrow_mut().push(symbol);
                 }
             }
         }
 
-        for (symbol, bar) in &data.bars {
+        for (&symbol, bar) in &data.bars {
             match bar.session() {
                 MarketSession::Main => {
-                    self.last_close.insert(symbol.clone(), bar.close);
+                    self.last_close.insert(symbol, bar.close);
                 }
                 MarketSession::PreMarket => {
-                    *self.premarket_dollar_vol.entry(symbol.clone()).or_insert(0.0) +=
+                    *self.premarket_dollar_vol.entry(symbol).or_insert(0.0) +=
                         bar.close * bar.volume as f64;
                 }
                 MarketSession::AfterMarket => {}
@@ -114,13 +119,13 @@ impl Algorithm for GapShort {
         self.premarket_dollar_vol.clear();
     }
 
-    fn on_split(&mut self, _ctx: &mut Context, symbol: &str, ratio: f64) {
+    fn on_split(&mut self, _ctx: &mut Context, symbol: Symbol, ratio: f64) {
         // Bar prices are raw, so without this a reverse split would look like
         // a huge overnight gap against the pre-split stored close.
-        if let Some(close) = self.last_close.get_mut(symbol) {
+        if let Some(close) = self.last_close.get_mut(&symbol) {
             *close /= ratio;
         }
-        if let Some(close) = self.prev_close.get_mut(symbol) {
+        if let Some(close) = self.prev_close.get_mut(&symbol) {
             *close /= ratio;
         }
     }
@@ -136,10 +141,10 @@ fn main() {
     });
 
     let algo = GapShort {
-        symbols: ticker_map.into_values().collect(),
-        last_close: HashMap::new(),
-        prev_close: HashMap::new(),
-        premarket_dollar_vol: HashMap::new(),
+        tickers: ticker_map.into_values().collect(),
+        last_close: SymbolMap::default(),
+        prev_close: SymbolMap::default(),
+        premarket_dollar_vol: SymbolMap::default(),
         shorted_today: Rc::new(RefCell::new(Vec::new())),
     };
 

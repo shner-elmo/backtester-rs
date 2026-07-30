@@ -11,10 +11,10 @@ pub trait Algorithm {
     fn initialize(&mut self, ctx: &mut Context);          // configure the run
     fn on_data(&mut self, ctx: &mut Context, data: &Slice); // called once per timestamp
     fn on_end_of_day(&mut self, _ctx: &mut Context) {}     // optional, default no-op
-    fn on_split(&mut self, _ctx: &mut Context, _symbol: &str, _ratio: f64) {} // optional
-    fn on_delisted(&mut self, _ctx: &mut Context, _symbol: &str) {}           // optional
-    fn on_dividend(&mut self, _ctx: &mut Context, _symbol: &str, _amount: f64) {} // optional
-    fn on_rename(&mut self, _ctx: &mut Context, _old: &str, _new: &str) {}    // optional
+    fn on_split(&mut self, _ctx: &mut Context, _symbol: Symbol, _ratio: f64) {} // optional
+    fn on_delisted(&mut self, _ctx: &mut Context, _symbol: Symbol) {}           // optional
+    fn on_dividend(&mut self, _ctx: &mut Context, _symbol: Symbol, _amount: f64) {} // optional
+    fn on_rename(&mut self, _ctx: &mut Context, _old: Symbol, _new: Symbol) {}  // optional
 }
 ```
 
@@ -27,40 +27,69 @@ pub trait Algorithm {
   it sees the world exactly as it was at the previous day's last bar. Orders
   placed in it fill at the new day's first bar.
 
+## Symbols
+
+Instruments are identified by [`Symbol`](../backtester/src/symbol.rs) — a
+`Copy` integer handle, not a ticker string. `ctx.add_equity("AAPL")` interns
+the ticker and returns its symbol; every other API (orders, `history`,
+`slice.bars` keys, `portfolio.get`, the corporate-action callbacks, the
+slippage/margin model contexts) takes that handle. Keep it in your algorithm
+struct.
+
+```rust
+struct MyAlgo { aapl: Option<Symbol> }
+// initialize: self.aapl = Some(ctx.add_equity("AAPL"));
+// on_data:    let Some(aapl) = self.aapl else { return };
+//             if data.bars.contains_key(&aapl) { ctx.set_holdings(aapl, 1.0); }
+```
+
+Two more `Context` methods bridge back to text — `ctx.symbol("AAPL")` looks up
+an already-subscribed ticker (`Option<Symbol>`), and `ctx.symbol_name(symbol)`
+gives the ticker back for logging. Both are for *your* code: the engine
+converts a ticker string exactly twice per run — when you subscribe it, and
+when a completed trade or open position is written to the result JSON (which
+still reports plain ticker strings). Nothing on the per-bar path touches a
+string, which is what keeps wide-universe runs fast.
+
+Per-symbol state of your own is best kept in a `SymbolMap<T>` (a hash map
+keyed by `Symbol`, exported from the crate root) — see
+[`examples/gap_short.rs`](../backtester/examples/gap_short.rs).
+
 ## A complete strategy
 
 See [`backtester/examples/ema_cross.rs`](../backtester/examples/ema_cross.rs)
 for the full version. The essentials:
 
 ```rust
-use backtester::{indicators::{Ema, Next}, run, Algorithm, Context, Slice};
+use backtester::{indicators::{Ema, Next}, run, Algorithm, Context, Slice, Symbol};
 
-struct EmaCross { symbol: String, fast: Ema, slow: Ema }
+struct EmaCross { symbol: Option<Symbol>, fast: Ema, slow: Ema }
 
 impl Algorithm for EmaCross {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_start_date(2023, 1, 1);
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
-        ctx.set_warm_up(30);              // skip the first 30 bars
-        ctx.add_equity(&self.symbol.clone());
+        ctx.set_warm_up(30);                        // skip the first 30 bars
+        self.symbol = Some(ctx.add_equity("AAPL")); // ticker -> Symbol, once
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        let Some(bar) = data.bars.get(&self.symbol) else { return };
+        let Some(symbol) = self.symbol else { return };
+        let Some(bar) = data.bars.get(&symbol) else { return };
         let fast = self.fast.next(bar.close);
         let slow = self.slow.next(bar.close);
         if fast > slow {
-            ctx.set_holdings(&self.symbol.clone(), 1.0);  // go 100% long
+            ctx.set_holdings(symbol, 1.0);  // go 100% long
         } else {
-            ctx.liquidate(&self.symbol.clone());
+            ctx.liquidate(symbol);
         }
     }
 }
 
 fn main() {
     let algo = EmaCross {
-        symbol: "AAPL".into(),
+        symbol: None,
         fast: Ema::new(10).unwrap(),
         slow: Ema::new(30).unwrap(),
     };
@@ -77,7 +106,8 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_start_date(y, m, d)` / `set_end_date(y, m, d)` | Inclusive backtest window |
 | `set_cash(amount)` | Starting cash |
 | `set_warm_up(bars)` | Bars to consume before `on_data` starts firing |
-| `add_equity(symbol)` | Subscribe to a symbol |
+| `add_equity(ticker)` | Subscribe to a ticker, returning its `Symbol` |
+| `symbol(ticker)` / `symbol_name(symbol)` | Look a subscribed ticker up / resolve a symbol back to its ticker |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |
@@ -231,8 +261,9 @@ Built-in models (`backtester::slippage`):
 
 It's fully customizable — pass your own type implementing `SlippageModel`, or
 just a closure `Fn(&FillContext) -> f64`. The `FillContext` gives you the
-signed `quantity`, the reference `price`, a `direction()` helper (+1 buy / −1
-sell), and the full `bar`, so you can key slippage off the bar's range or
+`symbol` (a [`Symbol`](#symbols) — compare it against the handles you kept),
+the signed `quantity`, the reference `price`, a `direction()` helper (+1 buy /
+−1 sell), and the full `bar`, so you can key slippage off the bar's range or
 volume:
 
 ```rust
@@ -352,8 +383,8 @@ filtered to the subscribed symbols as it parses, rather than loaded whole.
 
 ## Bars, slices, and sessions
 
-- A `Slice` (`data`) exposes `data.bars: HashMap<String, Bar>`; use
-  `data.bars.get(symbol)`.
+- A `Slice` (`data`) exposes `data.bars: SymbolMap<Bar>`, keyed by [`Symbol`](#symbols);
+  use `data.bars.get(&symbol)`.
 - A [`Bar`](../backtester/src/bar.rs) has `time` (`DateTime<Utc>`), `open`,
   `high`, `low`, `close`, and `volume`; `bar.session()` derives the session
   (`PreMarket` / `Main` / `AfterMarket`) from the US Eastern time-of-day.

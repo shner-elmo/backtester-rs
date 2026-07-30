@@ -19,6 +19,11 @@ Parquet plus a ticker-encoding JSON:
 ```
 
 `encoded_tickers.json` maps the encoded `ticker` id (a `u16`) to its symbol.
+At the start of a run the engine turns that map into an array indexed by
+ticker id, holding the interned
+[`Symbol`](../backtester/src/symbol.rs) of each *subscribed* ticker (and a
+sentinel for the rest), so decoding a bar resolves its symbol and its
+subscription with one array index and never touches the ticker string.
 
 ### Optional metadata files & custom paths
 

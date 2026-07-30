@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     fs::{read_to_string, File},
     path::{Path, PathBuf},
 };
@@ -15,7 +15,7 @@ use parquet::arrow::{
 };
 use walkdir::WalkDir;
 
-use crate::{bar::Bar, error::BacktestError};
+use crate::{bar::Bar, error::BacktestError, symbol::Symbol};
 
 pub const COLUMNS: [&str; 7] = ["ticker", "volume", "open", "high", "low", "close", "window_start"];
 
@@ -396,7 +396,52 @@ fn ts_to_datetime(ts_ns: i64) -> Option<DateTime<Utc>> {
 }
 
 /// One tick: a nanosecond timestamp and every subscribed bar printed on it.
-pub type Tick = (i64, Vec<(String, Bar)>);
+pub type Tick = (i64, Vec<(Symbol, Bar)>);
+
+/// Turns the dataset's encoded ticker ids into interned [`Symbol`]s, for the
+/// subscribed symbols only.
+///
+/// This is what keeps ticker strings out of the tick stream: the engine
+/// resolves each row's `ticker` column through one array index, which
+/// answers "is this subscribed?" and "which symbol is it?" at once — no
+/// ticker-map hash lookup, no string comparison, no allocation per bar.
+#[derive(Debug, Default)]
+pub struct TickerResolver {
+    /// Ticker id → symbol id, [`Self::NONE`] for ids nothing subscribes.
+    by_id: Vec<u32>,
+}
+
+impl TickerResolver {
+    const NONE: u32 = u32::MAX;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Route rows carrying `ticker_id` to `symbol`.
+    pub fn insert(&mut self, ticker_id: u16, symbol: Symbol) {
+        let id = ticker_id as usize;
+        if self.by_id.len() <= id {
+            self.by_id.resize(id + 1, Self::NONE);
+        }
+        self.by_id[id] = symbol.index() as u32;
+    }
+
+    /// The symbol `ticker_id` encodes, or `None` when it is unknown or
+    /// unsubscribed.
+    #[inline]
+    pub fn resolve(&self, ticker_id: u16) -> Option<Symbol> {
+        match self.by_id.get(ticker_id as usize).copied() {
+            None | Some(Self::NONE) => None,
+            Some(id) => Some(Symbol::from_index(id as usize)),
+        }
+    }
+
+    /// Whether anything is subscribed at all.
+    pub fn is_empty(&self) -> bool {
+        self.by_id.iter().all(|&id| id == Self::NONE)
+    }
+}
 
 /// Streams one Parquet file's subscribed bars grouped into ticks — all
 /// consecutive rows sharing one `window_start` — in row order, so only a
@@ -412,10 +457,9 @@ pub type Tick = (i64, Vec<(String, Bar)>);
 pub struct TickReader<'a> {
     path: PathBuf,
     reader: ParquetRecordBatchReader,
-    ticker_map: &'a HashMap<u16, String>,
-    subscribed: &'a HashSet<String>,
+    symbols: &'a TickerResolver,
     /// Decoded subscribed rows not yet grouped into a tick.
-    queue: VecDeque<(String, i64, Bar)>,
+    queue: VecDeque<(Symbol, i64, Bar)>,
     /// Timestamp of the last decodable row seen, for the sort check. Tracks
     /// every row (not just subscribed ones): an unsorted file is bad data
     /// regardless of which symbols this run happens to subscribe.
@@ -426,15 +470,13 @@ pub struct TickReader<'a> {
 impl<'a> TickReader<'a> {
     pub fn new(
         file_path: &Path,
-        ticker_map: &'a HashMap<u16, String>,
+        symbols: &'a TickerResolver,
         mask: &mut Option<ProjectionMask>,
-        subscribed: &'a HashSet<String>,
     ) -> Result<Self, BacktestError> {
         Ok(Self {
             path: file_path.to_path_buf(),
             reader: open_bar_reader(file_path, mask)?,
-            ticker_map,
-            subscribed,
+            symbols,
             queue: VecDeque::new(),
             last_ts: None,
             exhausted: false,
@@ -484,12 +526,9 @@ impl<'a> TickReader<'a> {
                 }
             }
             self.last_ts = Some(ts);
-            let Some(symbol) = self.ticker_map.get(&cols.ticker.value(i)) else { continue };
-            if !self.subscribed.contains(symbol) {
-                continue;
-            }
+            let Some(symbol) = self.symbols.resolve(cols.ticker.value(i)) else { continue };
             let Some(bar) = cols.bar_with_time(i, time) else { continue };
-            self.queue.push_back((symbol.clone(), ts, bar));
+            self.queue.push_back((symbol, ts, bar));
         }
         Ok(())
     }

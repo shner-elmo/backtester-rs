@@ -97,9 +97,10 @@ fn cash_account_trims_a_buy_to_buying_power() {
             ctx.set_margin_model(MaxLeverage::new(1.0));
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.placed && data.bars.contains_key("SYM") {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !self.placed && data.bars.contains_key(&sym) {
                 self.placed = true;
-                ctx.market_order("SYM", 2_000.0);
+                ctx.market_order(sym, 2_000.0);
             }
         }
     }
@@ -132,9 +133,10 @@ fn set_holdings_is_clamped_to_the_leverage_cap() {
             ctx.set_margin_model(MaxLeverage::new(1.5));
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.placed && data.bars.contains_key("SYM") {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !self.placed && data.bars.contains_key(&sym) {
                 self.placed = true;
-                ctx.set_holdings("SYM", 2.0);
+                ctx.set_holdings(sym, 2.0);
             }
         }
     }
@@ -167,14 +169,15 @@ fn over_levered_book_can_liquidate_but_not_buy() {
             ctx.set_margin_model(MaxLeverage::new(2.0));
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !data.bars.contains_key("SYM") {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !data.bars.contains_key(&sym) {
                 return;
             }
             self.bars_seen += 1;
             match self.bars_seen {
-                1 => ctx.market_order("SYM", 2_000.0),
-                2 => ctx.market_order("SYM", 10.0), // over-levered: must not fill
-                3 => ctx.liquidate("SYM"),          // reducing: must fill in full
+                1 => ctx.market_order(sym, 2_000.0),
+                2 => ctx.market_order(sym, 10.0), // over-levered: must not fill
+                3 => ctx.liquidate(sym),          // reducing: must fill in full
                 _ => {}
             }
         }
@@ -214,14 +217,15 @@ fn a_closure_works_as_a_margin_model() {
             });
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !data.bars.contains_key("SYM") {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !data.bars.contains_key(&sym) {
                 return;
             }
             self.bars_seen += 1;
             match self.bars_seen {
-                1 => ctx.market_order("SYM", -100.0), // rejected: would open a short
-                2 => ctx.market_order("SYM", 100.0),
-                3 => ctx.liquidate("SYM"),
+                1 => ctx.market_order(sym, -100.0), // rejected: would open a short
+                2 => ctx.market_order(sym, 100.0),
+                3 => ctx.liquidate(sym),
                 _ => {}
             }
         }

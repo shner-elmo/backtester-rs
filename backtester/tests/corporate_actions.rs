@@ -12,7 +12,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
+use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice, Symbol};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
 
@@ -111,7 +111,9 @@ fn identity_error(r: &BacktestResult) -> f64 {
 /// every on_split / on_delisted call and the history closes seen on the last
 /// on_data call.
 struct BuyAndHold {
-    symbol: String,
+    ticker: String,
+    /// Resolved in `initialize`; the callbacks below map it back to a name.
+    symbol: Option<Symbol>,
     qty: f64,
     bought: bool,
     splits: Arc<Mutex<Vec<(String, f64)>>>,
@@ -123,7 +125,8 @@ struct BuyAndHold {
 impl BuyAndHold {
     fn new(symbol: &str, qty: f64) -> Self {
         Self {
-            symbol: symbol.into(),
+            ticker: symbol.into(),
+            symbol: None,
             qty,
             bought: false,
             splits: Arc::new(Mutex::new(Vec::new())),
@@ -137,29 +140,30 @@ impl BuyAndHold {
 impl Algorithm for BuyAndHold {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
-        ctx.add_equity(&self.symbol.clone());
+        self.symbol = Some(ctx.add_equity(&self.ticker.clone()));
         ctx.add_equity("STAY"); // second symbol keeps the clock ticking
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-        if !self.bought && data.bars.contains_key(&self.symbol) {
+        let Some(symbol) = self.symbol else { return };
+        if !self.bought && data.bars.contains_key(&symbol) {
             self.bought = true;
-            ctx.market_order(&self.symbol.clone(), self.qty);
+            ctx.market_order(symbol, self.qty);
         }
-        let hist: Vec<f64> = ctx.history(&self.symbol, 100).iter().map(|b| b.close).collect();
+        let hist: Vec<f64> = ctx.history(symbol, 100).iter().map(|b| b.close).collect();
         *self.last_history.lock().unwrap() = hist;
     }
 
-    fn on_split(&mut self, _ctx: &mut Context, symbol: &str, ratio: f64) {
-        self.splits.lock().unwrap().push((symbol.to_string(), ratio));
+    fn on_split(&mut self, ctx: &mut Context, symbol: Symbol, ratio: f64) {
+        self.splits.lock().unwrap().push((ctx.symbol_name(symbol).to_string(), ratio));
     }
 
-    fn on_delisted(&mut self, _ctx: &mut Context, symbol: &str) {
-        self.delistings.lock().unwrap().push(symbol.to_string());
+    fn on_delisted(&mut self, ctx: &mut Context, symbol: Symbol) {
+        self.delistings.lock().unwrap().push(ctx.symbol_name(symbol).to_string());
     }
 
-    fn on_dividend(&mut self, _ctx: &mut Context, symbol: &str, amount: f64) {
-        self.dividends.lock().unwrap().push((symbol.to_string(), amount));
+    fn on_dividend(&mut self, ctx: &mut Context, symbol: Symbol, amount: f64) {
+        self.dividends.lock().unwrap().push((ctx.symbol_name(symbol).to_string(), amount));
     }
 }
 
@@ -341,9 +345,10 @@ fn resting_orders_are_rescaled_across_a_split() {
             ctx.add_equity("SPLT");
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.placed && data.bars.contains_key("SPLT") {
+            let splt = ctx.symbol("SPLT").expect("subscribed in initialize");
+            if !self.placed && data.bars.contains_key(&splt) {
                 self.placed = true;
-                ctx.limit_order("SPLT", 10.0, 60.0);
+                ctx.limit_order(splt, 10.0, 60.0);
             }
         }
     }
@@ -494,31 +499,37 @@ fn ticker_rename_transfers_the_position_without_a_trade() {
     .unwrap();
 
     struct Rename {
-        symbol: String,
+        ticker: String,
+        symbol: Option<Symbol>,
         bought: bool,
         renames: Arc<Mutex<Vec<(String, String)>>>,
     }
     impl Algorithm for Rename {
         fn initialize(&mut self, ctx: &mut Context) {
             ctx.set_cash(100_000.0);
-            ctx.add_equity(&self.symbol.clone());
+            self.symbol = Some(ctx.add_equity(&self.ticker.clone()));
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.bought && data.bars.contains_key(&self.symbol) {
+            let Some(symbol) = self.symbol else { return };
+            if !self.bought && data.bars.contains_key(&symbol) {
                 self.bought = true;
-                ctx.market_order(&self.symbol.clone(), 10.0);
+                ctx.market_order(symbol, 10.0);
             }
         }
-        fn on_rename(&mut self, _ctx: &mut Context, old: &str, new: &str) {
-            self.renames.lock().unwrap().push((old.to_string(), new.to_string()));
-            if self.symbol == old {
-                self.symbol = new.to_string();
+        fn on_rename(&mut self, ctx: &mut Context, old: Symbol, new: Symbol) {
+            self.renames
+                .lock()
+                .unwrap()
+                .push((ctx.symbol_name(old).to_string(), ctx.symbol_name(new).to_string()));
+            if self.symbol == Some(old) {
+                self.symbol = Some(new);
             }
         }
     }
 
     let renames = Arc::new(Mutex::new(Vec::new()));
-    let algo = Rename { symbol: "OLD".into(), bought: false, renames: renames.clone() };
+    let algo =
+        Rename { ticker: "OLD".into(), symbol: None, bought: false, renames: renames.clone() };
     let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
 
     assert_eq!(*renames.lock().unwrap(), vec![("OLD".to_string(), "NEW".to_string())]);
@@ -591,18 +602,20 @@ fn margin_interest_falls_back_to_the_short_book_when_there_are_no_longs() {
             ctx.set_margin_interest_rate(0.252);
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !data.bars.contains_key("SHRT") {
+            let crsh = ctx.symbol("CRSH").expect("subscribed in initialize");
+            let shrt = ctx.symbol("SHRT").expect("subscribed in initialize");
+            if !data.bars.contains_key(&shrt) {
                 return;
             }
             self.bars_seen += 1;
             match self.bars_seen {
                 // Cash: 1,000 - 10,000 (buy) + 1,000 (short proceeds) = -8,000.
                 1 => {
-                    ctx.market_order("CRSH", 100.0);
-                    ctx.market_order("SHRT", -10.0);
+                    ctx.market_order(crsh, 100.0);
+                    ctx.market_order(shrt, -10.0);
                 }
                 // Dump CRSH at 10: cash -8,000 + 1,000 = -7,000, no longs left.
-                2 => ctx.liquidate("CRSH"),
+                2 => ctx.liquidate(crsh),
                 _ => {}
             }
         }
@@ -633,8 +646,8 @@ fn margin_interest_accrues_on_a_negative_cash_balance() {
     struct Margin(BuyAndHold);
     impl Algorithm for Margin {
         fn initialize(&mut self, ctx: &mut Context) {
-            ctx.set_cash(100_000.0);
-            ctx.add_equity("LEVR");
+            // Delegate so the inner algorithm gets its symbol handle.
+            self.0.initialize(ctx);
             // 25.2% annual => 0.1%/day => $50 on a $50k debit.
             ctx.set_margin_interest_rate(0.252);
         }
@@ -676,9 +689,10 @@ fn splits_load_from_a_custom_configured_path() {
             ctx.set_splits_file(&self.file);
         }
         fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-            if !self.bought && data.bars.contains_key("SPLT") {
+            let splt = ctx.symbol("SPLT").expect("subscribed in initialize");
+            if !self.bought && data.bars.contains_key(&splt) {
                 self.bought = true;
-                ctx.market_order("SPLT", 10.0);
+                ctx.market_order(splt, 10.0);
             }
         }
     }
