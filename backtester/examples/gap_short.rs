@@ -7,20 +7,17 @@
 //!
 //!   cargo run --example gap_short -- backtester/tests/fixtures
 //!
-//! There is no universe-selection API: `main` loads the ticker map and
-//! `initialize` subscribes every symbol in the dataset, so `on_data` slices
-//! carry them all. Per-symbol state is keyed by the `Symbol` handles
-//! `add_equity` returns — integers, so the maps below never hash a ticker
-//! string. A symbol with no 9:30 bar that day has no open to fade and is
-//! skipped. The committed fixture holds only AAPL — which never doubles
-//! overnight — so a fixture run completes with zero trades; point it at a
-//! real dataset for signals.
+//! `ctx.add_all_equities()` subscribes every symbol in the dataset, so
+//! `on_data` slices carry them all. Per-symbol state is keyed by `Symbol` —
+//! the dataset's ticker id — so the maps below never hash a ticker string. A
+//! symbol with no 9:30 bar that day has no open to fade and is skipped. The
+//! committed fixture holds only AAPL — which never doubles overnight — so a
+//! fixture run completes with zero trades; point it at a real dataset for
+//! signals.
 
 use std::{cell::RefCell, rc::Rc};
 
-use backtester::{
-    bar::MarketSession, data::load_ticker_map, run, Algorithm, Context, Slice, Symbol, SymbolMap,
-};
+use backtester::{bar::MarketSession, run, Algorithm, Context, Slice, Symbol, SymbolMap};
 use chrono::Timelike;
 use chrono_tz::US::Eastern;
 
@@ -34,9 +31,6 @@ const MIN_PREMARKET_DOLLAR_VOLUME: f64 = 1_000_000.0;
 const MIN_PRICE: f64 = 5.0;
 
 struct GapShort {
-    /// Every ticker in the dataset, read from the ticker map in `main` and
-    /// exchanged for symbols in `initialize`.
-    tickers: Vec<String>,
     /// Latest regular-session close seen per symbol, updated on every Main bar.
     last_close: SymbolMap<f64>,
     /// Snapshot of `last_close` at each day boundary — "yesterday's close".
@@ -53,9 +47,7 @@ impl Algorithm for GapShort {
         ctx.set_start_date(2023, 1, 1);
         ctx.set_end_date(2024, 12, 31);
         ctx.set_cash(100_000.0);
-        for ticker in std::mem::take(&mut self.tickers) {
-            ctx.add_equity(&ticker);
-        }
+        ctx.add_all_equities(); // no universe API — trade the whole dataset
 
         // Cover every short opened this morning at 15:55 ET.
         let shorted = self.shorted_today.clone();
@@ -135,13 +127,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
 
-    let ticker_map = load_ticker_map(data_path).unwrap_or_else(|e| {
-        eprintln!("failed to load ticker map: {e}");
-        std::process::exit(1);
-    });
-
     let algo = GapShort {
-        tickers: ticker_map.into_values().collect(),
         last_close: SymbolMap::default(),
         prev_close: SymbolMap::default(),
         premarket_dollar_vol: SymbolMap::default(),

@@ -245,7 +245,7 @@ impl Engine {
 
         if self.ctx.log_config.run_summary {
             let mut symbols: Vec<&str> =
-                self.ctx.subscribed_symbols.iter().map(|&s| self.ctx.symbols.name(s)).collect();
+                self.ctx.subscribed_symbols.iter().map(|&s| self.ctx.symbol_name(s)).collect();
             symbols.sort();
             let fmt = |d: Option<NaiveDate>| d.map_or("open".to_string(), |d| d.to_string());
             eprintln!(
@@ -295,7 +295,7 @@ impl Engine {
                 OpenPositionSummary {
                     // Back to a ticker string: the result JSON is the other
                     // end of the run, where symbols leave the engine.
-                    symbol: self.ctx.symbols.name(p.symbol).to_string(),
+                    symbol: self.ctx.symbol_name(p.symbol).to_string(),
                     quantity: p.quantity,
                     avg_price: p.avg_price,
                     last_price,
@@ -342,9 +342,8 @@ pub(super) fn run_prepared<A: Algorithm>(
     }
 
     // The last place ticker strings are read: the metadata files resolve to
-    // symbols here, and the encoded ticker ids in the data get an array
-    // mapping into them.
-    let (resolver, pending) = load_pending_actions(&mut ctx, data_path)?;
+    // symbols here, against the ticker map the context was built from.
+    let (subscribed, pending) = load_pending_actions(&mut ctx, data_path)?;
 
     let files = sorted_parquet_files(data_path);
     if files.is_empty() {
@@ -380,7 +379,7 @@ pub(super) fn run_prepared<A: Algorithm>(
             }
         }
 
-        let mut ticks = TickReader::new(file_path, &resolver, &mut mask)?;
+        let mut ticks = TickReader::new(file_path, &subscribed, &mut mask)?;
         while let Some((ts_ns, bars)) = ticks.next_tick()? {
             let secs = ts_ns / 1_000_000_000;
             let nanos = (ts_ns % 1_000_000_000) as u32;

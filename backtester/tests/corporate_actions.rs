@@ -141,7 +141,9 @@ impl Algorithm for BuyAndHold {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
         self.symbol = Some(ctx.add_equity(&self.ticker.clone()));
-        ctx.add_equity("STAY"); // second symbol keeps the clock ticking
+        // A second symbol keeps the clock ticking, where the fixture has one:
+        // try_ rather than add_, since some of these fixtures are single-symbol.
+        let _ = ctx.try_add_equity("STAY");
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {

@@ -68,7 +68,7 @@ impl Engine {
             // A completed trade is reported, so this is where the symbol
             // becomes a ticker string again — once per round trip, not once
             // per bar.
-            let trade = lt.into_trade(self.ctx.symbols.name(symbol), exit_time, exit_reason);
+            let trade = lt.into_trade(self.ctx.symbol_name(symbol), exit_time, exit_reason);
             log_trade(&self.ctx.log_config, &trade);
             self.trades.push(trade);
         }

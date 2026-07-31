@@ -134,7 +134,7 @@ mod tests {
 
     fn ctx(quantity: f64, current_qty: f64, equity: f64, other_exposure: f64) -> MarginContext {
         MarginContext {
-            symbol: Symbol::from_index(0),
+            symbol: Symbol::from_ticker_id(0),
             quantity,
             price: 100.0,
             current_qty,

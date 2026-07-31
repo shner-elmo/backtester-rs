@@ -205,3 +205,34 @@ fn unsorted_bars_within_a_file_are_an_error() {
         "expected OutOfOrderData, got: {err}"
     );
 }
+
+#[test]
+fn subscribing_a_ticker_the_dataset_lacks_fails_loudly() {
+    // A symbol is the dataset's ticker id, so a ticker the map doesn't list
+    // can never print a bar. Catching it at subscribe time beats discovering
+    // it after a whole run produced nothing.
+    let algo = RecordTimes::new("NOPE", None, None);
+    let err = std::panic::catch_unwind(|| run_backtest(algo, FIXTURE)).unwrap_err();
+    let message = err
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .expect("expected a panic message naming the ticker");
+    assert!(message.contains("NOPE"), "panic did not name the ticker: {message}");
+}
+
+#[test]
+fn a_ticker_the_dataset_lacks_can_be_subscribed_optimistically() {
+    // try_add_equity is the opt-out for dynamic universes: no panic, no
+    // subscription, and the run proceeds on whatever else was subscribed.
+    struct Optimistic;
+    impl Algorithm for Optimistic {
+        fn initialize(&mut self, ctx: &mut Context) {
+            assert!(ctx.try_add_equity("NOPE").is_none());
+            assert!(ctx.try_add_equity("AAPL").is_some());
+        }
+        fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+    }
+
+    let result = run_backtest(Optimistic, FIXTURE).unwrap();
+    assert!(!result.equity_curve.is_empty(), "AAPL should still have streamed");
+}

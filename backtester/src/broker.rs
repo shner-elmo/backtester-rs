@@ -73,12 +73,10 @@ impl Portfolio {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbol::SymbolTable;
 
     /// A fresh portfolio and the one symbol these tests trade.
     fn setup() -> (Portfolio, Symbol) {
-        let mut table = SymbolTable::default();
-        (Portfolio::default(), table.intern("AAPL"))
+        (Portfolio::default(), Symbol::from_ticker_id(47))
     }
 
     fn qty_avg(p: &Portfolio, sym: Symbol) -> (f64, f64) {
@@ -132,8 +130,7 @@ mod tests {
 
     #[test]
     fn total_value_marks_at_last_price_and_falls_back_to_basis() {
-        let mut table = SymbolTable::default();
-        let (aapl, msft) = (table.intern("AAPL"), table.intern("MSFT"));
+        let (aapl, msft) = (Symbol::from_ticker_id(47), Symbol::from_ticker_id(48));
         let mut p = Portfolio::default();
         p.apply_fill(aapl, 100.0, 10.0);
         p.apply_fill(msft, 10.0, 50.0);

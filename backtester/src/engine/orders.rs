@@ -69,7 +69,7 @@ impl Engine {
             eprintln!(
                 "[fill] {} {} {:+.2} @ {:.4}, commission {:.2}",
                 tick_time.to_rfc3339(),
-                self.ctx.symbols.name(order.symbol),
+                self.ctx.symbol_name(order.symbol),
                 qty,
                 fill_price,
                 commission

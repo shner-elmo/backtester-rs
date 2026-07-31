@@ -7,12 +7,12 @@
 //!
 //! # Symbols
 //!
-//! Instruments are identified by [`Symbol`] — a `Copy` integer handle
-//! returned by [`Context::add_equity`]. Ticker strings are converted exactly
-//! twice: there, and again when results are written out. Everything in
-//! between (slices, orders, positions, history, corporate actions) is keyed
-//! by the handle, so streaming a bar costs no allocation and no string
-//! hashing. See [`symbol`] for the details.
+//! Instruments are identified by [`Symbol`] — the dataset's encoded ticker
+//! id, handed to you by [`Context::add_equity`]. Ticker strings are read
+//! exactly twice: when you subscribe, and when results are written out.
+//! Everything in between (slices, orders, positions, history, corporate
+//! actions) is keyed by that integer, so streaming a bar costs no allocation
+//! and no string hashing. See [`symbol`] for the details.
 //!
 //! # Execution models
 //!
@@ -48,11 +48,13 @@ mod test_util;
 pub use algorithm::Algorithm;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
 pub use context::{Context, FillTiming};
-pub use engine::{run, run_backtest, BacktestResult};
+pub use engine::{
+    run, run_backtest, run_backtest_with_ticker_map, run_with_ticker_map, BacktestResult,
+};
 pub use error::BacktestError;
 pub use logging::LogConfig;
 pub use margin::{MarginContext, MarginModel, MaxLeverage, NoMargin};
 pub use slice::Slice;
 pub use slippage::{FillContext, FixedSlippage, NoSlippage, PercentSlippage, SlippageModel};
 pub use stats::{BacktestStats, EquityPoint, Trade};
-pub use symbol::{Symbol, SymbolMap, SymbolTable, SymbolVec};
+pub use symbol::{Symbol, SymbolMap, SymbolSet, SymbolVec};
