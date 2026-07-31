@@ -72,7 +72,7 @@ impl Engine {
     ) {
         for (symbol, ratio) in drain_due(&mut self.pending.splits, tick_date) {
             if self.ctx.log_config.corporate_events {
-                let name = self.ctx.symbols.name(symbol);
+                let name = self.ctx.symbol_name(symbol);
                 eprintln!("[event] {tick_date}: split {name}, ratio {ratio}");
             }
             self.apply_split(symbol, ratio, tick_time);
@@ -86,7 +86,7 @@ impl Engine {
         for (symbol, amount) in drain_due(&mut self.pending.dividends, tick_date) {
             if self.apply_dividend(symbol, amount) {
                 if self.ctx.log_config.corporate_events {
-                    let name = self.ctx.symbols.name(symbol);
+                    let name = self.ctx.symbol_name(symbol);
                     eprintln!("[event] {tick_date}: dividend {name}, {amount:.4}/share");
                 }
                 algo.on_dividend(&mut self.ctx, symbol, amount);
@@ -100,7 +100,7 @@ impl Engine {
     fn apply_due_renames<A: Algorithm>(&mut self, algo: &mut A, tick_date: NaiveDate) {
         for (old, new) in drain_due(&mut self.pending.renames, tick_date) {
             if self.ctx.log_config.corporate_events {
-                let (old_name, new_name) = (self.ctx.symbols.name(old), self.ctx.symbols.name(new));
+                let (old_name, new_name) = (self.ctx.symbol_name(old), self.ctx.symbol_name(new));
                 eprintln!("[event] {tick_date}: rename {old_name} -> {new_name}");
             }
             self.apply_rename(old, new);
@@ -376,7 +376,7 @@ impl Engine {
             .collect();
         for symbol in stale {
             if self.ctx.log_config.corporate_events {
-                let name = self.ctx.symbols.name(symbol);
+                let name = self.ctx.symbol_name(symbol);
                 eprintln!(
                     "[event] {tick_date}: {name} delisted (no bars for \
                      {delist_after} trading days); position force-closed"

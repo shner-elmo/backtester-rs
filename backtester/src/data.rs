@@ -30,6 +30,68 @@ pub fn load_ticker_map(data_root: &str) -> Result<HashMap<u16, String>, Backtest
     load_ticker_map_from(&PathBuf::from(format!("{data_root}/{TICKER_MAP_FILE}")))
 }
 
+/// The dataset's ticker naming, both ways: a [`Symbol`] (an encoded ticker id)
+/// to its ticker string, and a ticker string to its symbol.
+///
+/// This is the *only* place the engine relates integers to tickers. It is read
+/// when a strategy subscribes, when the corporate-action files are matched by
+/// ticker, and when results and log lines are written — never per bar.
+#[derive(Debug, Default)]
+pub struct TickerMap {
+    /// Ticker id → name, `None` for ids the map doesn't list.
+    names: Vec<Option<Box<str>>>,
+    ids: HashMap<Box<str>, Symbol>,
+}
+
+impl TickerMap {
+    /// Read `encoded_tickers.json` from `path`.
+    pub fn load(path: &Path) -> Result<Self, BacktestError> {
+        Ok(Self::from_pairs(load_ticker_map_from(path)?))
+    }
+
+    pub fn from_pairs(pairs: HashMap<u16, String>) -> Self {
+        let capacity = pairs.keys().copied().max().map_or(0, |max| max as usize + 1);
+        let mut names: Vec<Option<Box<str>>> = vec![None; capacity];
+        let mut ids = HashMap::with_capacity(pairs.len());
+        for (id, name) in pairs {
+            let name: Box<str> = name.into();
+            ids.insert(name.clone(), Symbol::from_ticker_id(id));
+            names[id as usize] = Some(name);
+        }
+        Self { names, ids }
+    }
+
+    /// The symbol this dataset encodes `ticker` as, or `None` if it has no
+    /// data for that ticker.
+    pub fn symbol(&self, ticker: &str) -> Option<Symbol> {
+        self.ids.get(ticker).copied()
+    }
+
+    /// The ticker `symbol` stands for, or `None` for an id the map doesn't
+    /// list.
+    pub fn name(&self, symbol: Symbol) -> Option<&str> {
+        self.names.get(symbol.index())?.as_deref()
+    }
+
+    /// Every symbol the dataset has data for, in ticker-id order.
+    pub fn symbols(&self) -> impl Iterator<Item = Symbol> + '_ {
+        self.names
+            .iter()
+            .enumerate()
+            .filter_map(|(id, name)| name.as_ref().map(|_| Symbol::from_ticker_id(id as u16)))
+    }
+
+    /// One past the highest ticker id, i.e. how many slots a dense
+    /// per-symbol table needs to cover the dataset.
+    pub fn id_space(&self) -> usize {
+        self.names.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
 /// Like [`load_ticker_map`], but from an explicit file path instead of the
 /// default name inside the data root.
 pub fn load_ticker_map_from(path: &Path) -> Result<HashMap<u16, String>, BacktestError> {
@@ -398,48 +460,37 @@ fn ts_to_datetime(ts_ns: i64) -> Option<DateTime<Utc>> {
 /// One tick: a nanosecond timestamp and every subscribed bar printed on it.
 pub type Tick = (i64, Vec<(Symbol, Bar)>);
 
-/// Turns the dataset's encoded ticker ids into interned [`Symbol`]s, for the
-/// subscribed symbols only.
+/// Which ticker ids a run subscribes, as a flag per id.
 ///
-/// This is what keeps ticker strings out of the tick stream: the engine
-/// resolves each row's `ticker` column through one array index, which
-/// answers "is this subscribed?" and "which symbol is it?" at once — no
-/// ticker-map hash lookup, no string comparison, no allocation per bar.
+/// This is the whole of the reader's per-row symbol work: a row's `ticker`
+/// column *is* its [`Symbol`], so all that's left to decide is whether the
+/// run wants it — one array index, no map lookup, no string comparison, no
+/// allocation.
 #[derive(Debug, Default)]
-pub struct TickerResolver {
-    /// Ticker id → symbol id, [`Self::NONE`] for ids nothing subscribes.
-    by_id: Vec<u32>,
+pub struct SubscriptionMask {
+    subscribed: Vec<bool>,
 }
 
-impl TickerResolver {
-    const NONE: u32 = u32::MAX;
-
+impl SubscriptionMask {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Route rows carrying `ticker_id` to `symbol`.
-    pub fn insert(&mut self, ticker_id: u16, symbol: Symbol) {
-        let id = ticker_id as usize;
-        if self.by_id.len() <= id {
-            self.by_id.resize(id + 1, Self::NONE);
+    pub fn insert(&mut self, symbol: Symbol) {
+        if self.subscribed.len() <= symbol.index() {
+            self.subscribed.resize(symbol.index() + 1, false);
         }
-        self.by_id[id] = symbol.index() as u32;
+        self.subscribed[symbol.index()] = true;
     }
 
-    /// The symbol `ticker_id` encodes, or `None` when it is unknown or
-    /// unsubscribed.
     #[inline]
-    pub fn resolve(&self, ticker_id: u16) -> Option<Symbol> {
-        match self.by_id.get(ticker_id as usize).copied() {
-            None | Some(Self::NONE) => None,
-            Some(id) => Some(Symbol::from_index(id as usize)),
-        }
+    pub fn contains(&self, ticker_id: u16) -> bool {
+        self.subscribed.get(ticker_id as usize).copied().unwrap_or(false)
     }
 
-    /// Whether anything is subscribed at all.
+    /// Whether nothing is subscribed at all.
     pub fn is_empty(&self) -> bool {
-        self.by_id.iter().all(|&id| id == Self::NONE)
+        !self.subscribed.contains(&true)
     }
 }
 
@@ -457,7 +508,7 @@ impl TickerResolver {
 pub struct TickReader<'a> {
     path: PathBuf,
     reader: ParquetRecordBatchReader,
-    symbols: &'a TickerResolver,
+    subscribed: &'a SubscriptionMask,
     /// Decoded subscribed rows not yet grouped into a tick.
     queue: VecDeque<(Symbol, i64, Bar)>,
     /// Timestamp of the last decodable row seen, for the sort check. Tracks
@@ -470,13 +521,13 @@ pub struct TickReader<'a> {
 impl<'a> TickReader<'a> {
     pub fn new(
         file_path: &Path,
-        symbols: &'a TickerResolver,
+        subscribed: &'a SubscriptionMask,
         mask: &mut Option<ProjectionMask>,
     ) -> Result<Self, BacktestError> {
         Ok(Self {
             path: file_path.to_path_buf(),
             reader: open_bar_reader(file_path, mask)?,
-            symbols,
+            subscribed,
             queue: VecDeque::new(),
             last_ts: None,
             exhausted: false,
@@ -526,9 +577,12 @@ impl<'a> TickReader<'a> {
                 }
             }
             self.last_ts = Some(ts);
-            let Some(symbol) = self.symbols.resolve(cols.ticker.value(i)) else { continue };
+            let ticker_id = cols.ticker.value(i);
+            if !self.subscribed.contains(ticker_id) {
+                continue;
+            }
             let Some(bar) = cols.bar_with_time(i, time) else { continue };
-            self.queue.push_back((symbol, ts, bar));
+            self.queue.push_back((Symbol::from_ticker_id(ticker_id), ts, bar));
         }
         Ok(())
     }

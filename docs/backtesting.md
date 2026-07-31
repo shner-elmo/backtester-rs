@@ -29,12 +29,13 @@ pub trait Algorithm {
 
 ## Symbols
 
-Instruments are identified by [`Symbol`](../backtester/src/symbol.rs) — a
-`Copy` integer handle, not a ticker string. `ctx.add_equity("AAPL")` interns
-the ticker and returns its symbol; every other API (orders, `history`,
-`slice.bars` keys, `portfolio.get`, the corporate-action callbacks, the
-slippage/margin model contexts) takes that handle. Keep it in your algorithm
-struct.
+Instruments are identified by [`Symbol`](../backtester/src/symbol.rs) — the
+**encoded ticker id the dataset already uses**, the `ticker` column value in
+every Parquet row (see [data-setup.md](data-setup.md#encoded_tickersjson)).
+`ctx.add_equity("AAPL")` looks that id up and returns it; every other API
+(orders, `history`, `slice.bars` keys, `portfolio.get`, the corporate-action
+callbacks, the slippage/margin model contexts) takes the handle. Keep it in
+your algorithm struct.
 
 ```rust
 struct MyAlgo { aapl: Option<Symbol> }
@@ -43,13 +44,23 @@ struct MyAlgo { aapl: Option<Symbol> }
 //             if data.bars.contains_key(&aapl) { ctx.set_holdings(aapl, 1.0); }
 ```
 
-Two more `Context` methods bridge back to text — `ctx.symbol("AAPL")` looks up
-an already-subscribed ticker (`Option<Symbol>`), and `ctx.symbol_name(symbol)`
-gives the ticker back for logging. Both are for *your* code: the engine
-converts a ticker string exactly twice per run — when you subscribe it, and
-when a completed trade or open position is written to the result JSON (which
-still reports plain ticker strings). Nothing on the per-bar path touches a
-string, which is what keeps wide-universe runs fast.
+Subscribing works against the dataset's ticker map, which the engine loads
+*before* `initialize` runs:
+
+| Method | Behavior |
+|--------|----------|
+| `add_equity(ticker)` | **Panics** if the dataset has no such ticker — a typo costs a whole run to notice otherwise, since an unknown ticker simply never prints a bar |
+| `try_add_equity(ticker)` | `Option<Symbol>`; `None` instead of a panic, for dynamic universes |
+| `add_all_equities()` | Subscribes the entire dataset, returning every symbol — for strategies that screen the universe |
+| `symbol(ticker)` | Look up a ticker without subscribing |
+| `symbol_name(symbol)` | The ticker string back, for logging |
+
+The last two are for *your* code. The engine itself reads ticker text exactly
+twice per run: when the metadata files (splits/dividends/renames) are matched
+by ticker at load, and when a completed trade or open position is written to
+the result JSON (which still reports plain ticker strings). Nothing on the
+per-bar path touches a string — a row's `ticker` column *is* its symbol, so
+decoding a bar costs one array index to decide whether the run wants it.
 
 Per-symbol state of your own is best kept in a `SymbolMap<T>` (a hash map
 keyed by `Symbol`, exported from the crate root) — see
@@ -106,8 +117,9 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_start_date(y, m, d)` / `set_end_date(y, m, d)` | Inclusive backtest window |
 | `set_cash(amount)` | Starting cash |
 | `set_warm_up(bars)` | Bars to consume before `on_data` starts firing |
-| `add_equity(ticker)` | Subscribe to a ticker, returning its `Symbol` |
-| `symbol(ticker)` / `symbol_name(symbol)` | Look a subscribed ticker up / resolve a symbol back to its ticker |
+| `add_equity(ticker)` | Subscribe to a ticker, returning its `Symbol` (panics if the dataset lacks it — see [Symbols](#symbols)) |
+| `try_add_equity(ticker)` / `add_all_equities()` | Subscribe optimistically / subscribe the whole dataset |
+| `symbol(ticker)` / `symbol_name(symbol)` | Look a ticker up / resolve a symbol back to its ticker |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |
@@ -126,7 +138,6 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_risk_free_rate(annual)` | Annual rate the Sharpe ratio is computed in excess of (default `0.0`) |
 | `set_track_intraday_equity(b)` | Record a per-bar equity mark into `intraday_equity` (default off) |
 | `set_output_dir(dir)` | Where `run` writes the result JSON (default CWD; beats `$BACKTEST_OUTPUT_DIR`) |
-| `set_ticker_map_file(path)` | Ticker-encoding map location (default `encoded_tickers.json` in the data root) |
 | `set_splits_file(path)` | Splits JSON location (default `get_splits.json`; explicit path must exist) |
 | `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |

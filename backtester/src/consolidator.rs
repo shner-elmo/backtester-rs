@@ -111,9 +111,8 @@ mod tests {
         // which fires when the first Jan 4 (ET) bar arrives.
         let fired: Arc<Mutex<Vec<Bar>>> = Arc::new(Mutex::new(Vec::new()));
         let f = fired.clone();
-        let mut table = crate::symbol::SymbolTable::default();
         let mut c = ConsolidatorEntry::new(
-            table.intern("SYM"),
+            Symbol::from_ticker_id(1),
             ConsolidatorPeriod::Daily,
             Box::new(move |b: &Bar| f.lock().unwrap().push(b.clone())),
         );

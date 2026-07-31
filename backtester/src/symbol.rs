@@ -1,27 +1,31 @@
-//! Interned symbols — the engine's identifier for an instrument.
+//! The engine's instrument identifier and the containers keyed by it.
 //!
-//! A [`Symbol`] is a `Copy` integer handle into the run's [`SymbolTable`],
-//! which owns the single copy of each ticker string. Text is converted at the
-//! edges only: on the way in when a strategy calls
-//! [`Context::add_equity`](crate::Context::add_equity), and on the way out
-//! when results are written. Everything in between — the tick stream, order
-//! books, positions, history, corporate actions — moves integers, so no bar
-//! costs a `String` clone or a hash of text.
+//! A [`Symbol`] is the dataset's encoded ticker id — the `ticker` column value
+//! that every Parquet row already carries (see
+//! [`TickerMap`](crate::data::TickerMap) for the id ↔ ticker naming). It is a
+//! `Copy` integer, so the event loop moves instruments around without
+//! allocating or hashing text: a bar's symbol comes straight off the column,
+//! and per-symbol state is an array index away.
+//!
+//! Nothing in this module knows what a ticker is. Names enter the engine when
+//! a strategy subscribes ([`Context::add_equity`](crate::Context::add_equity))
+//! and leave it when results are written; in between there are only integers.
 //!
 //! ```no_run
 //! # use backtester::{Algorithm, Context, Slice, Symbol};
 //! struct MyAlgo {
-//!     aapl: Symbol,
+//!     aapl: Option<Symbol>,
 //! }
 //!
 //! impl Algorithm for MyAlgo {
 //!     fn initialize(&mut self, ctx: &mut Context) {
-//!         self.aapl = ctx.add_equity("AAPL"); // the one string -> Symbol step
+//!         self.aapl = Some(ctx.add_equity("AAPL")); // the one ticker -> Symbol step
 //!     }
 //!
 //!     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
-//!         if data.bars.contains_key(&self.aapl) {
-//!             ctx.set_holdings(self.aapl, 1.0);
+//!         let Some(aapl) = self.aapl else { return };
+//!         if data.bars.contains_key(&aapl) {
+//!             ctx.set_holdings(aapl, 1.0);
 //!         }
 //!     }
 //! }
@@ -32,85 +36,40 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
 };
 
-/// An interned instrument identifier: an index into the [`SymbolTable`] that
-/// minted it. Cheap to copy, compare, and hash.
+/// An instrument, identified by its encoded ticker id in the dataset.
 ///
-/// Obtain one from [`Context::add_equity`](crate::Context::add_equity) (or
+/// Get one from [`Context::add_equity`](crate::Context::add_equity) (or
 /// [`Context::symbol`](crate::Context::symbol)) and keep it — resolving it
-/// back to a ticker string ([`Context::symbol_name`](crate::Context::symbol_name))
-/// is for logging and reporting, not for the trading path.
+/// back to a ticker string
+/// ([`Context::symbol_name`](crate::Context::symbol_name)) is for logging and
+/// reporting, not for the trading path.
 ///
-/// Symbols from different tables are unrelated; mixing them is a bug (a
-/// backtest has exactly one table, owned by its `Context`).
+/// Ids are only meaningful within one dataset: they come from that dataset's
+/// `encoded_tickers.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Symbol(u32);
+pub struct Symbol(u16);
 
 impl Symbol {
-    /// Position of this symbol in its table — its index in any
-    /// [`SymbolVec`].
+    /// The symbol an encoded ticker id stands for. The id is not validated —
+    /// one the dataset's ticker map doesn't list simply has no name.
+    pub fn from_ticker_id(ticker_id: u16) -> Self {
+        Self(ticker_id)
+    }
+
+    /// The encoded ticker id, as it appears in the data's `ticker` column.
+    pub fn ticker_id(self) -> u16 {
+        self.0
+    }
+
+    /// The id as an index — its slot in any [`SymbolVec`].
     pub fn index(self) -> usize {
         self.0 as usize
     }
-
-    /// Rebuild a symbol from an index handed out by [`Symbol::index`]. Only
-    /// for the lookup tables that cache ids (see
-    /// [`TickerResolver`](crate::data::TickerResolver)) — an index no table
-    /// minted has no name.
-    pub(crate) fn from_index(index: usize) -> Self {
-        Self(index as u32)
-    }
 }
 
-/// The string ↔ [`Symbol`] mapping for one backtest. Owned by the
-/// [`Context`](crate::Context); ids are handed out densely from zero in
-/// interning order.
-#[derive(Debug, Default)]
-pub struct SymbolTable {
-    names: Vec<Box<str>>,
-    ids: HashMap<Box<str>, Symbol>,
-}
-
-impl SymbolTable {
-    /// The symbol for `name`, interning it if this is the first time it is
-    /// seen.
-    pub fn intern(&mut self, name: &str) -> Symbol {
-        if let Some(&symbol) = self.ids.get(name) {
-            return symbol;
-        }
-        let symbol = Symbol(self.names.len() as u32);
-        self.names.push(name.into());
-        self.ids.insert(name.into(), symbol);
-        symbol
-    }
-
-    /// The symbol for `name`, or `None` if it was never interned.
-    pub fn get(&self, name: &str) -> Option<Symbol> {
-        self.ids.get(name).copied()
-    }
-
-    /// The ticker string behind `symbol`.
-    ///
-    /// # Panics
-    ///
-    /// If `symbol` was minted by a different table.
-    pub fn name(&self, symbol: Symbol) -> &str {
-        &self.names[symbol.index()]
-    }
-
-    /// How many symbols have been interned.
-    pub fn len(&self) -> usize {
-        self.names.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
-    }
-}
-
-/// Hasher for [`Symbol`] keys. Symbols are dense small integers, so one
-/// multiply by an odd 64-bit constant (Fibonacci hashing) spreads them across
-/// a table for a fraction of SipHash's cost — and unlike ticker strings there
-/// is nothing to walk byte by byte.
+/// Hasher for [`Symbol`] keys. Ticker ids are small integers, so one multiply
+/// by an odd 64-bit constant (Fibonacci hashing) spreads them across a table
+/// for a fraction of SipHash's cost.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SymbolHasher(u64);
 
@@ -118,11 +77,15 @@ pub struct SymbolHasher(u64);
 const GOLDEN_RATIO: u64 = 0x9E37_79B9_7F4A_7C15;
 
 impl Hasher for SymbolHasher {
+    fn write_u16(&mut self, value: u16) {
+        self.0 = (value as u64).wrapping_mul(GOLDEN_RATIO);
+    }
+
     fn write_u32(&mut self, value: u32) {
         self.0 = (value as u64).wrapping_mul(GOLDEN_RATIO);
     }
 
-    // Symbols hash through `write_u32`; this is only here to satisfy the
+    // Symbols hash through `write_u16`; this is only here to satisfy the
     // trait and stays correct (if unremarkable) for anything else.
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
@@ -136,16 +99,16 @@ impl Hasher for SymbolHasher {
 }
 
 /// A hash map keyed by [`Symbol`], hashed with [`SymbolHasher`]. Use it for
-/// state only a few symbols have (positions, order books); use a
-/// [`SymbolVec`] for state every symbol has.
+/// state only some symbols have (positions, order books); use a
+/// [`SymbolVec`] for state every streaming symbol has.
 pub type SymbolMap<V> = HashMap<Symbol, V, BuildHasherDefault<SymbolHasher>>;
 
 /// A hash set of [`Symbol`]s, hashed with [`SymbolHasher`].
 pub type SymbolSet = HashSet<Symbol, BuildHasherDefault<SymbolHasher>>;
 
-/// A dense per-symbol table: one slot per symbol, indexed by its id, so a
-/// lookup is an array index rather than a hash. Grows on demand, filling new
-/// slots with `T::default()`.
+/// A dense per-symbol table: one slot per ticker id, so a lookup is an array
+/// index rather than a hash. Grows on demand, filling new slots with
+/// `T::default()`.
 ///
 /// This is what the per-bar state uses (history, marks, last-seen day) —
 /// state that every streaming symbol touches on every bar.
@@ -163,6 +126,14 @@ impl<T> Default for SymbolVec<T> {
 impl<T: Default> SymbolVec<T> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty table with a slot for every id below `len`, so the per-bar
+    /// writes never reallocate.
+    pub fn with_len(len: usize) -> Self {
+        let mut slots = Vec::new();
+        slots.resize_with(len, T::default);
+        Self { slots }
     }
 
     /// The slot for `symbol`, or `None` if it was never written.
@@ -184,7 +155,9 @@ impl<T: Default> SymbolVec<T> {
 
     /// The slot for `symbol`, growing the table to reach it.
     pub fn slot(&mut self, symbol: Symbol) -> &mut T {
-        self.reserve(symbol);
+        if self.slots.len() <= symbol.index() {
+            self.slots.resize_with(symbol.index() + 1, T::default);
+        }
         &mut self.slots[symbol.index()]
     }
 
@@ -199,13 +172,6 @@ impl<T: Default> SymbolVec<T> {
             None => T::default(),
         }
     }
-
-    /// Grow so every symbol up to `symbol` has a slot.
-    fn reserve(&mut self, symbol: Symbol) {
-        if self.slots.len() <= symbol.index() {
-            self.slots.resize_with(symbol.index() + 1, T::default);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -213,23 +179,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interning_is_stable_and_dense() {
-        let mut table = SymbolTable::default();
-        let a = table.intern("AAPL");
-        let b = table.intern("MSFT");
-        assert_eq!(table.intern("AAPL"), a);
-        assert_eq!((a.index(), b.index()), (0, 1));
-        assert_eq!(table.name(a), "AAPL");
-        assert_eq!(table.get("MSFT"), Some(b));
-        assert_eq!(table.get("NVDA"), None);
-        assert_eq!(table.len(), 2);
+    fn a_symbol_is_its_ticker_id() {
+        let sym = Symbol::from_ticker_id(17_309);
+        assert_eq!(sym.ticker_id(), 17_309);
+        assert_eq!(sym.index(), 17_309);
     }
 
     #[test]
     fn symbol_vec_grows_and_defaults() {
-        let mut table = SymbolTable::default();
-        let a = table.intern("A");
-        let z = table.intern("Z");
+        let (a, z) = (Symbol::from_ticker_id(1), Symbol::from_ticker_id(900));
 
         let mut prices: SymbolVec<Option<f64>> = SymbolVec::new();
         assert_eq!(prices.copied(z), None);
@@ -238,5 +196,16 @@ mod tests {
         assert_eq!(prices.copied(a), None, "untouched slots stay defaulted");
         assert_eq!(prices.take(z), Some(10.0));
         assert_eq!(prices.copied(z), None);
+    }
+
+    #[test]
+    fn symbol_map_round_trips() {
+        let mut map: SymbolMap<f64> = SymbolMap::default();
+        for id in [0u16, 1, 47, 17_309, u16::MAX] {
+            map.insert(Symbol::from_ticker_id(id), id as f64);
+        }
+        assert_eq!(map.len(), 5);
+        assert_eq!(map.get(&Symbol::from_ticker_id(47)), Some(&47.0));
+        assert_eq!(map.get(&Symbol::from_ticker_id(48)), None);
     }
 }

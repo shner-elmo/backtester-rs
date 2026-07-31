@@ -11,11 +11,10 @@
 
 use std::{cell::Cell, rc::Rc, time::Instant};
 
-use backtester::{data::load_ticker_map, run_backtest, Algorithm, Context, Slice};
+use backtester::{run_backtest, Algorithm, Context, Slice};
 use chrono::{Datelike, NaiveDate};
 
 struct Noop {
-    symbols: Vec<String>,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
     ticks: Rc<Cell<u64>>,
@@ -34,9 +33,7 @@ impl Algorithm for Noop {
         if let Some(d) = self.end {
             ctx.set_end_date(d.year(), d.month(), d.day());
         }
-        for s in &self.symbols {
-            ctx.add_equity(s);
-        }
+        ctx.add_all_equities(); // the whole dataset, the widest the engine gets
     }
 
     fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {
@@ -49,24 +46,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
 
-    let ticker_map = load_ticker_map(data_path).unwrap_or_else(|e| {
-        eprintln!("failed to load ticker map: {e}");
-        std::process::exit(1);
-    });
-
     let date = |i: usize| {
         args.get(i).map(|s| s.parse::<NaiveDate>().unwrap_or_else(|e| panic!("bad date {s}: {e}")))
     };
 
     let ticks = Rc::new(Cell::new(0u64));
     let bars = Rc::new(Cell::new(0u64));
-    let algo = Noop {
-        symbols: ticker_map.into_values().collect(),
-        start: date(2),
-        end: date(3),
-        ticks: ticks.clone(),
-        bars: bars.clone(),
-    };
+    let algo = Noop { start: date(2), end: date(3), ticks: ticks.clone(), bars: bars.clone() };
 
     let start = Instant::now();
     let result = run_backtest(algo, data_path).unwrap_or_else(|e| {

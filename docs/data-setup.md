@@ -18,12 +18,11 @@ Parquet plus a ticker-encoding JSON:
     ...
 ```
 
-`encoded_tickers.json` maps the encoded `ticker` id (a `u16`) to its symbol.
-At the start of a run the engine turns that map into an array indexed by
-ticker id, holding the interned
-[`Symbol`](../backtester/src/symbol.rs) of each *subscribed* ticker (and a
-sentinel for the rest), so decoding a bar resolves its symbol and its
-subscription with one array index and never touches the ticker string.
+`encoded_tickers.json` maps the encoded `ticker` id (a `u16`) to its ticker.
+That id *is* the engine's [`Symbol`](../backtester/src/symbol.rs): the map is
+read once, before the strategy's `initialize`, so `ctx.add_equity("AAPL")` can
+hand back the id the data already carries. Streaming a bar then costs one
+array index (a subscribed-or-not flag) and never touches the ticker string.
 
 ### Optional metadata files & custom paths
 
@@ -32,11 +31,9 @@ files: `get_splits.json` (stock splits), `get_dividends.json` (cash
 dividends), and `ticker_renames.json` (ticker renames). When absent they
 simply mean "no such events" (the committed test fixture has none of them).
 
-Every one of these locations — including the ticker map — can be overridden
-in code from `initialize`:
+These three can be pointed elsewhere from `initialize`:
 
 ```rust
-ctx.set_ticker_map_file("my_tickers.json");        // relative to the data root
 ctx.set_splits_file("/srv/meta/splits.json");      // absolute paths work too
 ctx.set_dividends_file("my_dividends.json");
 ctx.set_renames_file("renames/2023.json");
@@ -46,6 +43,16 @@ A relative path resolves against the data root passed to `run`; an absolute
 path is used as-is. Note the missing-file rule flips once you set a path
 explicitly: a configured splits/dividends/renames file **must exist**, so a
 typo fails the run instead of silently skipping every event.
+
+The ticker map is different: it must be read *before* `initialize` runs (that
+is what lets `ctx.add_equity` return the dataset's id for a ticker), so it
+can't be configured from inside it. Pass a non-default location to the run
+instead:
+
+```rust
+run_with_ticker_map(algo, data_path, Some(Path::new("my_tickers.json")))?;
+run_backtest_with_ticker_map(algo, data_path, Some(&path))?;  // no printing
+```
 
 ### Parquet schema
 

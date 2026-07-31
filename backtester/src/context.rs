@@ -8,10 +8,11 @@ use crate::{
     broker::Portfolio,
     commission::{CommissionModel, NoCommission},
     consolidator::{ConsolidatorEntry, ConsolidatorPeriod},
+    data::TickerMap,
     logging::LogConfig,
     margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
-    symbol::{Symbol, SymbolSet, SymbolTable, SymbolVec},
+    symbol::{Symbol, SymbolSet, SymbolVec},
 };
 
 pub(crate) enum OrderKind {
@@ -67,10 +68,11 @@ pub(crate) struct ScheduledTimeEntry {
 
 pub struct Context {
     pub portfolio: Portfolio,
-    /// The run's string ↔ [`Symbol`] mapping. Every ticker string entering
-    /// the engine is interned here once, in `initialize` (plus rename targets
-    /// as they take effect); nothing downstream touches text again.
-    pub(crate) symbols: SymbolTable,
+    /// The dataset's ticker naming, loaded before `initialize` runs so
+    /// `add_equity` can hand back the ticker id the data itself uses. Read
+    /// when subscribing, when matching corporate actions, and when reporting
+    /// — never per bar.
+    pub(crate) tickers: TickerMap,
     pub(crate) history_store: SymbolVec<VecDeque<Bar>>,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
@@ -95,7 +97,6 @@ pub struct Context {
     pub(crate) fill_timing: FillTiming,
     pub(crate) log_config: LogConfig,
     pub(crate) output_dir: Option<PathBuf>,
-    pub(crate) ticker_map_file: Option<PathBuf>,
     pub(crate) splits_file: Option<PathBuf>,
     pub(crate) dividends_file: Option<PathBuf>,
     pub(crate) renames_file: Option<PathBuf>,
@@ -105,7 +106,7 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             portfolio: Portfolio::default(),
-            symbols: SymbolTable::default(),
+            tickers: TickerMap::default(),
             history_store: SymbolVec::new(),
             consolidators: Vec::new(),
             time_callbacks: Vec::new(),
@@ -130,7 +131,6 @@ impl Default for Context {
             fill_timing: FillTiming::default(),
             log_config: LogConfig::default(),
             output_dir: None,
-            ticker_map_file: None,
             splits_file: None,
             dividends_file: None,
             renames_file: None,
@@ -139,6 +139,14 @@ impl Default for Context {
 }
 
 impl Context {
+    /// A context for a run over the dataset `tickers` describes. The engine
+    /// builds this before calling `initialize`, so `add_equity` can resolve a
+    /// ticker to the id the data encodes it as.
+    pub(crate) fn with_tickers(tickers: TickerMap) -> Self {
+        let history_store = SymbolVec::with_len(tickers.id_space());
+        Self { tickers, history_store, ..Self::default() }
+    }
+
     pub fn set_start_date(&mut self, y: i32, m: u32, d: u32) {
         self.start_date = NaiveDate::from_ymd_opt(y, m, d);
     }
@@ -161,32 +169,61 @@ impl Context {
         }
     }
 
-    /// Subscribe a ticker's bars and return the [`Symbol`] that stands for it
-    /// everywhere else — orders, history, slices, callbacks. This is the one
-    /// place a strategy spells a ticker out; keep the returned handle.
+    /// Subscribe a ticker's bars and return the [`Symbol`] — the dataset's id
+    /// for it — that stands in for it everywhere else: orders, history,
+    /// slices, callbacks. This is the one place a strategy spells a ticker
+    /// out; keep the returned handle.
     ///
     /// Subscribing the same ticker twice returns the same symbol.
-    pub fn add_equity(&mut self, symbol: &str) -> Symbol {
-        let symbol = self.symbols.intern(symbol);
-        self.subscribed_symbols.insert(symbol);
-        symbol
-    }
-
-    /// The symbol for an already-known ticker, or `None` if nothing
-    /// subscribed (or was renamed to) it. For strategies that would rather
-    /// look a ticker up than carry the handle around — a hash lookup on your
-    /// side of the API, not the engine's.
-    pub fn symbol(&self, name: &str) -> Option<Symbol> {
-        self.symbols.get(name)
-    }
-
-    /// The ticker string behind a symbol, for logging and reporting.
     ///
     /// # Panics
     ///
-    /// If `symbol` came from a different backtest's `Context`.
+    /// If the dataset has no such ticker. That is a configuration mistake
+    /// (usually a typo) which would otherwise cost a whole run to discover,
+    /// since an unknown ticker simply never prints a bar. Use
+    /// [`try_add_equity`](Self::try_add_equity) when the universe is dynamic
+    /// and a miss is expected.
+    pub fn add_equity(&mut self, ticker: &str) -> Symbol {
+        self.try_add_equity(ticker).unwrap_or_else(|| {
+            panic!(
+                "ticker {ticker:?} is not in this dataset's ticker map; check the spelling \
+                 or the data root"
+            )
+        })
+    }
+
+    /// [`add_equity`](Self::add_equity) for a ticker that may legitimately be
+    /// missing: returns `None` instead of panicking.
+    pub fn try_add_equity(&mut self, ticker: &str) -> Option<Symbol> {
+        let symbol = self.tickers.symbol(ticker)?;
+        self.subscribe(symbol);
+        Some(symbol)
+    }
+
+    /// Subscribe every symbol the dataset has data for — the whole universe,
+    /// for strategies that screen it rather than pick names up front.
+    pub fn add_all_equities(&mut self) -> Vec<Symbol> {
+        let all: Vec<Symbol> = self.tickers.symbols().collect();
+        self.subscribed_symbols.extend(all.iter().copied());
+        all
+    }
+
+    pub(crate) fn subscribe(&mut self, symbol: Symbol) {
+        self.subscribed_symbols.insert(symbol);
+    }
+
+    /// The symbol for a ticker the dataset has, or `None`. For strategies
+    /// that would rather look a ticker up than carry the handle around — a
+    /// hash lookup on your side of the API, not the engine's.
+    pub fn symbol(&self, ticker: &str) -> Option<Symbol> {
+        self.tickers.symbol(ticker)
+    }
+
+    /// The ticker string behind a symbol, for logging and reporting (`"?"`
+    /// for a symbol the dataset's map doesn't list, which subscribing can't
+    /// produce).
     pub fn symbol_name(&self, symbol: Symbol) -> &str {
-        self.symbols.name(symbol)
+        self.tickers.name(symbol).unwrap_or("?")
     }
 
     /// Set the slippage model applied to every fill (built-in, trait impl, or
@@ -251,14 +288,6 @@ impl Context {
     /// directory. Ignored by `run_backtest`, which never writes a file.
     pub fn set_output_dir(&mut self, dir: impl Into<PathBuf>) {
         self.output_dir = Some(dir.into());
-    }
-
-    /// Path of the ticker-encoding map (default `encoded_tickers.json` in the
-    /// data root). Same path resolution as
-    /// [`set_splits_file`](Self::set_splits_file); unlike the others this
-    /// file is required — a backtest cannot start without it.
-    pub fn set_ticker_map_file(&mut self, path: impl Into<PathBuf>) {
-        self.ticker_map_file = Some(path.into());
     }
 
     /// Path of the Polygon-format stock-splits JSON (default
