@@ -234,7 +234,7 @@ fn load_pending_actions(
 
     // A row's ticker id is already its symbol, so the reader only needs to
     // know which ids this run wants.
-    let mut subscribed = SubscriptionMask::new();
+    let mut subscribed = SubscriptionMask::with_id_space(ctx.id_space());
     for &symbol in &ctx.subscribed_symbols {
         subscribed.insert(symbol);
     }

@@ -2,7 +2,10 @@
 //! the methods in `orders.rs` / `corporate_actions.rs`, and assembles the
 //! final [`BacktestResult`].
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::PathBuf,
+};
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
 use chrono_tz::US::Eastern;
@@ -194,12 +197,36 @@ impl Engine {
     /// Append this tick's bars to the per-symbol history and feed the
     /// consolidators. Runs during warm-up too, so history and consolidator
     /// state (e.g. a 60-min bar) build up over the warm-up period.
+    ///
+    /// The history push is a write into that symbol's own heap-allocated
+    /// deque — a cache miss per bar across a wide universe — so
+    /// `Context::track_history` narrows it to the symbols a strategy will
+    /// actually read back. The two loops are kept separate rather than
+    /// branching per bar: the default (track everything) must not pay for the
+    /// opt-in check.
     fn record_history(&mut self, bars: &[(Symbol, Bar)]) {
-        for (symbol, bar) in bars {
-            let hist = self.ctx.history_store.slot(*symbol);
+        let ctx = &mut self.ctx;
+        let max_history = ctx.max_history;
+        let store = &mut ctx.history_store;
+        let push = |store: &mut SymbolVec<VecDeque<Bar>>, symbol: Symbol, bar: &Bar| {
+            let hist = store.slot(symbol);
             hist.push_front(bar.clone());
-            if hist.len() > self.ctx.max_history {
+            if hist.len() > max_history {
                 hist.pop_back();
+            }
+        };
+        match &ctx.history_tracked {
+            None => {
+                for (symbol, bar) in bars {
+                    push(store, *symbol, bar);
+                }
+            }
+            Some(tracked) => {
+                for (symbol, bar) in bars {
+                    if tracked.copied(*symbol) {
+                        push(store, *symbol, bar);
+                    }
+                }
             }
         }
         if self.ctx.consolidators.is_empty() {

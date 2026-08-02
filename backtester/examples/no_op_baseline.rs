@@ -8,11 +8,24 @@
 //!
 //! `start` / `end` are optional YYYY-MM-DD bounds; omit both to run the whole
 //! dataset.
+//!
+//! Environment knobs, for isolating what a change actually moved:
+//!
+//! - `NOOP_SYMBOLS=n` — subscribe only the first `n` tickers instead of the
+//!   whole dataset, i.e. the narrow-universe case most real strategies are.
+//! - `NOOP_HISTORY=n` — history window (default 1, the cheapest possible; the
+//!   engine's own default is 500).
+//! - `NOOP_TRACK_HISTORY=n` — record history for only the first `n` subscribed
+//!   symbols (opt-in tracking). Unset means every subscribed symbol.
 
 use std::{cell::Cell, rc::Rc, time::Instant};
 
 use backtester::{run_backtest, Algorithm, Context, Slice};
 use chrono::{Datelike, NaiveDate};
+
+fn env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok().map(|v| v.parse().unwrap_or_else(|e| panic!("bad {key}: {e}")))
+}
 
 struct Noop {
     start: Option<NaiveDate>,
@@ -26,14 +39,34 @@ impl Algorithm for Noop {
         ctx.set_cash(100_000.0);
         // 1 is the smallest allowed window; keeps the per-symbol history
         // deques from doing any real work.
-        ctx.set_max_history(1);
+        ctx.set_max_history(env_usize("NOOP_HISTORY").unwrap_or(1));
         if let Some(d) = self.start {
             ctx.set_start_date(d.year(), d.month(), d.day());
         }
         if let Some(d) = self.end {
             ctx.set_end_date(d.year(), d.month(), d.day());
         }
-        ctx.add_all_equities(); // the whole dataset, the widest the engine gets
+
+        // The whole dataset by default — the widest the engine gets.
+        let mut symbols = ctx.dataset_symbols();
+        if let Some(n) = env_usize("NOOP_SYMBOLS") {
+            symbols.truncate(n);
+        }
+        for &symbol in &symbols {
+            ctx.add_symbol(symbol);
+        }
+        if let Some(n) = env_usize("NOOP_TRACK_HISTORY") {
+            ctx.disable_history(); // flips to opt-in even when n is 0
+            for &symbol in symbols.iter().take(n) {
+                ctx.track_history(symbol);
+            }
+        }
+        eprintln!(
+            "[noop] {} symbol(s), history {} bars{}",
+            symbols.len(),
+            ctx.max_history(),
+            env_usize("NOOP_TRACK_HISTORY").map_or(String::new(), |n| format!(", tracking {n}")),
+        );
     }
 
     fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {
@@ -73,4 +106,16 @@ fn main() {
 // ticks:      19206
 // bars:       33960794
 // throughput: 958657 bars/s
+// final equity: 100000.00 (should equal starting cash)
+
+// elapsed:    14.8s
+// ticks:      19206
+// bars:       33960794
+// throughput: 2296628 bars/s
+// final equity: 100000.00 (should equal starting cash)
+
+// elapsed:    554.2s
+// ticks:      1120001
+// bars:       1835105812
+// throughput: 3311203 bars/s
 // final equity: 100000.00 (should equal starting cash)
