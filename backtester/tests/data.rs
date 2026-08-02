@@ -66,3 +66,71 @@ fn every_bar_satisfies_ohlc_invariants() {
         assert!(b.low <= b.open && b.low <= b.close, "{sym} {}: low above o/c", b.time);
     }
 }
+
+/// Drain every tick of the fixture through a `TickReader` built on `mask`.
+fn drain(mask: &backtester::data::SubscriptionMask) -> Vec<(backtester::Symbol, Bar)> {
+    use backtester::data::{sorted_parquet_files, TickReader};
+
+    let mut projection = None;
+    let mut out = Vec::new();
+    for path in sorted_parquet_files(FIXTURE) {
+        let mut reader = TickReader::new(&path, mask, &mut projection).unwrap();
+        while let Some((_, bars)) = reader.next_tick().unwrap() {
+            out.extend(bars);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_pushed_down_subscription_reads_the_same_bars() {
+    use backtester::{data::SubscriptionMask, Symbol};
+
+    // AAPL is id 47 and the only ticker in the fixture. Subscribing it alone
+    // out of a wide id space is selective enough to become a Parquet row
+    // filter; subscribing every id up to it is not, so that reader decodes
+    // unfiltered. Both must see exactly the same AAPL bars.
+    let mut selective = SubscriptionMask::with_id_space(20_000);
+    selective.insert(Symbol::from_ticker_id(47));
+    assert!(selective.worth_pushing_down(), "expected the narrow mask to push down");
+
+    let mut wide = SubscriptionMask::new();
+    for id in 0..=47 {
+        wide.insert(Symbol::from_ticker_id(id));
+    }
+    assert!(!wide.worth_pushing_down(), "expected the wide mask to read unfiltered");
+
+    let (filtered, unfiltered) = (drain(&selective), drain(&wide));
+    assert!(!filtered.is_empty(), "fixture produced no bars");
+    assert_eq!(filtered.len(), unfiltered.len());
+    for ((sa, ba), (sb, bb)) in filtered.iter().zip(&unfiltered) {
+        assert_eq!(sa, sb);
+        assert_eq!(ba.time, bb.time);
+        assert_eq!(
+            (ba.open, ba.high, ba.low, ba.close, ba.volume),
+            (bb.open, bb.high, bb.low, bb.close, bb.volume)
+        );
+    }
+}
+
+#[test]
+fn pushdown_pays_off_only_for_a_selective_subscription() {
+    use backtester::{data::SubscriptionMask, Symbol};
+
+    let mut mask = SubscriptionMask::with_id_space(1_000);
+    assert!(mask.is_empty());
+    for id in 0..100 {
+        mask.insert(Symbol::from_ticker_id(id));
+    }
+    assert_eq!(mask.len(), 100);
+    assert!(mask.worth_pushing_down(), "10% of the id space is worth filtering");
+
+    for id in 100..600 {
+        mask.insert(Symbol::from_ticker_id(id));
+    }
+    assert!(!mask.worth_pushing_down(), "60% of the id space is not");
+
+    // Inserting the same id twice must not inflate the count.
+    mask.insert(Symbol::from_ticker_id(0));
+    assert_eq!(mask.len(), 600);
+}

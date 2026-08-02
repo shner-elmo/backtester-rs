@@ -6,11 +6,14 @@ use std::{
 
 use arrow::{
     array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use parquet::arrow::{
-    arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder},
+    arrow_reader::{
+        ArrowPredicateFn, ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder, RowFilter,
+    },
     ProjectionMask,
 };
 use walkdir::WalkDir;
@@ -18,6 +21,19 @@ use walkdir::WalkDir;
 use crate::{bar::Bar, error::BacktestError, symbol::Symbol};
 
 pub const COLUMNS: [&str; 7] = ["ticker", "volume", "open", "high", "low", "close", "window_start"];
+
+/// Rows per Arrow batch the Parquet reader decodes at a time.
+///
+/// The reader default (1024) is far below one tick of a wide universe (~1600
+/// symbols print on the same minute), so nearly every tick would straddle a
+/// batch boundary and each batch re-pays the per-batch schema lookup and
+/// downcast. A batch that spans several ticks amortizes that away.
+///
+/// Measured on a 30.7M-row month file with the full universe subscribed:
+/// 1024 rows 5.9s, 32k 5.3s, 128k 5.1s, 256k 4.9s, 1M 5.0s. The curve is flat
+/// past ~128k, where the projected 7 columns still only cost about 6 MB of
+/// resident batch.
+const READ_BATCH_SIZE: usize = 131_072;
 
 /// Metadata files the loaders expect inside the data root, next to the
 /// Parquet tree. Only `TICKER_MAP_FILE` is required; the rest are optional.
@@ -394,17 +410,51 @@ fn open_bar_reader(
     file_path: &Path,
     mask: &mut Option<ProjectionMask>,
 ) -> Result<ParquetRecordBatchReader, BacktestError> {
+    open_bar_reader_filtered(file_path, mask, None)
+}
+
+/// [`open_bar_reader`] that can push a subscription down into the Parquet
+/// reader as a row filter.
+///
+/// Every month file interleaves all ~19k tickers in time order, so row-group
+/// statistics can't prune on `ticker` — but a row filter still pays off: the
+/// reader evaluates the predicate against the `ticker` column alone and then
+/// decodes the OHLCV pages only for the rows that survive. A strategy holding
+/// a hundred names stops paying to decode the other 99.5% of the file.
+///
+/// The filter is skipped for a wide subscription (see
+/// [`SubscriptionMask::worth_pushing_down`]), where selecting nearly every row
+/// costs more than it saves.
+fn open_bar_reader_filtered(
+    file_path: &Path,
+    mask: &mut Option<ProjectionMask>,
+    subscribed: Option<&SubscriptionMask>,
+) -> Result<ParquetRecordBatchReader, BacktestError> {
     let file = File::open(file_path)
         .map_err(|source| BacktestError::Io { path: file_path.to_path_buf(), source })?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+    let mut builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
         BacktestError::Parquet { path: file_path.to_path_buf(), message: e.to_string() }
     })?;
+
+    if let Some(subscribed) = subscribed.filter(|s| s.worth_pushing_down()) {
+        let ticker_only = ProjectionMask::columns(builder.parquet_schema(), ["ticker"]);
+        let wanted = subscribed.clone();
+        let predicate = ArrowPredicateFn::new(ticker_only, move |batch: RecordBatch| {
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .ok_or_else(|| ArrowError::CastError("ticker column is not u16".into()))?;
+            Ok(ids.iter().map(|id| Some(id.is_some_and(|id| wanted.contains(id)))).collect())
+        });
+        builder = builder.with_row_filter(RowFilter::new(vec![Box::new(predicate)]));
+    }
+
     let mask = mask
         .get_or_insert_with(|| ProjectionMask::columns(builder.parquet_schema(), COLUMNS))
         .clone();
-    builder.with_projection(mask).build().map_err(|e| BacktestError::Parquet {
-        path: file_path.to_path_buf(),
-        message: e.to_string(),
+    builder.with_projection(mask).with_batch_size(READ_BATCH_SIZE).build().map_err(|e| {
+        BacktestError::Parquet { path: file_path.to_path_buf(), message: e.to_string() }
     })
 }
 
@@ -466,9 +516,10 @@ pub type Tick = (i64, Vec<(Symbol, Bar)>);
 /// column *is* its [`Symbol`], so all that's left to decide is whether the
 /// run wants it — one array index, no map lookup, no string comparison, no
 /// allocation.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SubscriptionMask {
     subscribed: Vec<bool>,
+    count: usize,
 }
 
 impl SubscriptionMask {
@@ -476,11 +527,20 @@ impl SubscriptionMask {
         Self::default()
     }
 
+    /// A mask sized to the dataset's whole id space, so how *selective* a
+    /// subscription is can be judged against the ids that exist rather than
+    /// against the highest one subscribed.
+    pub fn with_id_space(ids: usize) -> Self {
+        Self { subscribed: vec![false; ids], count: 0 }
+    }
+
     pub fn insert(&mut self, symbol: Symbol) {
         if self.subscribed.len() <= symbol.index() {
             self.subscribed.resize(symbol.index() + 1, false);
         }
-        self.subscribed[symbol.index()] = true;
+        if !std::mem::replace(&mut self.subscribed[symbol.index()], true) {
+            self.count += 1;
+        }
     }
 
     #[inline]
@@ -490,7 +550,30 @@ impl SubscriptionMask {
 
     /// Whether nothing is subscribed at all.
     pub fn is_empty(&self) -> bool {
-        !self.subscribed.contains(&true)
+        self.count == 0
+    }
+
+    /// How many symbols are subscribed.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether it is worth handing this mask to the Parquet reader as a row
+    /// filter rather than filtering after decode.
+    ///
+    /// The filter earns its keep by skipping OHLCV decode for unwanted rows,
+    /// so it wants the subscription to be a small slice of the dataset. A run
+    /// that wants most of the ids gets nothing back for the predicate pass and
+    /// the selection bookkeeping, so it reads unfiltered and drops the few
+    /// rows it doesn't want after decode.
+    ///
+    /// Measured on a 30.7M-row month file (19,201 ids in the dataset), filter
+    /// on vs off: 100 ids 0.81s vs 1.7s, 1k 1.0s vs 1.9s, 4k 1.7s vs 2.3s, 8k
+    /// 2.4s vs 2.8s, 10k 2.9s vs 3.0s, 12k 3.3s vs 3.3s, 16k 4.4s vs 3.9s,
+    /// all 5.1s vs 4.8s. The crossover sits near 55% of the id space, so half
+    /// is the cutoff.
+    pub fn worth_pushing_down(&self) -> bool {
+        self.count * 2 < self.subscribed.len()
     }
 }
 
@@ -505,6 +588,13 @@ impl SubscriptionMask {
 /// ingest. Rows with a timestamp outside the nanosecond-representable range
 /// are corrupt and dropped before the order check, as are rows with a
 /// ticker id missing from the map.
+///
+/// A selective subscription is pushed into the Parquet reader as a row filter
+/// (see [`open_bar_reader_filtered`]), in which case the rows this type sees —
+/// and therefore order-checks — are only the subscribed ones. That still
+/// guarantees the stream handed to the engine is ordered, which is what the
+/// day-boundary and fill logic depend on. Validating a file's full row order
+/// is the job of `examples/check_sorted.rs`, which subscribes everything.
 pub struct TickReader<'a> {
     path: PathBuf,
     reader: ParquetRecordBatchReader,
@@ -512,8 +602,9 @@ pub struct TickReader<'a> {
     /// Decoded subscribed rows not yet grouped into a tick.
     queue: VecDeque<(Symbol, i64, Bar)>,
     /// Timestamp of the last decodable row seen, for the sort check. Tracks
-    /// every row (not just subscribed ones): an unsorted file is bad data
-    /// regardless of which symbols this run happens to subscribe.
+    /// every row the reader hands back — which is every row in the file
+    /// unless the subscription was pushed down as a row filter, and only the
+    /// subscribed ones when it was.
     last_ts: Option<i64>,
     exhausted: bool,
 }
@@ -526,7 +617,7 @@ impl<'a> TickReader<'a> {
     ) -> Result<Self, BacktestError> {
         Ok(Self {
             path: file_path.to_path_buf(),
-            reader: open_bar_reader(file_path, mask)?,
+            reader: open_bar_reader_filtered(file_path, mask, Some(subscribed))?,
             subscribed,
             queue: VecDeque::new(),
             last_ts: None,

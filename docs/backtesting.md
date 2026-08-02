@@ -119,6 +119,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_warm_up(bars)` | Bars to consume before `on_data` starts firing |
 | `add_equity(ticker)` | Subscribe to a ticker, returning its `Symbol` (panics if the dataset lacks it — see [Symbols](#symbols)) |
 | `try_add_equity(ticker)` / `add_all_equities()` | Subscribe optimistically / subscribe the whole dataset |
+| `dataset_symbols()` / `add_symbol(symbol)` | List the dataset's symbols without subscribing / subscribe one you already hold |
 | `symbol(ticker)` / `symbol_name(symbol)` | Look a ticker up / resolve a symbol back to its ticker |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
@@ -141,7 +142,8 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_splits_file(path)` | Splits JSON location (default `get_splits.json`; explicit path must exist) |
 | `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
-| `set_max_history(n)` | Bars per symbol `history()` retains (default 500) |
+| `set_max_history(n)` / `max_history()` | Bars per symbol `history()` retains (default 500) |
+| `track_history(symbol)` / `disable_history()` | Record history for only these symbols / for none — see [History cost](#history-cost) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
@@ -469,6 +471,56 @@ The `data_path` argument must be a directory that contains
 `encoded_tickers.json` and has the Parquet files somewhere beneath it. See
 [data-setup.md](./data-setup.md) for the expected layout, and
 [results.md](./results.md) for what the run produces.
+
+## Performance
+
+Two knobs dominate the cost of a wide-universe run. Both were measured on one
+30.7M-row month file (19,201 tickers in the dataset), no-op strategy, release
+build, page cache warm.
+
+### History cost
+
+Every subscribed symbol's bar is pushed into that symbol's own history deque on
+every bar it prints — a write into a separate heap allocation, so a wide
+universe pays roughly a cache miss per bar whether or not the strategy ever
+calls `history()`. Narrow it to what you actually read back:
+
+| Setting | Full-universe month |
+|---|---|
+| default (every subscribed symbol, window 500) | 6.6s |
+| `track_history()` for a handful of symbols | 3.8s |
+| `disable_history()` | 3.7s |
+
+`disable_history()` is the right call for a strategy that only looks at the
+current `Slice` or keeps its own state; `track_history(symbol)` keeps the
+rolling window for just the symbols you name. Consolidators are unaffected —
+they see every bar of the symbols they are registered for either way.
+
+### Subscription pushdown
+
+Every month file interleaves all ~19k tickers in time order, so row-group
+statistics cannot prune on `ticker`. A *selective* subscription is instead
+handed to the Parquet reader as a row filter: the predicate runs against the
+`ticker` column alone and the OHLCV pages are only decoded for rows that
+survive. This is automatic — the engine pushes down whenever fewer than half
+the dataset's ids are subscribed, and reads unfiltered above that, where the
+predicate pass costs more than it saves.
+
+| Subscribed | With pushdown | Without |
+|---|---|---|
+| 100 | 0.81s | 1.7s |
+| 1,000 | 1.0s | 1.9s |
+| 4,000 | 1.7s | 2.3s |
+| 8,000 | 2.4s | 2.8s |
+| 16,000 | 4.4s | 3.9s |
+| all 19,201 | 5.1s | 4.8s |
+
+So subscribing only what a strategy trades is worth real time — the engine no
+longer pays full decode for the rest of the market.
+
+`examples/no_op_baseline.rs` (a strategy that only counts bars) and
+`examples/scan_stages.rs` (I/O vs decode vs tick-grouping attribution) are the
+tools these numbers came from.
 
 ## Modeling notes
 

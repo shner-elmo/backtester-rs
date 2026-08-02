@@ -74,6 +74,11 @@ pub struct Context {
     /// — never per bar.
     pub(crate) tickers: TickerMap,
     pub(crate) history_store: SymbolVec<VecDeque<Bar>>,
+    /// Which symbols `record_history` writes for. `None` — the default —
+    /// means every subscribed symbol; the first
+    /// [`track_history`](Context::track_history) call narrows it to an opt-in
+    /// list.
+    pub(crate) history_tracked: Option<SymbolVec<bool>>,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
     pub(crate) warm_up_remaining: usize,
@@ -108,6 +113,7 @@ impl Default for Context {
             portfolio: Portfolio::default(),
             tickers: TickerMap::default(),
             history_store: SymbolVec::new(),
+            history_tracked: None,
             consolidators: Vec::new(),
             time_callbacks: Vec::new(),
             warm_up_remaining: 0,
@@ -206,6 +212,31 @@ impl Context {
         let all: Vec<Symbol> = self.tickers.symbols().collect();
         self.subscribed_symbols.extend(all.iter().copied());
         all
+    }
+
+    /// Subscribe a symbol already in hand — from
+    /// [`symbol`](Self::symbol), [`dataset_symbols`](Self::dataset_symbols),
+    /// or a previous run. The by-name counterpart is
+    /// [`add_equity`](Self::add_equity); this is what a strategy that picks
+    /// its universe out of [`dataset_symbols`](Self::dataset_symbols) uses.
+    pub fn add_symbol(&mut self, symbol: Symbol) {
+        self.subscribe(symbol);
+    }
+
+    /// Every symbol the dataset has data for, in ticker-id order, **without**
+    /// subscribing any of them — for strategies that filter the universe down
+    /// before committing to it. Subscribe the ones you keep with
+    /// [`add_symbol`](Self::add_symbol);
+    /// [`add_all_equities`](Self::add_all_equities) is the take-everything
+    /// shortcut.
+    pub fn dataset_symbols(&self) -> Vec<Symbol> {
+        self.tickers.symbols().collect()
+    }
+
+    /// One past the dataset's highest ticker id — the width any dense
+    /// per-symbol table needs.
+    pub(crate) fn id_space(&self) -> usize {
+        self.tickers.id_space()
     }
 
     pub(crate) fn subscribe(&mut self, symbol: Symbol) {
@@ -329,6 +360,59 @@ impl Context {
     pub fn set_max_history(&mut self, bars: usize) {
         assert!(bars >= 1, "max history must be at least 1");
         self.max_history = bars;
+    }
+
+    /// How many bars per symbol [`history`](Self::history) retains.
+    pub fn max_history(&self) -> usize {
+        self.max_history
+    }
+
+    /// Record history for `symbol` only — the opt-in form of the rolling
+    /// window.
+    ///
+    /// By default every subscribed symbol's bars are pushed into its history
+    /// deque on every bar, which a wide universe pays for on every one of its
+    /// bars whether or not the strategy ever calls
+    /// [`history`](Self::history). The **first** call to this method flips
+    /// history to opt-in: from then on only the symbols named here are
+    /// recorded, and [`history`](Self::history) returns empty for the rest.
+    ///
+    /// Call it from `initialize` for the handful of symbols the strategy
+    /// actually reads back. A full-universe strategy that keeps its own state
+    /// (or reads only the current [`Slice`](crate::Slice)) can skip the work
+    /// entirely by tracking nothing:
+    ///
+    /// ```no_run
+    /// # use backtester::{Algorithm, Context, Slice};
+    /// # struct A;
+    /// # impl Algorithm for A {
+    /// fn initialize(&mut self, ctx: &mut Context) {
+    ///     let spy = ctx.add_equity("SPY");
+    ///     ctx.add_all_equities();
+    ///     ctx.track_history(spy); // only SPY keeps a rolling window
+    /// }
+    /// # fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+    /// # }
+    /// ```
+    ///
+    /// Consolidators are unaffected — they see every bar of the symbols they
+    /// are registered for regardless.
+    pub fn track_history(&mut self, symbol: Symbol) {
+        let tracked = self
+            .history_tracked
+            .get_or_insert_with(|| SymbolVec::with_len(self.tickers.id_space()));
+        tracked.set(symbol, true);
+    }
+
+    /// Record no history at all: [`history`](Self::history) returns empty for
+    /// every symbol and the per-bar deque write disappears from the tick loop.
+    ///
+    /// This is [`track_history`](Self::track_history) with an empty list — the
+    /// right setting for a wide-universe strategy that only looks at the
+    /// current [`Slice`](crate::Slice) or keeps its own state. Calling
+    /// `track_history` afterwards re-enables it for the named symbols.
+    pub fn disable_history(&mut self) {
+        self.history_tracked.get_or_insert_with(|| SymbolVec::with_len(self.tickers.id_space()));
     }
 
     /// Record a mark-to-market equity point on **every bar** (into

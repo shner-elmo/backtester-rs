@@ -242,3 +242,66 @@ fn missing_data_path_is_an_error_not_a_panic() {
         "error should name the missing file, got: {err}"
     );
 }
+
+/// Records how deep `ctx.history()` got for AAPL, under whichever tracking
+/// mode `setup` configures.
+struct HistoryProbe {
+    setup: fn(&mut Context, backtester::Symbol),
+    max_depth: std::rc::Rc<std::cell::Cell<usize>>,
+    bars_seen: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl Algorithm for HistoryProbe {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        let sym = ctx.add_equity("AAPL");
+        (self.setup)(ctx, sym);
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        let sym = ctx.symbol("AAPL").expect("subscribed in initialize");
+        if !data.bars.contains_key(&sym) {
+            return;
+        }
+        self.bars_seen.set(self.bars_seen.get() + 1);
+        let depth = ctx.history(sym, 50).len();
+        self.max_depth.set(self.max_depth.get().max(depth));
+    }
+}
+
+/// Run the fixture with `setup` applied in `initialize`; returns
+/// (bars seen, deepest history observed).
+fn history_depth(setup: fn(&mut Context, backtester::Symbol)) -> (usize, usize) {
+    let max_depth = std::rc::Rc::new(std::cell::Cell::new(0));
+    let bars_seen = std::rc::Rc::new(std::cell::Cell::new(0));
+    let algo = HistoryProbe { setup, max_depth: max_depth.clone(), bars_seen: bars_seen.clone() };
+    run_backtest(algo, FIXTURE).expect("fixture backtest");
+    (bars_seen.get(), max_depth.get())
+}
+
+#[test]
+fn history_is_recorded_for_every_symbol_by_default() {
+    let (bars, depth) = history_depth(|_, _| {});
+    assert!(bars > 50, "fixture should produce plenty of bars");
+    assert_eq!(depth, 50, "the rolling window should fill to the requested depth");
+}
+
+#[test]
+fn disable_history_skips_the_rolling_window_entirely() {
+    let (bars, depth) = history_depth(|ctx, _| ctx.disable_history());
+    assert!(bars > 50, "the backtest must still see every bar");
+    assert_eq!(depth, 0, "history() should stay empty when nothing is tracked");
+}
+
+#[test]
+fn track_history_keeps_the_window_for_named_symbols_only() {
+    let (_, tracked) = history_depth(|ctx, sym| ctx.track_history(sym));
+    assert_eq!(tracked, 50, "an explicitly tracked symbol keeps its window");
+
+    // Opting in a *different* symbol leaves AAPL untracked.
+    let (_, untracked) = history_depth(|ctx, _| {
+        let other = backtester::Symbol::from_ticker_id(1);
+        ctx.track_history(other);
+    });
+    assert_eq!(untracked, 0, "a symbol left out of the opt-in list keeps no history");
+}
