@@ -89,6 +89,9 @@ pub struct Context {
     pub(crate) resting_orders: Vec<RestingOrder>,
     pub(crate) max_volume_participation: f64,
     pub(crate) max_history: usize,
+    /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
+    /// from the machine's parallelism.
+    pub(crate) read_threads: usize,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) margin: Box<dyn MarginModel>,
@@ -124,6 +127,7 @@ impl Default for Context {
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
             max_history: 500,
+            read_threads: 0,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             margin: Box::new(NoMargin),
@@ -365,6 +369,21 @@ impl Context {
     /// How many bars per symbol [`history`](Self::history) retains.
     pub fn max_history(&self) -> usize {
         self.max_history
+    }
+
+    /// How many threads decode Parquet ahead of the tick loop.
+    ///
+    /// The event loop is sequential, but the decode feeding it is not: row
+    /// groups are decoded in parallel and put back in file order before the
+    /// engine sees them. Defaults to `0`, which picks a thread count from the
+    /// machine's parallelism; set `1` to decode on a single background thread
+    /// (the read still overlaps the tick loop, just without the fan-out).
+    ///
+    /// Results do not depend on this — the tick stream is identical either
+    /// way — so it is purely a throughput/memory trade: each thread keeps a
+    /// couple of decoded batches resident.
+    pub fn set_read_threads(&mut self, threads: usize) {
+        self.read_threads = threads;
     }
 
     /// Record history for `symbol` only — the opt-in form of the rolling

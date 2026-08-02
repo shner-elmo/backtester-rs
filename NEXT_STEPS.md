@@ -1,74 +1,73 @@
-# Next: the read path
+# Next: the engine path
 
 Handoff notes for the remaining engine-throughput work. Safe to delete once done.
 State as of the `perf/read-path` branch (2026-08-01).
 
 ## Where things stand
 
-Full-dataset no-op scan (`examples/no_op_baseline`, 1.835B bars, 29 GiB, cold I/O,
-release): **496s → 383s**, or **315s** with `disable_history()`. What moved it:
-opt-in history, a 131k-row Parquet batch size, `lto="thin"` + `codegen-units=1`,
-and a `ticker` row filter for subscriptions under half the id space. See the
-Performance section of `docs/backtesting.md` for the measurement tables.
+Full-dataset no-op scan (`examples/no_op_baseline`, 1.835B bars, 29 GiB, cold
+I/O, release, 16-core machine):
 
-Phase split of the 496s run (temporary timers around each phase of
-`Engine::process_tick`, since reverted):
+| | wall | peak RSS |
+|---|---|---|
+| before this branch | 496s | — |
+| opt-in history, 131k batches, ticker pushdown, LTO | 383s | — |
+| \+ parallel row-group decode | **212s** | 402 MB |
+| \+ `disable_history()` | **187s** | 355 MB |
 
-| phase | share |
-|---|---|
-| read (`TickReader::next_tick`) | 67% |
-| slice-map build + `on_data` | 16% |
-| `record_history` | 13% |
-| marks + last-seen-day | 4% |
-| corporate actions, orders, day boundaries | <0.1% |
+Bar counts are identical across all of them (1,835,105,812), which is the
+equivalence check that matters at this scale.
 
-So the read path is the backtest. Of it, ~92s is cold disk (29 GiB at the 323
-MiB/s this machine measures) and the rest is Parquet→Arrow decode plus tick
-grouping. `examples/scan_stages.rs` splits those apart on any subset of months.
+The read path is no longer the bottleneck for a wide universe. On one warm
+month, full universe with history on, the decode pool saturates at **one**
+thread — extra threads slightly hurt, because the engine's own per-bar
+bookkeeping is now the critical path. Turn history off, or narrow the universe,
+and decode takes back over (a 100-symbol month goes 0.81s → 0.26s on 4 threads).
 
-## The task: decode row groups in parallel, pipelined
+Phase split of the *old* 496s run, for reference (temporary timers around each
+phase of `Engine::process_tick`, since reverted): read 67%, slice-map build 16%,
+`record_history` 13%, marks + last-seen-day 4%, everything else <0.1%.
 
-The tick loop is sequential in time; decoding is not. Each month file holds **30
-row groups of ~1M rows / 16 MiB**, each a contiguous time range — so:
+## The task: a dense `Slice`
 
-1. A pool of worker threads decodes row groups (workers stream batches inside
-   their row group rather than materializing a whole one — 1M rows of `(Symbol,
-   Bar)` is ~56 MB, too much to hold per worker).
-2. Workers send sequence-tagged chunks of grouped ticks to the engine thread.
-3. The engine thread reassembles in sequence order through a bounded reorder
-   buffer and feeds `process_tick`.
+`Slice.bars` is a `SymbolMap<Bar>` rebuilt every tick — 1.8B hash inserts across
+the dataset, and 16% of that old profile. It should be a tick-stamped dense
+table:
 
-Expected: decode falls behind the engine's own ~90s of bookkeeping and the disk
-read overlaps too, landing a full scan near 150–200s. Past that, I/O is the floor
-and the question becomes reading fewer bytes, not decoding faster.
+```rust
+slots: SymbolVec<(u64 /* tick_id */, Bar)>,
+present: Vec<Symbol>,   // what to iterate
+```
 
-Watch for:
+Build becomes an array write plus a `Vec` push, `get` an array index guarded on
+`tick_id == current`, and clearing is `tick_id += 1` — free. The evidence this
+is worth it: `last_known_prices` and `last_seen_day` do the same number of
+per-bar writes in that shape and cost 4% against the slice map's 16%.
 
-- **Ticks straddle row-group boundaries** (a tick is ~1638 bars, a row group ~1M
-  rows), so the merge stage must join the last group of chunk *k* with the first
-  of chunk *k+1* when they share a timestamp.
-- **`OutOfOrderData` must stay deterministic**: workers check order within their
-  own range and send `Result`s; the consumer surfaces the first error *in
-  sequence order*, not the first to arrive.
-- **Bounded memory**: cap in-flight chunks, or a fast worker running ahead of a
-  slow one reintroduces the month-sized buffering `TickReader` was written to
-  avoid.
-- Write the equivalence test first: pipelined and unpipelined reads of the same
-  files must produce identical ticks in identical order.
+The catch is that `Slice.bars` is public and every strategy, example, and doc
+uses `data.bars.get(&sym)` / `.contains_key()` / iteration. It has to become an
+opaque `Slice` with `get` / `contains` / `len` / `iter`, so batch it with any
+other API break rather than spending that churn alone.
 
-## After that
+## Smaller follow-ups
 
-The per-tick `Slice` is a `SymbolMap<Bar>` rebuilt every tick — 1.8B hash inserts
-over the dataset, 16% of the profile. A tick-stamped dense table (`SymbolVec<(u64,
-Bar)>` plus a `Vec<Symbol>` of what is present, clear by bumping the stamp) makes
-it an array write, the same shape `last_known_prices` already uses for 4%. It
-breaks `Slice.bars` for every strategy and doc, so batch it with any other API
-break rather than spending the churn alone.
+- `READ_BATCH_SIZE` (131k rows) was tuned for the old sequential reader, where a
+  bigger batch meant fewer tick straddles. The parallel consumer merges
+  straddles anyway, so batch size now only trades decode efficiency against
+  in-flight memory — worth re-sweeping now that several threads hold batches at
+  once.
+- `MAX_AUTO_THREADS` is 8 with no measurement behind the cap beyond "past this
+  the disk is the limit". The full-dataset runs above used it; a sweep at 4 / 8 /
+  16 on the real dataset would either justify it or move it.
+- `benches/baseline.bencher.txt` still holds pre-interning CI numbers and is now
+  far off. Per CLAUDE.md, refresh only from a CI run.
 
 ## Verification
 
 - `cargo test && cargo clippy --all-targets && cargo +nightly fmt`
-- `backtester/benches/baseline.bencher.txt` still holds pre-interning CI numbers
-  and is due a refresh — per CLAUDE.md, only from a CI run.
-- The real proof is `examples/no_op_baseline` against the full dataset; compare to
-  the numbers at the top of this file.
+- `tests/tick_stream.rs` is the parallel reader's equivalence suite: it
+  synthesizes multi-row-group Parquet (the committed fixture is a single row
+  group and exercises none of the ordering machinery) and asserts the stream
+  matches a sequential `TickReader` sweep at 1/2/3/8/32 threads.
+- The real proof is `examples/no_op_baseline` against the full dataset; compare
+  to the table above, and check the bar count is unchanged.
