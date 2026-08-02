@@ -143,6 +143,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
 | `set_max_history(n)` / `max_history()` | Bars per symbol `history()` retains (default 500) |
+| `set_read_threads(n)` | Parquet decode threads feeding the tick loop (default `0` = auto) — see [Parallel decode](#parallel-decode) |
 | `track_history(symbol)` / `disable_history()` | Record history for only these symbols / for none — see [History cost](#history-cost) |
 | `history(symbol, n)` | Last `n` bars for a symbol (rolling window) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
@@ -474,9 +475,42 @@ The `data_path` argument must be a directory that contains
 
 ## Performance
 
-Two knobs dominate the cost of a wide-universe run. Both were measured on one
-30.7M-row month file (19,201 tickers in the dataset), no-op strategy, release
-build, page cache warm.
+A full scan of a 1.835B-bar dataset with a no-op strategy runs in ~190s, down
+from ~500s, on a 16-core machine with the data on a SATA SSD. Most of that came
+from decoding Parquet in parallel with the tick loop; the rest is the two knobs
+below.
+
+### Parallel decode
+
+The event loop is sequential — a backtest cannot process April before March —
+but decoding is not. Each month file holds ~30 row groups, and those are
+decoded on a thread pool and put back in file order before the engine sees
+them, so the disk read and the decode overlap the strategy's own work instead
+of taking turns with it.
+
+This is on by default and changes nothing about results: the tick stream is
+identical bar for bar, whatever the thread count. `ctx.set_read_threads(n)`
+overrides it (`0` = pick from the machine's parallelism, `1` = decode on a
+single background thread).
+
+How much it buys depends on which side is the bottleneck. On one 30.7M-row
+month:
+
+| workload | sequential | 1 thread | 4 threads |
+|---|---|---|---|
+| full universe, history 500 | 4.9s | 2.9s | 3.2s |
+| full universe, `disable_history()` | 3.1s | 2.0s | 1.7s |
+| 100 symbols | 0.81s | 0.77s | 0.26s |
+
+With a wide universe *and* full history the engine's own bookkeeping is the
+critical path, so one decode thread already keeps up and more only add
+contention. Strip that work down — narrow the universe, or turn history off —
+and decode becomes the limit, where the pool is worth 3×.
+
+### The two knobs
+
+Both measured on one 30.7M-row month file (19,201 tickers in the dataset),
+no-op strategy, release build, page cache warm.
 
 ### History cost
 
@@ -527,8 +561,10 @@ tools these numbers came from.
 - Market fills print at a single price (bar close or next open); resting
   limit/stop orders and volume-participation partial fills add intrabar
   execution, but there is no order-book depth or queue modeling.
-- Data streams one tick at a time: each month file is consumed through a
-  `TickReader` that keeps only the current timestamp's bars resident (no
-  month-sized buffering, no re-sorting — an out-of-order timestamp fails the
-  run). Memory scales with the subscribed universe's per-tick bar count plus
-  the rolling `history()` windows, not with the dataset.
+- Data streams one tick at a time: row groups are decoded ahead of the engine
+  by `tick_stream::TickStream` and handed over in file order, keeping only the
+  current timestamp's bars resident (no month-sized buffering, no re-sorting —
+  an out-of-order timestamp fails the run, reported at the first bad row in
+  file order regardless of which thread found it). Memory scales with the
+  subscribed universe's per-tick bar count, the decode threads' in-flight
+  batches, and the rolling `history()` windows — not with the dataset.

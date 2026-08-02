@@ -17,6 +17,8 @@
 //!   engine's own default is 500).
 //! - `NOOP_TRACK_HISTORY=n` — record history for only the first `n` subscribed
 //!   symbols (opt-in tracking). Unset means every subscribed symbol.
+//! - `NOOP_THREADS=n` — Parquet decode threads feeding the tick loop. Unset
+//!   picks the default for the machine.
 
 use std::{cell::Cell, rc::Rc, time::Instant};
 
@@ -40,6 +42,9 @@ impl Algorithm for Noop {
         // 1 is the smallest allowed window; keeps the per-symbol history
         // deques from doing any real work.
         ctx.set_max_history(env_usize("NOOP_HISTORY").unwrap_or(1));
+        if let Some(n) = env_usize("NOOP_THREADS") {
+            ctx.set_read_threads(n);
+        }
         if let Some(d) = self.start {
             ctx.set_start_date(d.year(), d.month(), d.day());
         }

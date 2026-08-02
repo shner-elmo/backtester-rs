@@ -30,6 +30,11 @@ pub enum BacktestError {
     /// `window_start` within a file, and a month partition must not contain
     /// rows dated before an earlier partition's bars. Sort the data at ingest.
     OutOfOrderData { path: PathBuf, at: DateTime<Utc>, stream_at: DateTime<Utc> },
+    /// A decode thread died without finishing its files. Only a panic inside
+    /// the reader can cause this, but it must not pass for end of data: a
+    /// backtest silently truncated to the bars that made it through would
+    /// report plausible, wrong results.
+    ReaderThreadDied,
 }
 
 impl fmt::Display for BacktestError {
@@ -49,6 +54,9 @@ impl fmt::Display for BacktestError {
             }
             Self::InvalidDateRange { start, end } => {
                 write!(f, "invalid date range: start date {start} is after end date {end}")
+            }
+            Self::ReaderThreadDied => {
+                write!(f, "a Parquet decode thread died before reaching the end of the data")
             }
             Self::OutOfOrderData { path, at, stream_at } => {
                 write!(

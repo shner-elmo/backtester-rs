@@ -1,7 +1,7 @@
 use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::US::Eastern;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Bar {
     pub time: DateTime<Utc>,
     pub open: f64,

@@ -430,11 +430,37 @@ fn open_bar_reader_filtered(
     mask: &mut Option<ProjectionMask>,
     subscribed: Option<&SubscriptionMask>,
 ) -> Result<ParquetRecordBatchReader, BacktestError> {
+    open_bar_reader_inner(file_path, mask, subscribed, None)
+}
+
+/// [`open_bar_reader_filtered`] restricted to a single row group — the unit of
+/// work the parallel reader in [`crate::tick_stream`] hands to each thread.
+/// A row group is a contiguous, self-contained slice of the file's rows, so
+/// decoding several of them at once needs no coordination beyond putting the
+/// results back in order.
+pub(crate) fn open_row_group_reader(
+    file_path: &Path,
+    subscribed: &SubscriptionMask,
+    row_group: usize,
+) -> Result<ParquetRecordBatchReader, BacktestError> {
+    open_bar_reader_inner(file_path, &mut None, Some(subscribed), Some(row_group))
+}
+
+fn open_bar_reader_inner(
+    file_path: &Path,
+    mask: &mut Option<ProjectionMask>,
+    subscribed: Option<&SubscriptionMask>,
+    row_group: Option<usize>,
+) -> Result<ParquetRecordBatchReader, BacktestError> {
     let file = File::open(file_path)
         .map_err(|source| BacktestError::Io { path: file_path.to_path_buf(), source })?;
     let mut builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
         BacktestError::Parquet { path: file_path.to_path_buf(), message: e.to_string() }
     })?;
+
+    if let Some(index) = row_group {
+        builder = builder.with_row_groups(vec![index]);
+    }
 
     if let Some(subscribed) = subscribed.filter(|s| s.worth_pushing_down()) {
         let ticker_only = ProjectionMask::columns(builder.parquet_schema(), ["ticker"]);
@@ -458,19 +484,30 @@ fn open_bar_reader_filtered(
     })
 }
 
+/// How many row groups a Parquet file holds — the work units
+/// [`crate::tick_stream`] splits it into.
+pub(crate) fn row_group_count(file_path: &Path) -> Result<usize, BacktestError> {
+    let file = File::open(file_path)
+        .map_err(|source| BacktestError::Io { path: file_path.to_path_buf(), source })?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+        BacktestError::Parquet { path: file_path.to_path_buf(), message: e.to_string() }
+    })?;
+    Ok(builder.metadata().num_row_groups())
+}
+
 /// The bar columns of one record batch, downcast once per batch.
-struct BarColumns<'a> {
-    ticker: &'a UInt16Array,
+pub(crate) struct BarColumns<'a> {
+    pub(crate) ticker: &'a UInt16Array,
     volume: &'a UInt32Array,
     open: &'a Float64Array,
     high: &'a Float64Array,
     low: &'a Float64Array,
     close: &'a Float64Array,
-    ts: &'a TimestampNanosecondArray,
+    pub(crate) ts: &'a TimestampNanosecondArray,
 }
 
 impl<'a> BarColumns<'a> {
-    fn extract(batch: &'a RecordBatch, path: &Path) -> Result<Self, BacktestError> {
+    pub(crate) fn extract(batch: &'a RecordBatch, path: &Path) -> Result<Self, BacktestError> {
         Ok(Self {
             ticker: column(batch, "ticker", path)?,
             volume: column(batch, "volume", path)?,
@@ -489,7 +526,7 @@ impl<'a> BarColumns<'a> {
     }
 
     /// [`bar`](Self::bar) for callers that already decoded the row's time.
-    fn bar_with_time(&self, i: usize, time: DateTime<Utc>) -> Option<Bar> {
+    pub(crate) fn bar_with_time(&self, i: usize, time: DateTime<Utc>) -> Option<Bar> {
         Some(Bar {
             time,
             open: self.open.value(i),
@@ -501,7 +538,7 @@ impl<'a> BarColumns<'a> {
     }
 }
 
-fn ts_to_datetime(ts_ns: i64) -> Option<DateTime<Utc>> {
+pub(crate) fn ts_to_datetime(ts_ns: i64) -> Option<DateTime<Utc>> {
     let secs = ts_ns / 1_000_000_000;
     let nanos = (ts_ns % 1_000_000_000) as u32;
     Utc.timestamp_opt(secs, nanos).single()

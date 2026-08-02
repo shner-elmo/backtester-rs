@@ -16,11 +16,12 @@ use crate::{
     bar::Bar,
     broker::PriceTable,
     context::{Context, Order, RestingOrder},
-    data::{file_year_month, sorted_parquet_files, TickReader},
+    data::{file_year_month, sorted_parquet_files},
     error::BacktestError,
     slice::Slice,
     stats::{compute_stats, EquityPoint, OpenPositionSummary, Trade},
     symbol::{Symbol, SymbolMap, SymbolVec},
+    tick_stream::TickStream,
 };
 
 /// Corporate actions queued by their effective date, drained at day
@@ -380,71 +381,53 @@ pub(super) fn run_prepared<A: Algorithm>(
     let mut eng = Engine::new(ctx, pending);
     eng.log_startup(&files);
 
-    let mut mask = None;
+    // Drop whole months outside the configured date range before opening
+    // anything: a narrow window over a long dataset shouldn't pay to list or
+    // decode the months it can't reach.
+    let files: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|path| {
+            let Some((y, m)) = file_year_month(path) else { return true };
+            let after_start = eng
+                .ctx
+                .start_date
+                .is_none_or(|start| (y, m) >= (start.year() as u32, start.month()));
+            let before_end =
+                eng.ctx.end_date.is_none_or(|end| (y, m) <= (end.year() as u32, end.month()));
+            after_start && before_end
+        })
+        .collect();
 
-    // The last tick processed, across files: the stream must never move
-    // backwards in time (see the check inside the tick loop).
-    let mut last_tick_time: Option<DateTime<Utc>> = None;
+    // Stream the whole run tick by tick. Row groups are decoded in parallel
+    // and put back in file order by `TickStream`, which also owns the
+    // never-move-backwards guarantee the day-boundary and fill logic depend
+    // on (a regression anywhere in the stream, within a file or across the
+    // month partitions, fails the run). Only a single tick of subscribed bars
+    // is ever handed to the engine, and dropping the stream at the end date
+    // stops the decode threads mid-file.
+    let mut ticks = TickStream::new(&files, &subscribed, eng.ctx.read_threads)?;
+    while let Some((ts_ns, bars)) = ticks.next_tick()? {
+        let secs = ts_ns / 1_000_000_000;
+        let nanos = (ts_ns % 1_000_000_000) as u32;
+        let Some(tick_time) = Utc.timestamp_opt(secs, nanos).single() else { continue };
 
-    // Stream the dataset file by file, tick by tick: files are
-    // month-partitioned and chronologically sorted, and each file is consumed
-    // through a TickReader (which never re-sorts and errors on an in-file
-    // timestamp regression), so only a single tick of subscribed bars is ever
-    // resident. It also lets the end-date break stop decoding mid-file.
-    'files: for file_path in &files {
-        // Skip whole months outside the configured date range.
-        if let Some((y, m)) = file_year_month(file_path) {
-            if let Some(start) = eng.ctx.start_date {
-                if (y, m) < (start.year() as u32, start.month()) {
-                    continue;
-                }
+        // Trading date in US Eastern, so after-market bars (which cross
+        // midnight UTC) stay on the day they belong to.
+        let tick_date = tick_time.with_timezone(&Eastern).date_naive();
+        if let Some(start) = eng.ctx.start_date {
+            if tick_date < start {
+                continue;
             }
-            if let Some(end) = eng.ctx.end_date {
-                if (y, m) > (end.year() as u32, end.month()) {
-                    break;
-                }
+        }
+        if let Some(end) = eng.ctx.end_date {
+            if tick_date > end {
+                break;
             }
         }
 
-        let mut ticks = TickReader::new(file_path, &subscribed, &mut mask)?;
-        while let Some((ts_ns, bars)) = ticks.next_tick()? {
-            let secs = ts_ns / 1_000_000_000;
-            let nanos = (ts_ns % 1_000_000_000) as u32;
-            let Some(tick_time) = Utc.timestamp_opt(secs, nanos).single() else { continue };
-
-            // Ticks must be non-decreasing in time. Within a file TickReader
-            // guarantees it, so a violation means a bar was filed under the
-            // wrong month partition. Time can't run backwards mid-backtest
-            // (day-boundary and fill logic would corrupt), so the run fails
-            // instead of processing the bar.
-            if let Some(prev) = last_tick_time {
-                if tick_time < prev {
-                    return Err(BacktestError::OutOfOrderData {
-                        path: file_path.clone(),
-                        at: tick_time,
-                        stream_at: prev,
-                    });
-                }
-            }
-            last_tick_time = Some(tick_time);
-
-            // Trading date in US Eastern, so after-market bars (which cross
-            // midnight UTC) stay on the day they belong to.
-            let tick_date = tick_time.with_timezone(&Eastern).date_naive();
-            if let Some(start) = eng.ctx.start_date {
-                if tick_date < start {
-                    continue;
-                }
-            }
-            if let Some(end) = eng.ctx.end_date {
-                if tick_date > end {
-                    break 'files;
-                }
-            }
-
-            eng.process_tick(&mut algo, tick_time, tick_date, bars);
-        }
+        eng.process_tick(&mut algo, tick_time, tick_date, bars);
     }
+    drop(ticks);
 
     Ok(eng.finish(&mut algo))
 }

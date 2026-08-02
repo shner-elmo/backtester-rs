@@ -44,6 +44,7 @@ pub mod stats;
 pub mod symbol;
 #[cfg(test)]
 mod test_util;
+pub mod tick_stream;
 
 pub use algorithm::Algorithm;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
