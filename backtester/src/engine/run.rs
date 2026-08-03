@@ -15,7 +15,7 @@ use crate::{
     algorithm::Algorithm,
     bar::Bar,
     broker::PriceTable,
-    context::{Context, Order, RestingOrder},
+    context::{Context, HistoryScope, Order, RestingOrder},
     data::{file_year_month, sorted_parquet_files},
     error::BacktestError,
     slice::Slice,
@@ -200,11 +200,10 @@ impl Engine {
     /// state (e.g. a 60-min bar) build up over the warm-up period.
     ///
     /// The history push is a write into that symbol's own heap-allocated
-    /// deque — a cache miss per bar across a wide universe — so
-    /// `Context::track_history` narrows it to the symbols a strategy will
-    /// actually read back. The two loops are kept separate rather than
-    /// branching per bar: the default (track everything) must not pay for the
-    /// opt-in check.
+    /// deque — a cache miss per bar across a wide universe — so it happens
+    /// only for the symbols a strategy asked to read back. Each scope gets its
+    /// own loop rather than a branch per bar, and the default costs nothing at
+    /// all.
     fn record_history(&mut self, bars: &[(Symbol, Bar)]) {
         let ctx = &mut self.ctx;
         let max_history = ctx.max_history;
@@ -216,13 +215,14 @@ impl Engine {
                 hist.pop_back();
             }
         };
-        match &ctx.history_tracked {
-            None => {
+        match &ctx.history {
+            HistoryScope::None => {}
+            HistoryScope::All => {
                 for (symbol, bar) in bars {
                     push(store, *symbol, bar);
                 }
             }
-            Some(tracked) => {
+            HistoryScope::Only(tracked) => {
                 for (symbol, bar) in bars {
                     if tracked.copied(*symbol) {
                         push(store, *symbol, bar);

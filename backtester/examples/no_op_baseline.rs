@@ -15,8 +15,9 @@
 //!   whole dataset, i.e. the narrow-universe case most real strategies are.
 //! - `NOOP_HISTORY=n` — history window (default 1, the cheapest possible; the
 //!   engine's own default is 500).
-//! - `NOOP_TRACK_HISTORY=n` — record history for only the first `n` subscribed
-//!   symbols (opt-in tracking). Unset means every subscribed symbol.
+//! - `NOOP_TRACK_HISTORY=n` — record history for the first `n` subscribed
+//!   symbols. Unset leaves it at the engine default, which records none;
+//!   `all` records every subscribed symbol (`enable_history`).
 //! - `NOOP_THREADS=n` — Parquet decode threads feeding the tick loop. Unset
 //!   picks the default for the machine.
 
@@ -60,17 +61,24 @@ impl Algorithm for Noop {
         for &symbol in &symbols {
             ctx.add_symbol(symbol);
         }
-        if let Some(n) = env_usize("NOOP_TRACK_HISTORY") {
-            ctx.disable_history(); // flips to opt-in even when n is 0
-            for &symbol in symbols.iter().take(n) {
-                ctx.track_history(symbol);
+        let tracking = match std::env::var("NOOP_TRACK_HISTORY").ok().as_deref() {
+            None => "none (engine default)".to_string(),
+            Some("all") => {
+                ctx.enable_history();
+                "all".to_string()
             }
-        }
+            Some(n) => {
+                let n: usize = n.parse().expect("NOOP_TRACK_HISTORY: a count or `all`");
+                for &symbol in symbols.iter().take(n) {
+                    ctx.track_history(symbol);
+                }
+                format!("{n}")
+            }
+        };
         eprintln!(
-            "[noop] {} symbol(s), history {} bars{}",
+            "[noop] {} symbol(s), history {} bars, tracking {tracking}",
             symbols.len(),
             ctx.max_history(),
-            env_usize("NOOP_TRACK_HISTORY").map_or(String::new(), |n| format!(", tracking {n}")),
         );
     }
 

@@ -52,6 +52,8 @@ impl Algorithm for KitchenSink {
         // --- Universe ---
         let symbol = ctx.add_equity("AAPL");
         self.symbol = Some(symbol);
+        // History is off unless asked for; `on_data` takes a 30-bar low below.
+        ctx.track_history(symbol);
 
         // --- Fill friction ---
         ctx.set_slippage(PercentSlippage::bps(5.0)); // 0.05% against the aggressor
