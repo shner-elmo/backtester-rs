@@ -142,10 +142,12 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_splits_file(path)` | Splits JSON location (default `get_splits.json`; explicit path must exist) |
 | `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
-| `set_max_history(n)` / `max_history()` | Bars per symbol `history()` retains (default 500) |
 | `set_read_threads(n)` | Parquet decode threads feeding the tick loop (default `0` = auto) — see [Parallel decode](#parallel-decode) |
-| `track_history(symbol)` / `disable_history()` | Record history for only these symbols / for none — see [History cost](#history-cost) |
-| `history(symbol, n)` | Last `n` bars for a symbol (rolling window) |
+| `track_history(symbol)` / `enable_history()` | Record a rolling window for these symbols / for every subscribed symbol — **off by default**, see [History cost](#history-cost) |
+| `set_max_history(n)` / `max_history()` | Bars per symbol `history()` retains once it is recorded (default 500) |
+| `history(symbol, n)` | Last `n` bars for a symbol; **panics** if that symbol is not tracked |
+| `tracks_history(symbol)` | Whether a symbol's window is being recorded |
+| `disable_history()` | Record nothing — the default; undoes the two above |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |
@@ -498,8 +500,8 @@ month:
 
 | workload | sequential | 1 thread | 4 threads |
 |---|---|---|---|
-| full universe, history 500 | 4.9s | 2.9s | 3.2s |
-| full universe, `disable_history()` | 3.1s | 2.0s | 1.7s |
+| full universe, `enable_history()` | 4.9s | 2.9s | 3.2s |
+| full universe, default (no history) | 3.1s | 2.0s | 1.7s |
 | 100 symbols | 0.81s | 0.77s | 0.26s |
 
 With a wide universe *and* full history the engine's own bookkeeping is the
@@ -514,21 +516,39 @@ no-op strategy, release build, page cache warm.
 
 ### History cost
 
-Every subscribed symbol's bar is pushed into that symbol's own history deque on
-every bar it prints — a write into a separate heap allocation, so a wide
-universe pays roughly a cache miss per bar whether or not the strategy ever
-calls `history()`. Narrow it to what you actually read back:
+**History is off by default.** Recording it pushes every bar into that
+symbol's own deque as it arrives — a write into a separate heap allocation, so
+a wide universe pays roughly a cache miss per bar, and most strategies never
+read most of it back. Ask for what you will look up:
 
-| Setting | Full-universe month |
+```rust
+let spy = ctx.add_equity("SPY");
+ctx.add_all_equities();
+ctx.track_history(spy);   // only SPY keeps a rolling window
+// ctx.enable_history();  // ...or all of them, the pre-opt-in behavior
+```
+
+What it costs when you do turn it on. Q1 2023, whole universe subscribed,
+95.8M bars, window depth 500, best of three warm runs:
+
+| Setting | Wall |
 |---|---|
-| default (every subscribed symbol, window 500) | 6.6s |
-| `track_history()` for a handful of symbols | 3.8s |
-| `disable_history()` | 3.7s |
+| default (nothing recorded) | 5.3s |
+| `track_history()` for 100 symbols | 5.3s |
+| `enable_history()` (every subscribed symbol) | 9.3s |
 
-`disable_history()` is the right call for a strategy that only looks at the
-current `Slice` or keeps its own state; `track_history(symbol)` keeps the
-rolling window for just the symbols you name. Consolidators are unaffected —
-they see every bar of the symbols they are registered for either way.
+Tracking a handful of symbols is free; tracking all ~19k nearly doubles the
+run. On a *narrow* universe it barely registers (100 symbols over the same
+quarter: 592ms vs 628ms) — the cost is proportional to the bars recorded, and
+a wide subscription records a great many.
+
+`ctx.history(symbol, n)` **panics** for a symbol that isn't tracked, rather
+than returning an empty window: a lookback that silently never fills produces a
+plausible and wrong backtest, so it fails on the first call instead. Use
+`ctx.tracks_history(symbol)` where a miss is legitimate.
+
+Consolidators are unaffected — they see every bar of the symbols they are
+registered for whatever the history setting.
 
 ### Subscription pushdown
 

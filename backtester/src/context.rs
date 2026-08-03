@@ -59,6 +59,21 @@ pub(crate) enum RestingKind {
     Stop(f64),
 }
 
+/// Which symbols keep a rolling [`Context::history`] window.
+///
+/// Recording history is a write into a per-symbol heap deque on every bar, so
+/// across a wide universe it is roughly a cache miss per bar — the largest
+/// single cost in the tick loop after decoding. It is therefore off unless a
+/// strategy asks, rather than on unless it opts out.
+pub(crate) enum HistoryScope {
+    /// The default: nothing is recorded.
+    None,
+    /// Every subscribed symbol, i.e. [`Context::enable_history`].
+    All,
+    /// Only the symbols passed to [`Context::track_history`].
+    Only(SymbolVec<bool>),
+}
+
 pub(crate) struct ScheduledTimeEntry {
     /// Target time as minutes since midnight ET, precomputed at registration.
     pub target_min: u32,
@@ -74,11 +89,8 @@ pub struct Context {
     /// — never per bar.
     pub(crate) tickers: TickerMap,
     pub(crate) history_store: SymbolVec<VecDeque<Bar>>,
-    /// Which symbols `record_history` writes for. `None` — the default —
-    /// means every subscribed symbol; the first
-    /// [`track_history`](Context::track_history) call narrows it to an opt-in
-    /// list.
-    pub(crate) history_tracked: Option<SymbolVec<bool>>,
+    /// Which symbols `record_history` writes for.
+    pub(crate) history: HistoryScope,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
     pub(crate) warm_up_remaining: usize,
@@ -116,7 +128,7 @@ impl Default for Context {
             portfolio: Portfolio::default(),
             tickers: TickerMap::default(),
             history_store: SymbolVec::new(),
-            history_tracked: None,
+            history: HistoryScope::None,
             consolidators: Vec::new(),
             time_callbacks: Vec::new(),
             warm_up_remaining: 0,
@@ -358,7 +370,10 @@ impl Context {
     }
 
     /// Set how many bars per symbol `history()` retains (the rolling window
-    /// depth). Defaults to 500. `set_warm_up` raises it to cover the warm-up
+    /// depth). Defaults to 500, and applies to whichever symbols
+    /// [`track_history`](Self::track_history) /
+    /// [`enable_history`](Self::enable_history) are recording — on its own
+    /// this records nothing. `set_warm_up` raises it to cover the warm-up
     /// length, so call this *after* `set_warm_up` to pick a smaller window on
     /// purpose. Must be at least 1.
     pub fn set_max_history(&mut self, bars: usize) {
@@ -386,20 +401,13 @@ impl Context {
         self.read_threads = threads;
     }
 
-    /// Record history for `symbol` only — the opt-in form of the rolling
-    /// window.
+    /// Keep a rolling [`history`](Self::history) window for `symbol`.
     ///
-    /// By default every subscribed symbol's bars are pushed into its history
-    /// deque on every bar, which a wide universe pays for on every one of its
-    /// bars whether or not the strategy ever calls
-    /// [`history`](Self::history). The **first** call to this method flips
-    /// history to opt-in: from then on only the symbols named here are
-    /// recorded, and [`history`](Self::history) returns empty for the rest.
-    ///
-    /// Call it from `initialize` for the handful of symbols the strategy
-    /// actually reads back. A full-universe strategy that keeps its own state
-    /// (or reads only the current [`Slice`](crate::Slice)) can skip the work
-    /// entirely by tracking nothing:
+    /// **History is off by default.** Recording it means pushing every bar
+    /// into that symbol's own deque as it arrives — a write into a separate
+    /// heap allocation, so a wide universe pays roughly a cache miss per bar,
+    /// and most strategies never read most of it back. Ask for the symbols you
+    /// will actually look up:
     ///
     /// ```no_run
     /// # use backtester::{Algorithm, Context, Slice};
@@ -414,24 +422,58 @@ impl Context {
     /// # }
     /// ```
     ///
+    /// [`enable_history`](Self::enable_history) turns it on for everything
+    /// subscribed instead. Calling this after that narrows it back to the
+    /// named symbols.
+    ///
     /// Consolidators are unaffected — they see every bar of the symbols they
     /// are registered for regardless.
     pub fn track_history(&mut self, symbol: Symbol) {
-        let tracked = self
-            .history_tracked
-            .get_or_insert_with(|| SymbolVec::with_len(self.tickers.id_space()));
+        let id_space = self.tickers.id_space();
+        let tracked = match &mut self.history {
+            HistoryScope::Only(tracked) => tracked,
+            scope => {
+                *scope = HistoryScope::Only(SymbolVec::with_len(id_space));
+                match scope {
+                    HistoryScope::Only(tracked) => tracked,
+                    _ => unreachable!("just assigned"),
+                }
+            }
+        };
         tracked.set(symbol, true);
     }
 
-    /// Record no history at all: [`history`](Self::history) returns empty for
-    /// every symbol and the per-bar deque write disappears from the tick loop.
+    /// Keep a rolling [`history`](Self::history) window for **every**
+    /// subscribed symbol.
     ///
-    /// This is [`track_history`](Self::track_history) with an empty list — the
-    /// right setting for a wide-universe strategy that only looks at the
-    /// current [`Slice`](crate::Slice) or keeps its own state. Calling
-    /// `track_history` afterwards re-enables it for the named symbols.
+    /// This is what a narrow, indicator-driven strategy wants and what the
+    /// engine did unconditionally before history became opt-in. On a wide
+    /// universe it is the single most expensive thing the tick loop does —
+    /// see the Performance section of `docs/backtesting.md` — so prefer
+    /// [`track_history`](Self::track_history) when the set of symbols you read
+    /// back is small.
+    pub fn enable_history(&mut self) {
+        self.history = HistoryScope::All;
+    }
+
+    /// Record no history at all — the default. [`history`](Self::history)
+    /// panics for every symbol and the per-bar deque write stays out of the
+    /// tick loop.
+    ///
+    /// Only useful to undo an earlier
+    /// [`enable_history`](Self::enable_history) or
+    /// [`track_history`](Self::track_history).
     pub fn disable_history(&mut self) {
-        self.history_tracked.get_or_insert_with(|| SymbolVec::with_len(self.tickers.id_space()));
+        self.history = HistoryScope::None;
+    }
+
+    /// Whether `symbol`'s bars are being recorded.
+    pub fn tracks_history(&self, symbol: Symbol) -> bool {
+        match &self.history {
+            HistoryScope::None => false,
+            HistoryScope::All => true,
+            HistoryScope::Only(tracked) => tracked.copied(symbol),
+        }
     }
 
     /// Record a mark-to-market equity point on **every bar** (into
@@ -469,7 +511,26 @@ impl Context {
         self.lot_size = lot;
     }
 
+    /// The last `n` bars for `symbol`, newest first. Shorter than `n` early in
+    /// a run, before the window has filled.
+    ///
+    /// # Panics
+    ///
+    /// If `symbol`'s history is not being recorded — history is off unless
+    /// [`track_history`](Self::track_history) or
+    /// [`enable_history`](Self::enable_history) asked for it. Returning an
+    /// empty window instead would let a strategy trade on a lookback that
+    /// silently never fills, producing a plausible and wrong backtest; better
+    /// to fail on the first call. Use
+    /// [`tracks_history`](Self::tracks_history) if a miss is expected.
     pub fn history(&self, symbol: Symbol, n: usize) -> Vec<Bar> {
+        assert!(
+            self.tracks_history(symbol),
+            "history() called for {} but its history is not recorded; call \
+             ctx.track_history(symbol) for the symbols you look back on (or \
+             ctx.enable_history() for all of them) in initialize",
+            self.symbol_name(symbol),
+        );
         self.history_store
             .get(symbol)
             .map(|deque| deque.iter().take(n).cloned().collect())

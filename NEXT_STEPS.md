@@ -13,16 +13,19 @@ I/O, release, 16-core machine):
 | before this branch | 496s | — |
 | opt-in history, 131k batches, ticker pushdown, LTO | 383s | — |
 | \+ parallel row-group decode | **212s** | 402 MB |
-| \+ `disable_history()` | **187s** | 355 MB |
+| \+ history off (now the default) | **187s** | 355 MB |
 
 Bar counts are identical across all of them (1,835,105,812), which is the
-equivalence check that matters at this scale.
+equivalence check that matters at this scale. The 187s row is what a default
+run does today: history became opt-in, so the last line is the baseline rather
+than a tuning.
 
 The read path is no longer the bottleneck for a wide universe. On one warm
-month, full universe with history on, the decode pool saturates at **one**
-thread — extra threads slightly hurt, because the engine's own per-bar
-bookkeeping is now the critical path. Turn history off, or narrow the universe,
-and decode takes back over (a 100-symbol month goes 0.81s → 0.26s on 4 threads).
+month, full universe with `enable_history()`, the decode pool saturates at
+**one** thread — extra threads slightly hurt, because the engine's own per-bar
+bookkeeping is now the critical path. At the default (no history), or on a
+narrow universe, decode takes back over (a 100-symbol month goes 0.81s → 0.26s
+on 4 threads).
 
 Phase split of the *old* 496s run, for reference (temporary timers around each
 phase of `Engine::process_tick`, since reverted): read 67%, slice-map build 16%,

@@ -140,7 +140,11 @@ impl BuyAndHold {
 impl Algorithm for BuyAndHold {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
-        self.symbol = Some(ctx.add_equity(&self.ticker.clone()));
+        let symbol = ctx.add_equity(&self.ticker.clone());
+        self.symbol = Some(symbol);
+        // These tests read the rolling window back to check that a split
+        // rescales it, so it has to be recorded.
+        ctx.track_history(symbol);
         // A second symbol keeps the clock ticking, where the fixture has one:
         // try_ rather than add_, since some of these fixtures are single-symbol.
         let _ = ctx.try_add_equity("STAY");

@@ -264,8 +264,12 @@ impl Algorithm for HistoryProbe {
             return;
         }
         self.bars_seen.set(self.bars_seen.get() + 1);
-        let depth = ctx.history(sym, 50).len();
-        self.max_depth.set(self.max_depth.get().max(depth));
+        // history() panics on an untracked symbol, so ask first — this probe
+        // runs under every scope.
+        if ctx.tracks_history(sym) {
+            let depth = ctx.history(sym, 50).len();
+            self.max_depth.set(self.max_depth.get().max(depth));
+        }
     }
 }
 
@@ -280,17 +284,17 @@ fn history_depth(setup: fn(&mut Context, backtester::Symbol)) -> (usize, usize) 
 }
 
 #[test]
-fn history_is_recorded_for_every_symbol_by_default() {
+fn no_history_is_recorded_by_default() {
     let (bars, depth) = history_depth(|_, _| {});
-    assert!(bars > 50, "fixture should produce plenty of bars");
-    assert_eq!(depth, 50, "the rolling window should fill to the requested depth");
+    assert!(bars > 50, "the backtest must still see every bar");
+    assert_eq!(depth, 0, "nothing is recorded until a strategy asks");
 }
 
 #[test]
-fn disable_history_skips_the_rolling_window_entirely() {
-    let (bars, depth) = history_depth(|ctx, _| ctx.disable_history());
-    assert!(bars > 50, "the backtest must still see every bar");
-    assert_eq!(depth, 0, "history() should stay empty when nothing is tracked");
+fn enable_history_records_every_subscribed_symbol() {
+    let (bars, depth) = history_depth(|ctx, _| ctx.enable_history());
+    assert!(bars > 50, "fixture should produce plenty of bars");
+    assert_eq!(depth, 50, "the rolling window should fill to the requested depth");
 }
 
 #[test]
@@ -304,4 +308,38 @@ fn track_history_keeps_the_window_for_named_symbols_only() {
         ctx.track_history(other);
     });
     assert_eq!(untracked, 0, "a symbol left out of the opt-in list keeps no history");
+
+    // ...and narrowing after enable_history drops the rest again.
+    let (_, narrowed) = history_depth(|ctx, _| {
+        ctx.enable_history();
+        ctx.track_history(backtester::Symbol::from_ticker_id(1));
+    });
+    assert_eq!(narrowed, 0, "track_history after enable_history narrows the scope");
+}
+
+/// Reads history without asking whether it is recorded — what a strategy
+/// written against the old always-on default looks like.
+struct UntrackedLookback;
+
+impl Algorithm for UntrackedLookback {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        ctx.add_equity("AAPL");
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        let sym = ctx.symbol("AAPL").expect("subscribed in initialize");
+        if data.bars.contains_key(&sym) {
+            let _ = ctx.history(sym, 10);
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "history is not recorded")]
+fn reading_untracked_history_panics_instead_of_returning_empty() {
+    // An empty window would let such a strategy trade on a lookback that
+    // silently never fills — a plausible, wrong backtest. Failing loudly on
+    // the first call is the point of the panic.
+    let _ = run_backtest(UntrackedLookback, FIXTURE);
 }
