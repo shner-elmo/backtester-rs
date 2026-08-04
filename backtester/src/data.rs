@@ -544,6 +544,47 @@ pub(crate) fn ts_to_datetime(ts_ns: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(secs, nanos).single()
 }
 
+/// Walk one batch's rows in order, invoking `emit` for each **subscribed** row
+/// as a decoded `(ts, Symbol, Bar)`.
+///
+/// This is the per-row decode shared by the sequential [`TickReader`] and the
+/// parallel decoder in [`crate::tick_stream`], so the two cannot drift: a row
+/// whose timestamp is outside the representable range is dropped before the
+/// order check (as it is at ingest), a timestamp that runs backwards is an
+/// [`BacktestError::OutOfOrderData`], and unsubscribed rows still advance the
+/// order check but are not emitted. `last_ts` carries the check across batches;
+/// the two readers differ only in how they collect what `emit` hands back.
+pub(crate) fn for_each_subscribed_row(
+    cols: &BarColumns,
+    num_rows: usize,
+    subscribed: &SubscriptionMask,
+    last_ts: &mut Option<i64>,
+    path: &Path,
+    mut emit: impl FnMut(i64, Symbol, Bar),
+) -> Result<(), BacktestError> {
+    for i in 0..num_rows {
+        let ts = cols.ts.value(i);
+        let Some(time) = ts_to_datetime(ts) else { continue };
+        if let Some(last) = *last_ts {
+            if ts < last {
+                return Err(BacktestError::OutOfOrderData {
+                    path: path.to_path_buf(),
+                    at: time,
+                    stream_at: ts_to_datetime(last).expect("validated on a previous row"),
+                });
+            }
+        }
+        *last_ts = Some(ts);
+        let ticker_id = cols.ticker.value(i);
+        if !subscribed.contains(ticker_id) {
+            continue;
+        }
+        let Some(bar) = cols.bar_with_time(i, time) else { continue };
+        emit(ts, Symbol::from_ticker_id(ticker_id), bar);
+    }
+    Ok(())
+}
+
 /// One tick: a nanosecond timestamp and every subscribed bar printed on it.
 pub type Tick = (i64, Vec<(Symbol, Bar)>);
 
@@ -692,26 +733,14 @@ impl<'a> TickReader<'a> {
             message: e.to_string(),
         })?;
         let cols = BarColumns::extract(&batch, &self.path)?;
-        for i in 0..batch.num_rows() {
-            let ts = cols.ts.value(i);
-            let Some(time) = ts_to_datetime(ts) else { continue };
-            if let Some(last) = self.last_ts {
-                if ts < last {
-                    return Err(BacktestError::OutOfOrderData {
-                        path: self.path.clone(),
-                        at: time,
-                        stream_at: ts_to_datetime(last).expect("validated on a previous row"),
-                    });
-                }
-            }
-            self.last_ts = Some(ts);
-            let ticker_id = cols.ticker.value(i);
-            if !self.subscribed.contains(ticker_id) {
-                continue;
-            }
-            let Some(bar) = cols.bar_with_time(i, time) else { continue };
-            self.queue.push_back((Symbol::from_ticker_id(ticker_id), ts, bar));
-        }
-        Ok(())
+        let queue = &mut self.queue;
+        for_each_subscribed_row(
+            &cols,
+            batch.num_rows(),
+            self.subscribed,
+            &mut self.last_ts,
+            &self.path,
+            |ts, symbol, bar| queue.push_back((symbol, ts, bar)),
+        )
     }
 }
