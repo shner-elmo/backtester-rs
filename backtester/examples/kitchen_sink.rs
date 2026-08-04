@@ -10,7 +10,7 @@
 //!   - volume-participation partial fills and per-bar equity tracking
 //!   - a consolidator building a higher-timeframe trend indicator
 //!   - a scheduled time-of-day callback (flatten before the close)
-//!   - `ctx.history()` lookbacks and a protective resting `stop_order`
+//!   - a hand-rolled rolling-low lookback and a protective resting `stop_order`
 //!   - the `on_split` / `on_delisted` / `on_dividend` / `on_rename` / `on_end_of_day` hooks
 //!
 //!   cargo run --example kitchen_sink -- backtester/tests/fixtures
@@ -19,7 +19,7 @@
 //! hourly trend, arm a protective stop under each entry, exit when overbought
 //! or the trend turns down, and always flatten five minutes before the close.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use backtester::{
     commission::PerShareCommission,
@@ -39,6 +39,9 @@ struct KitchenSink {
     /// back in `on_data`. `Rc<RefCell<..>>` because the consolidator closure
     /// must be `'static` and so can't borrow the algorithm struct.
     hourly_trend: Rc<RefCell<Option<f64>>>,
+    /// Our own rolling window of recent lows: the engine doesn't store bar
+    /// history, so a strategy that wants a lookback keeps one itself.
+    recent_lows: VecDeque<f64>,
 }
 
 impl Algorithm for KitchenSink {
@@ -52,8 +55,6 @@ impl Algorithm for KitchenSink {
         // --- Universe ---
         let symbol = ctx.add_equity("AAPL");
         self.symbol = Some(symbol);
-        // History is off unless asked for; `on_data` takes a 30-bar low below.
-        ctx.track_history(symbol);
 
         // --- Fill friction ---
         ctx.set_slippage(PercentSlippage::bps(5.0)); // 0.05% against the aggressor
@@ -100,10 +101,14 @@ impl Algorithm for KitchenSink {
         }
         let Some(trend) = *self.hourly_trend.borrow() else { return };
 
-        // A history lookback: only buy dips still holding above the last 30
-        // minute-bars' low, so we skip knives that are still falling.
-        let recent_low =
-            ctx.history(symbol, 30).iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+        // A lookback over our own rolling window: only buy dips still holding
+        // above the last 30 bars' low, so we skip knives that are still
+        // falling. The engine stores no history — we keep this window ourselves.
+        self.recent_lows.push_back(bar.low);
+        if self.recent_lows.len() > 30 {
+            self.recent_lows.pop_front();
+        }
+        let recent_low = self.recent_lows.iter().copied().fold(f64::INFINITY, f64::min);
 
         let invested = ctx.portfolio.get(symbol).is_some();
         let uptrend = bar.close > trend;
@@ -127,10 +132,11 @@ impl Algorithm for KitchenSink {
     }
 
     fn on_split(&mut self, _ctx: &mut Context, symbol: Symbol, _ratio: f64) {
-        // The engine rescales positions and ctx.history() for us, but an
-        // indicator we own keeps its pre-split memory — reset it by hand.
+        // The engine rescales the position for us, but the indicator and the
+        // low window we own still hold pre-split prices — reset them by hand.
         if Some(symbol) == self.symbol {
             self.rsi = Rsi::new(14).unwrap();
+            self.recent_lows.clear();
         }
     }
 
@@ -161,6 +167,7 @@ fn main() {
         rsi: Rsi::new(14).unwrap(),
         bars_seen: 0,
         hourly_trend: Rc::new(RefCell::new(None)),
+        recent_lows: VecDeque::new(),
     };
 
     run(algo, data_path).unwrap_or_else(|e| {

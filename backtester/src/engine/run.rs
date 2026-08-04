@@ -2,10 +2,7 @@
 //! the methods in `orders.rs` / `corporate_actions.rs`, and assembles the
 //! final [`BacktestResult`].
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -15,7 +12,7 @@ use crate::{
     algorithm::Algorithm,
     bar::Bar,
     broker::PriceTable,
-    context::{Context, HistoryScope, Order, RestingOrder},
+    context::{Context, Order, RestingOrder},
     data::{file_year_month, sorted_parquet_files},
     error::BacktestError,
     slice::Slice,
@@ -137,7 +134,7 @@ impl Engine {
             self.last_known_prices.set(*symbol, Some(bar.close));
         }
 
-        self.record_history(&bars);
+        self.feed_consolidators(&bars);
 
         if self.ctx.warm_up_remaining > 0 {
             self.ctx.warm_up_remaining -= 1;
@@ -195,41 +192,10 @@ impl Engine {
         algo.on_end_of_day(&mut self.ctx);
     }
 
-    /// Append this tick's bars to the per-symbol history and feed the
-    /// consolidators. Runs during warm-up too, so history and consolidator
-    /// state (e.g. a 60-min bar) build up over the warm-up period.
-    ///
-    /// The history push is a write into that symbol's own heap-allocated
-    /// deque — a cache miss per bar across a wide universe — so it happens
-    /// only for the symbols a strategy asked to read back. Each scope gets its
-    /// own loop rather than a branch per bar, and the default costs nothing at
-    /// all.
-    fn record_history(&mut self, bars: &[(Symbol, Bar)]) {
-        let ctx = &mut self.ctx;
-        let max_history = ctx.max_history;
-        let store = &mut ctx.history_store;
-        let push = |store: &mut SymbolVec<VecDeque<Bar>>, symbol: Symbol, bar: &Bar| {
-            let hist = store.slot(symbol);
-            hist.push_front(bar.clone());
-            if hist.len() > max_history {
-                hist.pop_back();
-            }
-        };
-        match &ctx.history {
-            HistoryScope::None => {}
-            HistoryScope::All => {
-                for (symbol, bar) in bars {
-                    push(store, *symbol, bar);
-                }
-            }
-            HistoryScope::Only(tracked) => {
-                for (symbol, bar) in bars {
-                    if tracked.copied(*symbol) {
-                        push(store, *symbol, bar);
-                    }
-                }
-            }
-        }
+    /// Feed this tick's bars to the consolidators. Runs during warm-up too, so
+    /// consolidator state (e.g. a 60-min bar) builds up over the warm-up
+    /// period.
+    fn feed_consolidators(&mut self, bars: &[(Symbol, Bar)]) {
         if self.ctx.consolidators.is_empty() {
             return;
         }

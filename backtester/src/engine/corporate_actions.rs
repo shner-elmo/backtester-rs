@@ -31,9 +31,10 @@ fn drain_due<T>(pending: &mut BTreeMap<NaiveDate, Vec<T>>, today: NaiveDate) -> 
 }
 
 impl Engine {
-    /// Once-per-date day-start work. Not warm-up gated: history built during
-    /// warm-up needs split-rescaling too, and no positions can exist in
-    /// warm-up so financing and the delist scan are vacuous there.
+    /// Once-per-date day-start work. Not warm-up gated: corporate actions
+    /// still have to keep marks and symbol state consistent through warm-up,
+    /// and no positions can exist there so financing and the delist scan are
+    /// vacuous.
     pub(super) fn start_new_day<A: Algorithm>(
         &mut self,
         algo: &mut A,
@@ -110,21 +111,12 @@ impl Engine {
 
     /// Apply a split that executed on `symbol`: rescale the held position
     /// (quantity × ratio, basis ÷ ratio — value invariant), the open-lifetime
-    /// ledger, the stored history, the last known price, and any not-yet-filled
+    /// ledger, the last known price, and any not-yet-filled
     /// orders into post-split terms. Bar prices in slices are never adjusted —
     /// the raw stream is what the market actually printed. A fractional
     /// remainder versus the lot size is cashed out in lieu at the (post-split)
     /// last known price, like a broker does on reverse splits.
     fn apply_split(&mut self, symbol: Symbol, ratio: f64, tick_time: DateTime<Utc>) {
-        if let Some(hist) = self.ctx.history_store.get_mut(symbol) {
-            for b in hist.iter_mut() {
-                b.open /= ratio;
-                b.high /= ratio;
-                b.low /= ratio;
-                b.close /= ratio;
-                b.volume = (b.volume as f64 * ratio).round() as u64;
-            }
-        }
         if let Some(Some(p)) = self.last_known_prices.get_mut(symbol) {
             *p /= ratio;
         }
@@ -269,7 +261,7 @@ impl Engine {
     }
 
     /// Transfer all state for a renamed symbol from `old` to `new`: the held
-    /// position, the PnL ledger, the stored history, the last known price,
+    /// position, the PnL ledger, the last known price,
     /// and any resting orders (retagged so they still fill). No cash moves
     /// and no trade is emitted — a rename is a relabeling, not a round trip.
     /// `new` is already subscribed (all rename targets are subscribed up
@@ -281,10 +273,6 @@ impl Engine {
             return;
         }
 
-        let hist = self.ctx.history_store.take(old);
-        if !hist.is_empty() && self.ctx.history_store.slot(new).is_empty() {
-            self.ctx.history_store.set(new, hist);
-        }
         if let Some(price) = self.last_known_prices.take(old) {
             if self.last_known_prices.copied(new).is_none() {
                 self.last_known_prices.set(new, Some(price));

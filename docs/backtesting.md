@@ -23,7 +23,7 @@ pub trait Algorithm {
 - `on_data` runs once per distinct bar timestamp, after warm-up, for every
   subscribed symbol that has a bar at that instant. Place orders here.
 - `on_end_of_day` is optional. It fires when the first bar of a new trading
-  day (US Eastern) arrives, *before* that bar touches history or prices — so
+  day (US Eastern) arrives, *before* that bar touches prices — so
   it sees the world exactly as it was at the previous day's last bar. Orders
   placed in it fill at the new day's first bar.
 
@@ -33,7 +33,7 @@ Instruments are identified by [`Symbol`](../backtester/src/symbol.rs) — the
 **encoded ticker id the dataset already uses**, the `ticker` column value in
 every Parquet row (see [data-setup.md](data-setup.md#encoded_tickersjson)).
 `ctx.add_equity("AAPL")` looks that id up and returns it; every other API
-(orders, `history`, `slice.bars` keys, `portfolio.get`, the corporate-action
+(orders, `slice.bars` keys, `portfolio.get`, the corporate-action
 callbacks, the slippage/margin model contexts) takes the handle. Keep it in
 your algorithm struct.
 
@@ -143,11 +143,6 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
 | `set_read_threads(n)` | Parquet decode threads feeding the tick loop (default `0` = auto) — see [Parallel decode](#parallel-decode) |
-| `track_history(symbol)` / `enable_history()` | Record a rolling window for these symbols / for every subscribed symbol — **off by default**, see [History cost](#history-cost) |
-| `set_max_history(n)` / `max_history()` | Bars per symbol `history()` retains once it is recorded (default 500) |
-| `history(symbol, n)` | Last `n` bars for a symbol; **panics** if that symbol is not tracked |
-| `tracks_history(symbol)` | Whether a symbol's window is being recorded |
-| `disable_history()` | Record nothing — the default; undoes the two above |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |
@@ -340,10 +335,9 @@ what changes is your *account*, exactly like at a real broker:
   position value is unchanged and no trade is emitted. The trade ledger is
   rescaled the same way, so entry/exit averages of an eventual round trip
   come out in consistent post-split terms.
-- **`ctx.history()` is rescaled** into post-split terms (prices ÷ ratio,
-  volume × ratio), so lookbacks and indicators fed from history don't see a
-  phantom ±ratio move. Indicators *you* own can't be rescaled for you — reset
-  them in `on_split(ctx, symbol, ratio)`.
+- **Bar prices in slices stay raw** — the split-day print is what the market
+  actually showed. Any indicator or bar lookback *you* keep therefore straddles
+  the split unadjusted; reset it in `on_split(ctx, symbol, ratio)`.
 - **Fractional remainders are cashed out in lieu**: a reverse split that
   leaves a fraction against the lot size credits the cash at the post-split
   price. If that cashes out the whole position, the closing trade carries
@@ -372,7 +366,7 @@ prints at `last_price * (1 - fraction)`.
 A rename (FB → META) also looks like a delisting in the raw feed. Provide a
 `ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
 `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` — and the engine transfers
-the position, PnL ledger, history, resting orders, and last price from the old
+the position, PnL ledger, resting orders, and last price from the old
 symbol to the new one on the effective date, with **no trade emitted** (a
 rename is a relabeling, not a round trip). The successor is subscribed up front
 so its bars stream, and `on_rename(ctx, old, new)` fires so you can update the
@@ -456,9 +450,9 @@ cargo run --example <name> -- backtester/tests/fixtures
 
 `kitchen_sink` is the guided tour of the whole API: warm-up, a slippage and a
 commission model, next-bar-open fills, a custom lot size and delist threshold,
-an hourly consolidator feeding a trend SMA, a scheduled pre-close flatten,
-`ctx.history()` lookbacks, and the `on_split` / `on_delisted` / `on_end_of_day`
-hooks.
+an hourly consolidator feeding a trend SMA, a scheduled pre-close flatten, a
+hand-rolled rolling-low lookback, and the `on_split` / `on_delisted` /
+`on_end_of_day` hooks.
 
 ## Running it
 
@@ -479,8 +473,8 @@ The `data_path` argument must be a directory that contains
 
 A full scan of a 1.835B-bar dataset with a no-op strategy runs in ~190s, down
 from ~500s, on a 16-core machine with the data on a SATA SSD. Most of that came
-from decoding Parquet in parallel with the tick loop; the rest is the two knobs
-below.
+from decoding Parquet in parallel with the tick loop; the rest is subscription
+pushdown.
 
 ### Parallel decode
 
@@ -500,57 +494,18 @@ month:
 
 | workload | sequential | 1 thread | 4 threads |
 |---|---|---|---|
-| full universe, `enable_history()` | 4.9s | 2.9s | 3.2s |
-| full universe, default (no history) | 3.1s | 2.0s | 1.7s |
+| full universe | 3.1s | 2.0s | 1.7s |
 | 100 symbols | 0.81s | 0.77s | 0.26s |
 
-With a wide universe *and* full history the engine's own bookkeeping is the
-critical path, so one decode thread already keeps up and more only add
-contention. Strip that work down — narrow the universe, or turn history off —
-and decode becomes the limit, where the pool is worth 3×.
-
-### The two knobs
-
-Both measured on one 30.7M-row month file (19,201 tickers in the dataset),
-no-op strategy, release build, page cache warm.
-
-### History cost
-
-**History is off by default.** Recording it pushes every bar into that
-symbol's own deque as it arrives — a write into a separate heap allocation, so
-a wide universe pays roughly a cache miss per bar, and most strategies never
-read most of it back. Ask for what you will look up:
-
-```rust
-let spy = ctx.add_equity("SPY");
-ctx.add_all_equities();
-ctx.track_history(spy);   // only SPY keeps a rolling window
-// ctx.enable_history();  // ...or all of them, the pre-opt-in behavior
-```
-
-What it costs when you do turn it on. Q1 2023, whole universe subscribed,
-95.8M bars, window depth 500, best of three warm runs:
-
-| Setting | Wall |
-|---|---|
-| default (nothing recorded) | 5.3s |
-| `track_history()` for 100 symbols | 5.3s |
-| `enable_history()` (every subscribed symbol) | 9.3s |
-
-Tracking a handful of symbols is free; tracking all ~19k nearly doubles the
-run. On a *narrow* universe it barely registers (100 symbols over the same
-quarter: 592ms vs 628ms) — the cost is proportional to the bars recorded, and
-a wide subscription records a great many.
-
-`ctx.history(symbol, n)` **panics** for a symbol that isn't tracked, rather
-than returning an empty window: a lookback that silently never fills produces a
-plausible and wrong backtest, so it fails on the first call instead. Use
-`ctx.tracks_history(symbol)` where a miss is legitimate.
-
-Consolidators are unaffected — they see every bar of the symbols they are
-registered for whatever the history setting.
+On a narrow universe decode is the whole cost, so the pool is worth ~3×. On the
+full universe the engine's own per-tick bookkeeping (slice assembly, day
+boundaries) is a larger share, so the fan-out helps less but still cuts the wall
+time.
 
 ### Subscription pushdown
+
+Measured on one 30.7M-row month file (19,201 tickers in the dataset), no-op
+strategy, release build, page cache warm.
 
 Every month file interleaves all ~19k tickers in time order, so row-group
 statistics cannot prune on `ticker`. A *selective* subscription is instead
@@ -586,5 +541,5 @@ tools these numbers came from.
   current timestamp's bars resident (no month-sized buffering, no re-sorting —
   an out-of-order timestamp fails the run, reported at the first bad row in
   file order regardless of which thread found it). Memory scales with the
-  subscribed universe's per-tick bar count, the decode threads' in-flight
-  batches, and the rolling `history()` windows — not with the dataset.
+  subscribed universe's per-tick bar count and the decode threads' in-flight
+  batches — not with the dataset.
