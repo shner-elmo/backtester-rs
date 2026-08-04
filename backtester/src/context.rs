@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -12,7 +12,7 @@ use crate::{
     logging::LogConfig,
     margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
-    symbol::{Symbol, SymbolSet, SymbolVec},
+    symbol::{Symbol, SymbolSet},
 };
 
 pub(crate) enum OrderKind {
@@ -59,21 +59,6 @@ pub(crate) enum RestingKind {
     Stop(f64),
 }
 
-/// Which symbols keep a rolling [`Context::history`] window.
-///
-/// Recording history is a write into a per-symbol heap deque on every bar, so
-/// across a wide universe it is roughly a cache miss per bar — the largest
-/// single cost in the tick loop after decoding. It is therefore off unless a
-/// strategy asks, rather than on unless it opts out.
-pub(crate) enum HistoryScope {
-    /// The default: nothing is recorded.
-    None,
-    /// Every subscribed symbol, i.e. [`Context::enable_history`].
-    All,
-    /// Only the symbols passed to [`Context::track_history`].
-    Only(SymbolVec<bool>),
-}
-
 pub(crate) struct ScheduledTimeEntry {
     /// Target time as minutes since midnight ET, precomputed at registration.
     pub target_min: u32,
@@ -88,9 +73,6 @@ pub struct Context {
     /// when subscribing, when matching corporate actions, and when reporting
     /// — never per bar.
     pub(crate) tickers: TickerMap,
-    pub(crate) history_store: SymbolVec<VecDeque<Bar>>,
-    /// Which symbols `record_history` writes for.
-    pub(crate) history: HistoryScope,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
     pub(crate) warm_up_remaining: usize,
@@ -100,7 +82,6 @@ pub struct Context {
     pub(crate) pending_orders: Vec<Order>,
     pub(crate) resting_orders: Vec<RestingOrder>,
     pub(crate) max_volume_participation: f64,
-    pub(crate) max_history: usize,
     /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
     /// from the machine's parallelism.
     pub(crate) read_threads: usize,
@@ -127,8 +108,6 @@ impl Default for Context {
         Self {
             portfolio: Portfolio::default(),
             tickers: TickerMap::default(),
-            history_store: SymbolVec::new(),
-            history: HistoryScope::None,
             consolidators: Vec::new(),
             time_callbacks: Vec::new(),
             warm_up_remaining: 0,
@@ -138,7 +117,6 @@ impl Default for Context {
             pending_orders: Vec::new(),
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
-            max_history: 500,
             read_threads: 0,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
@@ -165,8 +143,7 @@ impl Context {
     /// builds this before calling `initialize`, so `add_equity` can resolve a
     /// ticker to the id the data encodes it as.
     pub(crate) fn with_tickers(tickers: TickerMap) -> Self {
-        let history_store = SymbolVec::with_len(tickers.id_space());
-        Self { tickers, history_store, ..Self::default() }
+        Self { tickers, ..Self::default() }
     }
 
     pub fn set_start_date(&mut self, y: i32, m: u32, d: u32) {
@@ -181,19 +158,16 @@ impl Context {
         self.portfolio.cash = cash;
     }
 
-    /// Skip the first `bars` time steps before `on_data` fires. History and
-    /// consolidators still fill during warm-up. Counts *ticks*, not per-symbol
-    /// bars: several symbols sharing one timestamp consume a single step.
+    /// Skip the first `bars` time steps before `on_data` fires. Consolidators
+    /// still fill during warm-up. Counts *ticks*, not per-symbol bars: several
+    /// symbols sharing one timestamp consume a single step.
     pub fn set_warm_up(&mut self, bars: usize) {
         self.warm_up_remaining = bars;
-        if bars > self.max_history {
-            self.max_history = bars;
-        }
     }
 
     /// Subscribe a ticker's bars and return the [`Symbol`] — the dataset's id
-    /// for it — that stands in for it everywhere else: orders, history,
-    /// slices, callbacks. This is the one place a strategy spells a ticker
+    /// for it — that stands in for it everywhere else: orders, slices,
+    /// callbacks. This is the one place a strategy spells a ticker
     /// out; keep the returned handle.
     ///
     /// Subscribing the same ticker twice returns the same symbol.
@@ -369,23 +343,6 @@ impl Context {
         self.risk_free_rate = annual_rate;
     }
 
-    /// Set how many bars per symbol `history()` retains (the rolling window
-    /// depth). Defaults to 500, and applies to whichever symbols
-    /// [`track_history`](Self::track_history) /
-    /// [`enable_history`](Self::enable_history) are recording — on its own
-    /// this records nothing. `set_warm_up` raises it to cover the warm-up
-    /// length, so call this *after* `set_warm_up` to pick a smaller window on
-    /// purpose. Must be at least 1.
-    pub fn set_max_history(&mut self, bars: usize) {
-        assert!(bars >= 1, "max history must be at least 1");
-        self.max_history = bars;
-    }
-
-    /// How many bars per symbol [`history`](Self::history) retains.
-    pub fn max_history(&self) -> usize {
-        self.max_history
-    }
-
     /// How many threads decode Parquet ahead of the tick loop.
     ///
     /// The event loop is sequential, but the decode feeding it is not: row
@@ -399,81 +356,6 @@ impl Context {
     /// couple of decoded batches resident.
     pub fn set_read_threads(&mut self, threads: usize) {
         self.read_threads = threads;
-    }
-
-    /// Keep a rolling [`history`](Self::history) window for `symbol`.
-    ///
-    /// **History is off by default.** Recording it means pushing every bar
-    /// into that symbol's own deque as it arrives — a write into a separate
-    /// heap allocation, so a wide universe pays roughly a cache miss per bar,
-    /// and most strategies never read most of it back. Ask for the symbols you
-    /// will actually look up:
-    ///
-    /// ```no_run
-    /// # use backtester::{Algorithm, Context, Slice};
-    /// # struct A;
-    /// # impl Algorithm for A {
-    /// fn initialize(&mut self, ctx: &mut Context) {
-    ///     let spy = ctx.add_equity("SPY");
-    ///     ctx.add_all_equities();
-    ///     ctx.track_history(spy); // only SPY keeps a rolling window
-    /// }
-    /// # fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
-    /// # }
-    /// ```
-    ///
-    /// [`enable_history`](Self::enable_history) turns it on for everything
-    /// subscribed instead. Calling this after that narrows it back to the
-    /// named symbols.
-    ///
-    /// Consolidators are unaffected — they see every bar of the symbols they
-    /// are registered for regardless.
-    pub fn track_history(&mut self, symbol: Symbol) {
-        let id_space = self.tickers.id_space();
-        let tracked = match &mut self.history {
-            HistoryScope::Only(tracked) => tracked,
-            scope => {
-                *scope = HistoryScope::Only(SymbolVec::with_len(id_space));
-                match scope {
-                    HistoryScope::Only(tracked) => tracked,
-                    _ => unreachable!("just assigned"),
-                }
-            }
-        };
-        tracked.set(symbol, true);
-    }
-
-    /// Keep a rolling [`history`](Self::history) window for **every**
-    /// subscribed symbol.
-    ///
-    /// This is what a narrow, indicator-driven strategy wants and what the
-    /// engine did unconditionally before history became opt-in. On a wide
-    /// universe it is the single most expensive thing the tick loop does —
-    /// see the Performance section of `docs/backtesting.md` — so prefer
-    /// [`track_history`](Self::track_history) when the set of symbols you read
-    /// back is small.
-    pub fn enable_history(&mut self) {
-        self.history = HistoryScope::All;
-    }
-
-    /// Record no history at all — the default. [`history`](Self::history)
-    /// panics for every symbol and the per-bar deque write stays out of the
-    /// tick loop.
-    ///
-    /// Only useful to undo an earlier
-    /// [`enable_history`](Self::enable_history) or
-    /// [`track_history`](Self::track_history).
-    pub fn disable_history(&mut self) {
-        self.history = HistoryScope::None;
-    }
-
-    /// Whether `symbol`'s bars are being recorded.
-    pub fn tracks_history(&self, symbol: Symbol) -> bool {
-        match &self.history {
-            HistoryScope::None => false,
-            HistoryScope::All => true,
-            HistoryScope::Only(tracked) => tracked.copied(symbol),
-        }
     }
 
     /// Record a mark-to-market equity point on **every bar** (into
@@ -509,32 +391,6 @@ impl Context {
     pub fn set_lot_size(&mut self, lot: f64) {
         assert!(lot > 0.0, "lot size must be positive");
         self.lot_size = lot;
-    }
-
-    /// The last `n` bars for `symbol`, newest first. Shorter than `n` early in
-    /// a run, before the window has filled.
-    ///
-    /// # Panics
-    ///
-    /// If `symbol`'s history is not being recorded — history is off unless
-    /// [`track_history`](Self::track_history) or
-    /// [`enable_history`](Self::enable_history) asked for it. Returning an
-    /// empty window instead would let a strategy trade on a lookback that
-    /// silently never fills, producing a plausible and wrong backtest; better
-    /// to fail on the first call. Use
-    /// [`tracks_history`](Self::tracks_history) if a miss is expected.
-    pub fn history(&self, symbol: Symbol, n: usize) -> Vec<Bar> {
-        assert!(
-            self.tracks_history(symbol),
-            "history() called for {} but its history is not recorded; call \
-             ctx.track_history(symbol) for the symbols you look back on (or \
-             ctx.enable_history() for all of them) in initialize",
-            self.symbol_name(symbol),
-        );
-        self.history_store
-            .get(symbol)
-            .map(|deque| deque.iter().take(n).cloned().collect())
-            .unwrap_or_default()
     }
 
     pub fn consolidate(

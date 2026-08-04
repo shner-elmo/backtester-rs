@@ -1,5 +1,5 @@
 //! No-op full-universe baseline: subscribe every symbol in the ticker map,
-//! keep history at the minimum, place no orders, and report wall-clock time
+//! place no orders, and report wall-clock time
 //! and bar throughput. Measures the pure engine overhead (decode, tick
 //! grouping, slice assembly, day boundaries) with no strategy work on top —
 //! the floor any real backtest pays.
@@ -13,11 +13,6 @@
 //!
 //! - `NOOP_SYMBOLS=n` — subscribe only the first `n` tickers instead of the
 //!   whole dataset, i.e. the narrow-universe case most real strategies are.
-//! - `NOOP_HISTORY=n` — history window (default 1, the cheapest possible; the
-//!   engine's own default is 500).
-//! - `NOOP_TRACK_HISTORY=n` — record history for the first `n` subscribed
-//!   symbols. Unset leaves it at the engine default, which records none;
-//!   `all` records every subscribed symbol (`enable_history`).
 //! - `NOOP_THREADS=n` — Parquet decode threads feeding the tick loop. Unset
 //!   picks the default for the machine.
 
@@ -40,9 +35,6 @@ struct Noop {
 impl Algorithm for Noop {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
-        // 1 is the smallest allowed window; keeps the per-symbol history
-        // deques from doing any real work.
-        ctx.set_max_history(env_usize("NOOP_HISTORY").unwrap_or(1));
         if let Some(n) = env_usize("NOOP_THREADS") {
             ctx.set_read_threads(n);
         }
@@ -61,25 +53,7 @@ impl Algorithm for Noop {
         for &symbol in &symbols {
             ctx.add_symbol(symbol);
         }
-        let tracking = match std::env::var("NOOP_TRACK_HISTORY").ok().as_deref() {
-            None => "none (engine default)".to_string(),
-            Some("all") => {
-                ctx.enable_history();
-                "all".to_string()
-            }
-            Some(n) => {
-                let n: usize = n.parse().expect("NOOP_TRACK_HISTORY: a count or `all`");
-                for &symbol in symbols.iter().take(n) {
-                    ctx.track_history(symbol);
-                }
-                format!("{n}")
-            }
-        };
-        eprintln!(
-            "[noop] {} symbol(s), history {} bars, tracking {tracking}",
-            symbols.len(),
-            ctx.max_history(),
-        );
+        eprintln!("[noop] {} symbol(s)", symbols.len());
     }
 
     fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {

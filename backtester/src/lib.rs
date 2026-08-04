@@ -10,7 +10,7 @@
 //! Instruments are identified by [`Symbol`] — the dataset's encoded ticker
 //! id, handed to you by [`Context::add_equity`]. Ticker strings are read
 //! exactly twice: when you subscribe, and when results are written out.
-//! Everything in between (slices, orders, positions, history, corporate
+//! Everything in between (slices, orders, positions, corporate
 //! actions) is keyed by that integer, so streaming a bar costs no allocation
 //! and no string hashing. See [`symbol`] for the details.
 //!
