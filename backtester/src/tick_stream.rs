@@ -236,7 +236,7 @@ impl Drop for TickStream {
     }
 }
 
-fn run_worker(units: Vec<Unit>, subscribed: &SubscriptionMask, tx: &SyncSender<Message>) {
+fn run_worker(units: Vec<Unit>, subscribed: &Arc<SubscriptionMask>, tx: &SyncSender<Message>) {
     for unit in units {
         match decode_unit(&unit, subscribed, tx) {
             Ok(Decoded::Complete) => {
@@ -262,7 +262,7 @@ enum Decoded {
 /// Decode one row group, sending its ticks in batch-sized chunks.
 fn decode_unit(
     unit: &Unit,
-    subscribed: &SubscriptionMask,
+    subscribed: &Arc<SubscriptionMask>,
     tx: &SyncSender<Message>,
 ) -> Result<Decoded, BacktestError> {
     let reader = open_row_group_reader(&unit.path, subscribed, unit.row_group)?;

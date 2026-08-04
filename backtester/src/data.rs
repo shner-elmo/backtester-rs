@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fs::{read_to_string, File},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use arrow::{
@@ -430,7 +431,7 @@ fn open_bar_reader_filtered(
     mask: &mut Option<ProjectionMask>,
     subscribed: Option<&SubscriptionMask>,
 ) -> Result<ParquetRecordBatchReader, BacktestError> {
-    open_bar_reader_inner(file_path, mask, subscribed, None)
+    open_bar_reader_inner(file_path, mask, subscribed.map(|s| Arc::new(s.clone())), None)
 }
 
 /// [`open_bar_reader_filtered`] restricted to a single row group — the unit of
@@ -440,16 +441,16 @@ fn open_bar_reader_filtered(
 /// results back in order.
 pub(crate) fn open_row_group_reader(
     file_path: &Path,
-    subscribed: &SubscriptionMask,
+    subscribed: &Arc<SubscriptionMask>,
     row_group: usize,
 ) -> Result<ParquetRecordBatchReader, BacktestError> {
-    open_bar_reader_inner(file_path, &mut None, Some(subscribed), Some(row_group))
+    open_bar_reader_inner(file_path, &mut None, Some(Arc::clone(subscribed)), Some(row_group))
 }
 
 fn open_bar_reader_inner(
     file_path: &Path,
     mask: &mut Option<ProjectionMask>,
-    subscribed: Option<&SubscriptionMask>,
+    subscribed: Option<Arc<SubscriptionMask>>,
     row_group: Option<usize>,
 ) -> Result<ParquetRecordBatchReader, BacktestError> {
     let file = File::open(file_path)
@@ -464,14 +465,16 @@ fn open_bar_reader_inner(
 
     if let Some(subscribed) = subscribed.filter(|s| s.worth_pushing_down()) {
         let ticker_only = ProjectionMask::columns(builder.parquet_schema(), ["ticker"]);
-        let wanted = subscribed.clone();
+        // The predicate needs `'static` ownership of the mask; the caller
+        // already holds it behind an `Arc`, so moving it in is a refcount bump,
+        // not a copy of the id-space bitmap per row group.
         let predicate = ArrowPredicateFn::new(ticker_only, move |batch: RecordBatch| {
             let ids = batch
                 .column(0)
                 .as_any()
                 .downcast_ref::<UInt16Array>()
                 .ok_or_else(|| ArrowError::CastError("ticker column is not u16".into()))?;
-            Ok(ids.iter().map(|id| Some(id.is_some_and(|id| wanted.contains(id)))).collect())
+            Ok(ids.iter().map(|id| Some(id.is_some_and(|id| subscribed.contains(id)))).collect())
         });
         builder = builder.with_row_filter(RowFilter::new(vec![Box::new(predicate)]));
     }
