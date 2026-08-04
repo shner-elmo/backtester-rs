@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
 };
 
-use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
 
 use super::{ledger::OpenLifetime, load_pending_actions, BacktestResult};
@@ -406,10 +406,11 @@ pub(super) fn run_prepared<A: Algorithm>(
     // is ever handed to the engine, and dropping the stream at the end date
     // stops the decode threads mid-file.
     let mut ticks = TickStream::new(&files, &subscribed, eng.ctx.read_threads)?;
-    while let Some((ts_ns, bars)) = ticks.next_tick()? {
-        let secs = ts_ns / 1_000_000_000;
-        let nanos = (ts_ns % 1_000_000_000) as u32;
-        let Some(tick_time) = Utc.timestamp_opt(secs, nanos).single() else { continue };
+    while let Some((_ts_ns, bars)) = ticks.next_tick()? {
+        // Every bar in the tick already carries this timestamp (decoded once
+        // in `tick_stream`); the raw key only drives the ordering there, so
+        // reuse the decoded value rather than re-converting it per tick.
+        let tick_time = bars[0].1.time;
 
         // Trading date in US Eastern, so after-market bars (which cross
         // midnight UTC) stay on the day they belong to.
