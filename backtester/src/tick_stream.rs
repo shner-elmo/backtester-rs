@@ -41,10 +41,10 @@ use std::{
 
 use crate::{
     data::{
-        open_row_group_reader, row_group_count, ts_to_datetime, BarColumns, SubscriptionMask, Tick,
+        for_each_subscribed_row, open_row_group_reader, row_group_count, ts_to_datetime,
+        BarColumns, SubscriptionMask, Tick,
     },
     error::BacktestError,
-    symbol::Symbol,
 };
 
 /// Chunks a worker may have queued ahead of the consumer. Two is enough to
@@ -266,8 +266,9 @@ fn decode_unit(
     tx: &SyncSender<Message>,
 ) -> Result<Decoded, BacktestError> {
     let reader = open_row_group_reader(&unit.path, subscribed, unit.row_group)?;
-    // Order is checked within the unit here and across units by the consumer,
-    // which together cover every adjacent pair of rows in the stream.
+    // Order is checked within the unit here (by `for_each_subscribed_row`) and
+    // across units by the consumer, which together cover every adjacent pair
+    // of rows in the stream.
     let mut last_ts: Option<i64> = None;
 
     for batch in reader {
@@ -277,34 +278,19 @@ fn decode_unit(
         })?;
         let cols = BarColumns::extract(&batch, &unit.path)?;
         let mut ticks: Vec<Tick> = Vec::new();
-
-        for i in 0..batch.num_rows() {
-            let ts = cols.ts.value(i);
-            // A timestamp outside the representable range is a corrupt row:
-            // dropped before the order check, as in TickReader.
-            let Some(time) = ts_to_datetime(ts) else { continue };
-            if let Some(last) = last_ts {
-                if ts < last {
-                    return Err(BacktestError::OutOfOrderData {
-                        path: unit.path.as_ref().clone(),
-                        at: time,
-                        stream_at: ts_to_datetime(last).expect("validated on a previous row"),
-                    });
-                }
-            }
-            last_ts = Some(ts);
-
-            let ticker_id = cols.ticker.value(i);
-            if !subscribed.contains(ticker_id) {
-                continue;
-            }
-            let Some(bar) = cols.bar_with_time(i, time) else { continue };
-            let entry = (Symbol::from_ticker_id(ticker_id), bar);
-            match ticks.last_mut() {
-                Some((group_ts, bars)) if *group_ts == ts => bars.push(entry),
-                _ => ticks.push((ts, vec![entry])),
-            }
-        }
+        // Coalesce each run of same-timestamp subscribed bars into one tick;
+        // the consumer stitches together any that straddle this chunk's edges.
+        for_each_subscribed_row(
+            &cols,
+            batch.num_rows(),
+            subscribed,
+            &mut last_ts,
+            &unit.path,
+            |ts, symbol, bar| match ticks.last_mut() {
+                Some((group_ts, bars)) if *group_ts == ts => bars.push((symbol, bar)),
+                _ => ticks.push((ts, vec![(symbol, bar)])),
+            },
+        )?;
 
         if !ticks.is_empty() && tx.send(Message::Ticks(Arc::clone(&unit.path), ticks)).is_err() {
             return Ok(Decoded::ConsumerGone);
