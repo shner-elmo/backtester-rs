@@ -399,6 +399,49 @@ filtered to the subscribed symbols as it parses, rather than loaded whole.
   `high`, `low`, `close`, and `volume`; `bar.session()` derives the session
   (`PreMarket` / `Main` / `AfterMarket`) from the US Eastern time-of-day.
 
+## Lookbacks
+
+**The engine keeps no bar history.** A `Slice` is the current tick and nothing
+else; a strategy that wants to look back holds its own window.
+
+That is deliberate. Engine-side history meant pushing every bar into that
+symbol's own heap deque as it arrived — roughly a cache miss per bar across a
+wide universe — for a full `Bar` per symbol, when most strategies read back one
+field of a handful of symbols, if any. Keeping it yourself costs only what you
+actually use:
+
+```rust
+struct MyAlgo {
+    recent_lows: VecDeque<f64>,   // one field, one symbol
+}
+
+fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+    let Some(bar) = data.bars.get(&self.symbol) else { return };
+    self.recent_lows.push_back(bar.low);
+    if self.recent_lows.len() > 30 {
+        self.recent_lows.pop_front();
+    }
+    let low = self.recent_lows.iter().copied().fold(f64::INFINITY, f64::min);
+}
+```
+
+For a window per symbol across a universe, `SymbolVec<T>` (re-exported from the
+crate root) is the same dense, array-indexed table the engine uses for its own
+per-bar state.
+
+Three things to keep in mind:
+
+- **Warm-up does not pre-fill it.** `set_warm_up` suppresses `on_data`, which
+  is exactly where a strategy-owned window fills, so it starts empty at the
+  first post-warm-up bar. Guard on the window being full, or accumulate in a
+  [consolidator](#bar-consolidation) callback — those *do* fire during warm-up.
+- **Corporate actions are yours to apply.** The engine rescales positions on a
+  split but cannot touch state it does not own, so divide stored prices by
+  `ratio` in `on_split` and re-key on `on_rename`.
+- **Most strategies need none of this.** The indicators below are fed straight
+  from `bar.close` and keep their own state; a lookback window is only for
+  what they don't cover.
+
 ## Indicators
 
 Thin wrappers over the [`ta`](https://crates.io/crates/ta) crate, re-exported
