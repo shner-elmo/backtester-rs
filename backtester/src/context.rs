@@ -158,9 +158,17 @@ impl Context {
         self.portfolio.cash = cash;
     }
 
-    /// Skip the first `bars` time steps before `on_data` fires. Consolidators
-    /// still fill during warm-up. Counts *ticks*, not per-symbol bars: several
-    /// symbols sharing one timestamp consume a single step.
+    /// Skip the first `bars` time steps before `on_data` fires. Counts
+    /// *ticks*, not per-symbol bars: several symbols sharing one timestamp
+    /// consume a single step.
+    ///
+    /// Consolidators still fill during warm-up, so a higher-timeframe bar or
+    /// an indicator fed from one is ready when trading starts. Nothing a
+    /// strategy accumulates inside `on_data` does, though — that callback is
+    /// exactly what warm-up suppresses — so a rolling window a strategy keeps
+    /// for itself begins filling at the first post-warm-up bar. Register a
+    /// [`consolidate`](Self::consolidate) callback for state that has to be
+    /// warm before the first trade.
     pub fn set_warm_up(&mut self, bars: usize) {
         self.warm_up_remaining = bars;
     }
