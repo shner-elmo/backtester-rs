@@ -11,6 +11,9 @@ pub struct Bar {
     pub volume: u64,
 }
 
+// TODO: this can be optimized within the engine since it can pre-calculate the boundaries of the various
+//  market sessions, and simply check in which one it is...
+//  instead of doing: `self.time.with_timezone(&Eastern)` for each timestamp...
 impl Bar {
     /// Trading session this bar belongs to, derived from its US Eastern
     /// time-of-day: before 9:30 is pre-market, before 16:00 is the main

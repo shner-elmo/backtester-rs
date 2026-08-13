@@ -106,3 +106,12 @@ fn main() {
 // bars:       1835105812
 // throughput: 3311203 bars/s
 // final equity: 100000.00 (should equal starting cash)
+
+// With tick streaming (NOOP_THREADS=4 vs default threads difference is only 7 seconds which means its not worth it)
+// should see if the SSD is reaching its limit at 300 Mb/s, or if we can read bigger slices and trade off with RAM
+//
+// elapsed:    207.5s
+// ticks:      1120001
+// bars:       1835105812
+// throughput: 8843736 bars/s
+// final equity: 100000.00 (should equal starting cash)
