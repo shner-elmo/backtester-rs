@@ -57,7 +57,8 @@ impl Algorithm for GapShort {
             }
         });
     }
-
+    // TODO: this should be an assert( bar.session() == MarketSession::Main)
+    //  and only the first bar, no need to loop over all of them
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
         let et = data.time.with_timezone(&Eastern);
         if et.hour() == 9 && et.minute() == 30 {
