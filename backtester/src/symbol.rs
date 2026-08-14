@@ -110,7 +110,7 @@ pub type SymbolSet = HashSet<Symbol, BuildHasherDefault<SymbolHasher>>;
 /// index rather than a hash. Grows on demand, filling new slots with
 /// `T::default()`.
 ///
-/// This is what the per-bar state uses (history, marks, last-seen day) —
+/// This is what the per-bar state uses (marks, last-seen day) —
 /// state that every streaming symbol touches on every bar.
 #[derive(Debug)]
 pub struct SymbolVec<T> {

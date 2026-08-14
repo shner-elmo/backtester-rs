@@ -119,7 +119,6 @@ struct BuyAndHold {
     splits: Arc<Mutex<Vec<(String, f64)>>>,
     delistings: Arc<Mutex<Vec<String>>>,
     dividends: Arc<Mutex<Vec<(String, f64)>>>,
-    last_history: Arc<Mutex<Vec<f64>>>,
 }
 
 impl BuyAndHold {
@@ -132,7 +131,6 @@ impl BuyAndHold {
             splits: Arc::new(Mutex::new(Vec::new())),
             delistings: Arc::new(Mutex::new(Vec::new())),
             dividends: Arc::new(Mutex::new(Vec::new())),
-            last_history: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -140,7 +138,8 @@ impl BuyAndHold {
 impl Algorithm for BuyAndHold {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
-        self.symbol = Some(ctx.add_equity(&self.ticker.clone()));
+        let symbol = ctx.add_equity(&self.ticker.clone());
+        self.symbol = Some(symbol);
         // A second symbol keeps the clock ticking, where the fixture has one:
         // try_ rather than add_, since some of these fixtures are single-symbol.
         let _ = ctx.try_add_equity("STAY");
@@ -152,8 +151,6 @@ impl Algorithm for BuyAndHold {
             self.bought = true;
             ctx.market_order(symbol, self.qty);
         }
-        let hist: Vec<f64> = ctx.history(symbol, 100).iter().map(|b| b.close).collect();
-        *self.last_history.lock().unwrap() = hist;
     }
 
     fn on_split(&mut self, ctx: &mut Context, symbol: Symbol, ratio: f64) {
@@ -181,7 +178,7 @@ fn days_of(symbol_id: u16, days: &[u32], price: impl Fn(u32) -> f64) -> Vec<Row>
 }
 
 #[test]
-fn forward_split_adjusts_position_history_and_keeps_equity_flat() {
+fn forward_split_adjusts_position_and_keeps_equity_flat() {
     let tmp = tempfile::tempdir().unwrap();
     // SPLT trades at 90 through 06-06, splits 1->3 on 06-07, trades at 30 after.
     let mut rows = days_of(1, &TRADING_DAYS, |d| if d < 7 { 90.0 } else { 30.0 });
@@ -198,7 +195,6 @@ fn forward_split_adjusts_position_history_and_keeps_equity_flat() {
 
     let algo = BuyAndHold::new("SPLT", 10.0);
     let splits = algo.splits.clone();
-    let history = algo.last_history.clone();
     let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
 
     // The callback fired exactly once with the ratio.
@@ -220,11 +216,6 @@ fn forward_split_adjusts_position_history_and_keeps_equity_flat() {
         );
     }
     assert!(identity_error(&result) < 1e-6);
-
-    // ctx.history is fully rescaled into post-split terms.
-    let hist = history.lock().unwrap();
-    assert!(!hist.is_empty());
-    assert!(hist.iter().all(|&c| (c - 30.0).abs() < 1e-9), "history not rescaled: {:?}", *hist);
 }
 
 #[test]
@@ -670,7 +661,7 @@ fn margin_interest_accrues_on_a_negative_cash_balance() {
 
 #[test]
 fn splits_load_from_a_custom_configured_path() {
-    // Same scenario as forward_split_adjusts_position_history_and_keeps_equity_flat,
+    // Same scenario as forward_split_adjusts_position_and_keeps_equity_flat,
     // but the splits JSON lives under a non-default name set via set_splits_file.
     let tmp = tempfile::tempdir().unwrap();
     let mut rows = days_of(1, &TRADING_DAYS, |d| if d < 7 { 90.0 } else { 30.0 });

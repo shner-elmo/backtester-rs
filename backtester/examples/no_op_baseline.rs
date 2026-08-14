@@ -1,5 +1,5 @@
 //! No-op full-universe baseline: subscribe every symbol in the ticker map,
-//! keep history at the minimum, place no orders, and report wall-clock time
+//! place no orders, and report wall-clock time
 //! and bar throughput. Measures the pure engine overhead (decode, tick
 //! grouping, slice assembly, day boundaries) with no strategy work on top —
 //! the floor any real backtest pays.
@@ -8,11 +8,22 @@
 //!
 //! `start` / `end` are optional YYYY-MM-DD bounds; omit both to run the whole
 //! dataset.
+//!
+//! Environment knobs, for isolating what a change actually moved:
+//!
+//! - `NOOP_SYMBOLS=n` — subscribe only the first `n` tickers instead of the
+//!   whole dataset, i.e. the narrow-universe case most real strategies are.
+//! - `NOOP_THREADS=n` — Parquet decode threads feeding the tick loop. Unset
+//!   picks the default for the machine.
 
 use std::{cell::Cell, rc::Rc, time::Instant};
 
 use backtester::{run_backtest, Algorithm, Context, Slice};
 use chrono::{Datelike, NaiveDate};
+
+fn env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok().map(|v| v.parse().unwrap_or_else(|e| panic!("bad {key}: {e}")))
+}
 
 struct Noop {
     start: Option<NaiveDate>,
@@ -24,16 +35,25 @@ struct Noop {
 impl Algorithm for Noop {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
-        // 1 is the smallest allowed window; keeps the per-symbol history
-        // deques from doing any real work.
-        ctx.set_max_history(1);
+        if let Some(n) = env_usize("NOOP_THREADS") {
+            ctx.set_read_threads(n);
+        }
         if let Some(d) = self.start {
             ctx.set_start_date(d.year(), d.month(), d.day());
         }
         if let Some(d) = self.end {
             ctx.set_end_date(d.year(), d.month(), d.day());
         }
-        ctx.add_all_equities(); // the whole dataset, the widest the engine gets
+
+        // The whole dataset by default — the widest the engine gets.
+        let mut symbols = ctx.dataset_symbols();
+        if let Some(n) = env_usize("NOOP_SYMBOLS") {
+            symbols.truncate(n);
+        }
+        for &symbol in &symbols {
+            ctx.add_symbol(symbol);
+        }
+        eprintln!("[noop] {} symbol(s)", symbols.len());
     }
 
     fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {
@@ -73,4 +93,25 @@ fn main() {
 // ticks:      19206
 // bars:       33960794
 // throughput: 958657 bars/s
+// final equity: 100000.00 (should equal starting cash)
+
+// elapsed:    14.8s
+// ticks:      19206
+// bars:       33960794
+// throughput: 2296628 bars/s
+// final equity: 100000.00 (should equal starting cash)
+
+// elapsed:    554.2s
+// ticks:      1120001
+// bars:       1835105812
+// throughput: 3311203 bars/s
+// final equity: 100000.00 (should equal starting cash)
+
+// With tick streaming (NOOP_THREADS=4 vs default threads difference is only 7 seconds which means its not worth it)
+// should see if the SSD is reaching its limit at 300 Mb/s, or if we can read bigger slices and trade off with RAM
+//
+// elapsed:    207.5s
+// ticks:      1120001
+// bars:       1835105812
+// throughput: 8843736 bars/s
 // final equity: 100000.00 (should equal starting cash)

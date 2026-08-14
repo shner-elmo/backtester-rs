@@ -1,3 +1,10 @@
 [workspace]
 members = ["backtester", "ui", "data-viz"]
 resolver = "2"
+
+# The tick loop calls into arrow/parquet once per batch and per row, so
+# cross-crate inlining is worth the longer link: thin LTO plus a single
+# codegen unit measurably beats the defaults on a full-dataset scan.
+[profile.release]
+lto = "thin"
+codegen-units = 1

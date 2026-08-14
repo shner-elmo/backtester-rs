@@ -13,8 +13,8 @@ pub trait Algorithm {
 
     /// Fired when a stock split executes on a subscribed symbol. The engine
     /// has already adjusted any held position (quantity × ratio, basis ÷
-    /// ratio) and rescaled `ctx.history` into post-split terms; bar prices in
-    /// slices are never adjusted. Use this to reset indicators you own.
+    /// ratio); bar prices in slices are never adjusted. Use this to reset
+    /// indicators or any bar lookback you keep yourself.
     /// `ratio` is `split_to / split_from` (3.0 for a 1→3 forward split).
     fn on_split(&mut self, _ctx: &mut Context, _symbol: Symbol, _ratio: f64) {}
 
@@ -31,7 +31,7 @@ pub trait Algorithm {
     fn on_dividend(&mut self, _ctx: &mut Context, _symbol: Symbol, _amount: f64) {}
 
     /// Fired when a subscribed symbol is renamed (e.g. FB → META). The engine
-    /// has already transferred any held position, PnL ledger, and history from
+    /// has already transferred any held position and PnL ledger from
     /// `old` to `new`, and subscribed `new` so its bars flow — but your own
     /// state still refers to `old`. Update any symbol strings and indicators
     /// you key on it here.

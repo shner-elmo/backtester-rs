@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -12,7 +12,7 @@ use crate::{
     logging::LogConfig,
     margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
-    symbol::{Symbol, SymbolSet, SymbolVec},
+    symbol::{Symbol, SymbolSet},
 };
 
 pub(crate) enum OrderKind {
@@ -73,7 +73,6 @@ pub struct Context {
     /// when subscribing, when matching corporate actions, and when reporting
     /// — never per bar.
     pub(crate) tickers: TickerMap,
-    pub(crate) history_store: SymbolVec<VecDeque<Bar>>,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
     pub(crate) warm_up_remaining: usize,
@@ -83,7 +82,9 @@ pub struct Context {
     pub(crate) pending_orders: Vec<Order>,
     pub(crate) resting_orders: Vec<RestingOrder>,
     pub(crate) max_volume_participation: f64,
-    pub(crate) max_history: usize,
+    /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
+    /// from the machine's parallelism.
+    pub(crate) read_threads: usize,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) margin: Box<dyn MarginModel>,
@@ -107,7 +108,6 @@ impl Default for Context {
         Self {
             portfolio: Portfolio::default(),
             tickers: TickerMap::default(),
-            history_store: SymbolVec::new(),
             consolidators: Vec::new(),
             time_callbacks: Vec::new(),
             warm_up_remaining: 0,
@@ -117,7 +117,7 @@ impl Default for Context {
             pending_orders: Vec::new(),
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
-            max_history: 500,
+            read_threads: 0,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             margin: Box::new(NoMargin),
@@ -143,8 +143,7 @@ impl Context {
     /// builds this before calling `initialize`, so `add_equity` can resolve a
     /// ticker to the id the data encodes it as.
     pub(crate) fn with_tickers(tickers: TickerMap) -> Self {
-        let history_store = SymbolVec::with_len(tickers.id_space());
-        Self { tickers, history_store, ..Self::default() }
+        Self { tickers, ..Self::default() }
     }
 
     pub fn set_start_date(&mut self, y: i32, m: u32, d: u32) {
@@ -159,19 +158,24 @@ impl Context {
         self.portfolio.cash = cash;
     }
 
-    /// Skip the first `bars` time steps before `on_data` fires. History and
-    /// consolidators still fill during warm-up. Counts *ticks*, not per-symbol
-    /// bars: several symbols sharing one timestamp consume a single step.
+    /// Skip the first `bars` time steps before `on_data` fires. Counts
+    /// *ticks*, not per-symbol bars: several symbols sharing one timestamp
+    /// consume a single step.
+    ///
+    /// Consolidators still fill during warm-up, so a higher-timeframe bar or
+    /// an indicator fed from one is ready when trading starts. Nothing a
+    /// strategy accumulates inside `on_data` does, though — that callback is
+    /// exactly what warm-up suppresses — so a rolling window a strategy keeps
+    /// for itself begins filling at the first post-warm-up bar. Register a
+    /// [`consolidate`](Self::consolidate) callback for state that has to be
+    /// warm before the first trade.
     pub fn set_warm_up(&mut self, bars: usize) {
         self.warm_up_remaining = bars;
-        if bars > self.max_history {
-            self.max_history = bars;
-        }
     }
 
     /// Subscribe a ticker's bars and return the [`Symbol`] — the dataset's id
-    /// for it — that stands in for it everywhere else: orders, history,
-    /// slices, callbacks. This is the one place a strategy spells a ticker
+    /// for it — that stands in for it everywhere else: orders, slices,
+    /// callbacks. This is the one place a strategy spells a ticker
     /// out; keep the returned handle.
     ///
     /// Subscribing the same ticker twice returns the same symbol.
@@ -206,6 +210,31 @@ impl Context {
         let all: Vec<Symbol> = self.tickers.symbols().collect();
         self.subscribed_symbols.extend(all.iter().copied());
         all
+    }
+
+    /// Subscribe a symbol already in hand — from
+    /// [`symbol`](Self::symbol), [`dataset_symbols`](Self::dataset_symbols),
+    /// or a previous run. The by-name counterpart is
+    /// [`add_equity`](Self::add_equity); this is what a strategy that picks
+    /// its universe out of [`dataset_symbols`](Self::dataset_symbols) uses.
+    pub fn add_symbol(&mut self, symbol: Symbol) {
+        self.subscribe(symbol);
+    }
+
+    /// Every symbol the dataset has data for, in ticker-id order, **without**
+    /// subscribing any of them — for strategies that filter the universe down
+    /// before committing to it. Subscribe the ones you keep with
+    /// [`add_symbol`](Self::add_symbol);
+    /// [`add_all_equities`](Self::add_all_equities) is the take-everything
+    /// shortcut.
+    pub fn dataset_symbols(&self) -> Vec<Symbol> {
+        self.tickers.symbols().collect()
+    }
+
+    /// One past the dataset's highest ticker id — the width any dense
+    /// per-symbol table needs.
+    pub(crate) fn id_space(&self) -> usize {
+        self.tickers.id_space()
     }
 
     pub(crate) fn subscribe(&mut self, symbol: Symbol) {
@@ -322,13 +351,19 @@ impl Context {
         self.risk_free_rate = annual_rate;
     }
 
-    /// Set how many bars per symbol `history()` retains (the rolling window
-    /// depth). Defaults to 500. `set_warm_up` raises it to cover the warm-up
-    /// length, so call this *after* `set_warm_up` to pick a smaller window on
-    /// purpose. Must be at least 1.
-    pub fn set_max_history(&mut self, bars: usize) {
-        assert!(bars >= 1, "max history must be at least 1");
-        self.max_history = bars;
+    /// How many threads decode Parquet ahead of the tick loop.
+    ///
+    /// The event loop is sequential, but the decode feeding it is not: row
+    /// groups are decoded in parallel and put back in file order before the
+    /// engine sees them. Defaults to `0`, which picks a thread count from the
+    /// machine's parallelism; set `1` to decode on a single background thread
+    /// (the read still overlaps the tick loop, just without the fan-out).
+    ///
+    /// Results do not depend on this — the tick stream is identical either
+    /// way — so it is purely a throughput/memory trade: each thread keeps a
+    /// couple of decoded batches resident.
+    pub fn set_read_threads(&mut self, threads: usize) {
+        self.read_threads = threads;
     }
 
     /// Record a mark-to-market equity point on **every bar** (into
@@ -364,13 +399,6 @@ impl Context {
     pub fn set_lot_size(&mut self, lot: f64) {
         assert!(lot > 0.0, "lot size must be positive");
         self.lot_size = lot;
-    }
-
-    pub fn history(&self, symbol: Symbol, n: usize) -> Vec<Bar> {
-        self.history_store
-            .get(symbol)
-            .map(|deque| deque.iter().take(n).cloned().collect())
-            .unwrap_or_default()
     }
 
     pub fn consolidate(
