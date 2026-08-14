@@ -23,7 +23,7 @@ pub trait Algorithm {
 - `on_data` runs once per distinct bar timestamp, after warm-up, for every
   subscribed symbol that has a bar at that instant. Place orders here.
 - `on_end_of_day` is optional. It fires when the first bar of a new trading
-  day (US Eastern) arrives, *before* that bar touches history or prices — so
+  day (US Eastern) arrives, *before* that bar touches prices — so
   it sees the world exactly as it was at the previous day's last bar. Orders
   placed in it fill at the new day's first bar.
 
@@ -33,7 +33,7 @@ Instruments are identified by [`Symbol`](../backtester/src/symbol.rs) — the
 **encoded ticker id the dataset already uses**, the `ticker` column value in
 every Parquet row (see [data-setup.md](data-setup.md#encoded_tickersjson)).
 `ctx.add_equity("AAPL")` looks that id up and returns it; every other API
-(orders, `history`, `slice.bars` keys, `portfolio.get`, the corporate-action
+(orders, `slice.bars` keys, `portfolio.get`, the corporate-action
 callbacks, the slippage/margin model contexts) takes the handle. Keep it in
 your algorithm struct.
 
@@ -119,6 +119,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_warm_up(bars)` | Bars to consume before `on_data` starts firing |
 | `add_equity(ticker)` | Subscribe to a ticker, returning its `Symbol` (panics if the dataset lacks it — see [Symbols](#symbols)) |
 | `try_add_equity(ticker)` / `add_all_equities()` | Subscribe optimistically / subscribe the whole dataset |
+| `dataset_symbols()` / `add_symbol(symbol)` | List the dataset's symbols without subscribing / subscribe one you already hold |
 | `symbol(ticker)` / `symbol_name(symbol)` | Look a ticker up / resolve a symbol back to its ticker |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
@@ -141,8 +142,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_splits_file(path)` | Splits JSON location (default `get_splits.json`; explicit path must exist) |
 | `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
-| `set_max_history(n)` | Bars per symbol `history()` retains (default 500) |
-| `history(symbol, n)` | Last `n` bars for a symbol (rolling window) |
+| `set_read_threads(n)` | Parquet decode threads feeding the tick loop (default `0` = auto) — see [Parallel decode](#parallel-decode) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |
@@ -335,10 +335,9 @@ what changes is your *account*, exactly like at a real broker:
   position value is unchanged and no trade is emitted. The trade ledger is
   rescaled the same way, so entry/exit averages of an eventual round trip
   come out in consistent post-split terms.
-- **`ctx.history()` is rescaled** into post-split terms (prices ÷ ratio,
-  volume × ratio), so lookbacks and indicators fed from history don't see a
-  phantom ±ratio move. Indicators *you* own can't be rescaled for you — reset
-  them in `on_split(ctx, symbol, ratio)`.
+- **Bar prices in slices stay raw** — the split-day print is what the market
+  actually showed. Any indicator or bar lookback *you* keep therefore straddles
+  the split unadjusted; reset it in `on_split(ctx, symbol, ratio)`.
 - **Fractional remainders are cashed out in lieu**: a reverse split that
   leaves a fraction against the lot size credits the cash at the post-split
   price. If that cashes out the whole position, the closing trade carries
@@ -367,7 +366,7 @@ prints at `last_price * (1 - fraction)`.
 A rename (FB → META) also looks like a delisting in the raw feed. Provide a
 `ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
 `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` — and the engine transfers
-the position, PnL ledger, history, resting orders, and last price from the old
+the position, PnL ledger, resting orders, and last price from the old
 symbol to the new one on the effective date, with **no trade emitted** (a
 rename is a relabeling, not a round trip). The successor is subscribed up front
 so its bars stream, and `on_rename(ctx, old, new)` fires so you can update the
@@ -399,6 +398,49 @@ filtered to the subscribed symbols as it parses, rather than loaded whole.
 - A [`Bar`](../backtester/src/bar.rs) has `time` (`DateTime<Utc>`), `open`,
   `high`, `low`, `close`, and `volume`; `bar.session()` derives the session
   (`PreMarket` / `Main` / `AfterMarket`) from the US Eastern time-of-day.
+
+## Lookbacks
+
+**The engine keeps no bar history.** A `Slice` is the current tick and nothing
+else; a strategy that wants to look back holds its own window.
+
+That is deliberate. Engine-side history meant pushing every bar into that
+symbol's own heap deque as it arrived — roughly a cache miss per bar across a
+wide universe — for a full `Bar` per symbol, when most strategies read back one
+field of a handful of symbols, if any. Keeping it yourself costs only what you
+actually use:
+
+```rust
+struct MyAlgo {
+    recent_lows: VecDeque<f64>,   // one field, one symbol
+}
+
+fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+    let Some(bar) = data.bars.get(&self.symbol) else { return };
+    self.recent_lows.push_back(bar.low);
+    if self.recent_lows.len() > 30 {
+        self.recent_lows.pop_front();
+    }
+    let low = self.recent_lows.iter().copied().fold(f64::INFINITY, f64::min);
+}
+```
+
+For a window per symbol across a universe, `SymbolVec<T>` (re-exported from the
+crate root) is the same dense, array-indexed table the engine uses for its own
+per-bar state.
+
+Three things to keep in mind:
+
+- **Warm-up does not pre-fill it.** `set_warm_up` suppresses `on_data`, which
+  is exactly where a strategy-owned window fills, so it starts empty at the
+  first post-warm-up bar. Guard on the window being full, or accumulate in a
+  [consolidator](#bar-consolidation) callback — those *do* fire during warm-up.
+- **Corporate actions are yours to apply.** The engine rescales positions on a
+  split but cannot touch state it does not own, so divide stored prices by
+  `ratio` in `on_split` and re-key on `on_rename`.
+- **Most strategies need none of this.** The indicators below are fed straight
+  from `bar.close` and keep their own state; a lookback window is only for
+  what they don't cover.
 
 ## Indicators
 
@@ -451,9 +493,9 @@ cargo run --example <name> -- backtester/tests/fixtures
 
 `kitchen_sink` is the guided tour of the whole API: warm-up, a slippage and a
 commission model, next-bar-open fills, a custom lot size and delist threshold,
-an hourly consolidator feeding a trend SMA, a scheduled pre-close flatten,
-`ctx.history()` lookbacks, and the `on_split` / `on_delisted` / `on_end_of_day`
-hooks.
+an hourly consolidator feeding a trend SMA, a scheduled pre-close flatten, a
+hand-rolled rolling-low lookback, and the `on_split` / `on_delisted` /
+`on_end_of_day` hooks.
 
 ## Running it
 
@@ -470,13 +512,77 @@ The `data_path` argument must be a directory that contains
 [data-setup.md](./data-setup.md) for the expected layout, and
 [results.md](./results.md) for what the run produces.
 
+## Performance
+
+A full scan of a 1.835B-bar dataset with a no-op strategy runs in ~190s, down
+from ~500s, on a 16-core machine with the data on a SATA SSD. Most of that came
+from decoding Parquet in parallel with the tick loop; the rest is subscription
+pushdown.
+
+### Parallel decode
+
+The event loop is sequential — a backtest cannot process April before March —
+but decoding is not. Each month file holds ~30 row groups, and those are
+decoded on a thread pool and put back in file order before the engine sees
+them, so the disk read and the decode overlap the strategy's own work instead
+of taking turns with it.
+
+This is on by default and changes nothing about results: the tick stream is
+identical bar for bar, whatever the thread count. `ctx.set_read_threads(n)`
+overrides it (`0` = pick from the machine's parallelism, `1` = decode on a
+single background thread).
+
+How much it buys depends on which side is the bottleneck. On one 30.7M-row
+month:
+
+| workload | sequential | 1 thread | 4 threads |
+|---|---|---|---|
+| full universe | 3.1s | 2.0s | 1.7s |
+| 100 symbols | 0.81s | 0.77s | 0.26s |
+
+On a narrow universe decode is the whole cost, so the pool is worth ~3×. On the
+full universe the engine's own per-tick bookkeeping (slice assembly, day
+boundaries) is a larger share, so the fan-out helps less but still cuts the wall
+time.
+
+### Subscription pushdown
+
+Measured on one 30.7M-row month file (19,201 tickers in the dataset), no-op
+strategy, release build, page cache warm.
+
+Every month file interleaves all ~19k tickers in time order, so row-group
+statistics cannot prune on `ticker`. A *selective* subscription is instead
+handed to the Parquet reader as a row filter: the predicate runs against the
+`ticker` column alone and the OHLCV pages are only decoded for rows that
+survive. This is automatic — the engine pushes down whenever fewer than half
+the dataset's ids are subscribed, and reads unfiltered above that, where the
+predicate pass costs more than it saves.
+
+| Subscribed | With pushdown | Without |
+|---|---|---|
+| 100 | 0.81s | 1.7s |
+| 1,000 | 1.0s | 1.9s |
+| 4,000 | 1.7s | 2.3s |
+| 8,000 | 2.4s | 2.8s |
+| 16,000 | 4.4s | 3.9s |
+| all 19,201 | 5.1s | 4.8s |
+
+So subscribing only what a strategy trades is worth real time — the engine no
+longer pays full decode for the rest of the market.
+
+`examples/no_op_baseline.rs` (a strategy that only counts bars) and
+`examples/scan_stages.rs` (I/O vs decode vs tick-grouping attribution) are the
+tools these numbers came from.
+
 ## Modeling notes
 
 - Market fills print at a single price (bar close or next open); resting
   limit/stop orders and volume-participation partial fills add intrabar
   execution, but there is no order-book depth or queue modeling.
-- Data streams one tick at a time: each month file is consumed through a
-  `TickReader` that keeps only the current timestamp's bars resident (no
-  month-sized buffering, no re-sorting — an out-of-order timestamp fails the
-  run). Memory scales with the subscribed universe's per-tick bar count plus
-  the rolling `history()` windows, not with the dataset.
+- Data streams one tick at a time: row groups are decoded ahead of the engine
+  by `tick_stream::TickStream` and handed over in file order, keeping only the
+  current timestamp's bars resident (no month-sized buffering, no re-sorting —
+  an out-of-order timestamp fails the run, reported at the first bad row in
+  file order regardless of which thread found it). Memory scales with the
+  subscribed universe's per-tick bar count and the decode threads' in-flight
+  batches — not with the dataset.
