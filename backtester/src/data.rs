@@ -1,6 +1,7 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{read_to_string, File},
+    hash::BuildHasher,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -17,6 +18,7 @@ use parquet::arrow::{
     },
     ProjectionMask,
 };
+use rustc_hash::FxHashMap;
 use walkdir::WalkDir;
 
 use crate::{bar::Bar, error::BacktestError, symbol::Symbol};
@@ -57,7 +59,10 @@ pub fn load_ticker_map(data_root: &str) -> Result<HashMap<u16, String>, Backtest
 pub struct TickerMap {
     /// Ticker id → name, `None` for ids the map doesn't list.
     names: Vec<Option<Box<str>>>,
-    ids: HashMap<Box<str>, Symbol>,
+    /// Name → symbol, hashed with the fast [`FxHashMap`]: looked up once per
+    /// subscription and per corporate-action ticker match, so the string
+    /// hashing wants to be cheap even though it is not per-bar.
+    ids: FxHashMap<Box<str>, Symbol>,
 }
 
 impl TickerMap {
@@ -69,7 +74,7 @@ impl TickerMap {
     pub fn from_pairs(pairs: HashMap<u16, String>) -> Self {
         let capacity = pairs.keys().copied().max().map_or(0, |max| max as usize + 1);
         let mut names: Vec<Option<Box<str>>> = vec![None; capacity];
-        let mut ids = HashMap::with_capacity(pairs.len());
+        let mut ids = FxHashMap::with_capacity_and_hasher(pairs.len(), Default::default());
         for (id, name) in pairs {
             let name: Box<str> = name.into();
             ids.insert(name.clone(), Symbol::from_ticker_id(id));
@@ -139,9 +144,9 @@ pub fn load_splits(
 /// Like [`load_splits`], but from an explicit file path. With `required`,
 /// a missing file is an error instead of an empty map — used when the caller
 /// configured the path on purpose and silence would hide a typo.
-pub fn load_splits_from(
+pub fn load_splits_from<S: BuildHasher>(
     path: &Path,
-    symbols: &std::collections::HashSet<String>,
+    symbols: &HashSet<String, S>,
     required: bool,
 ) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
     #[derive(serde::Deserialize)]
@@ -199,9 +204,9 @@ pub fn load_dividends(
 
 /// Like [`load_dividends`], but from an explicit file path. With `required`,
 /// a missing file is an error instead of an empty map.
-pub fn load_dividends_from(
+pub fn load_dividends_from<S: BuildHasher>(
     path: &Path,
-    symbols: &std::collections::HashSet<String>,
+    symbols: &HashSet<String, S>,
     required: bool,
 ) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
     use std::fmt;
@@ -227,10 +232,10 @@ pub fn load_dividends_from(
 
     // A seq visitor that filters records as they stream in, so peak memory is
     // the matched dividends, not the whole file.
-    struct FilterVisitor<'a> {
-        symbols: &'a std::collections::HashSet<String>,
+    struct FilterVisitor<'a, S> {
+        symbols: &'a HashSet<String, S>,
     }
-    impl<'de> Visitor<'de> for FilterVisitor<'_> {
+    impl<'de, S: BuildHasher> Visitor<'de> for FilterVisitor<'_, S> {
         type Value = DividendMap;
 
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -275,9 +280,9 @@ pub fn load_renames(
 
 /// Like [`load_renames`], but from an explicit file path. With `required`,
 /// a missing file is an error instead of an empty map.
-pub fn load_renames_from(
+pub fn load_renames_from<S: BuildHasher>(
     path: &Path,
-    symbols: &std::collections::HashSet<String>,
+    symbols: &HashSet<String, S>,
     required: bool,
 ) -> Result<std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>>, BacktestError> {
     #[derive(serde::Deserialize)]
