@@ -40,7 +40,14 @@ jobs:
       # Runs on the replicated fixture (real data isn't available in CI).
       # `bencher` output is ns/iter, lower is better.
       - name: Run benchmarks
-        run: cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
+        # Start criterion from a clean slate. The build cache can restore a
+        # partial target/criterion/.../base baseline (its key shifts whenever
+        # Cargo.lock changes), and criterion then prints an error *mid-line*
+        # into the bencher output, splitting the "test ... bench:" line so the
+        # comparison step parses nothing. A fresh run emits clean single lines.
+        run: |
+          rm -rf target/criterion
+          cargo bench -p backtester --bench engine -- --output-format bencher | tee bench-output.txt
       # Fail if any benchmark is >2x slower than the committed baseline. Missing
       # baseline just prints the numbers (exit 0) so a first run can seed it.
       # Refresh the baseline by re-running the bench and committing the new
