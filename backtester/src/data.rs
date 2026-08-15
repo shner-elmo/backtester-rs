@@ -35,7 +35,10 @@ pub const COLUMNS: [&str; 7] = ["ticker", "volume", "open", "high", "low", "clos
 /// Measured on a 30.7M-row month file with the full universe subscribed:
 /// 1024 rows 5.9s, 32k 5.3s, 128k 5.1s, 256k 4.9s, 1M 5.0s. The curve is flat
 /// past ~128k, where the projected 7 columns still only cost about 6 MB of
-/// resident batch.
+/// resident batch. Re-checked under the parallel consumer 2026-08-15: 512k was
+/// a wash-to-slightly-slower (more resident memory, no fewer straddles, since
+/// the consumer merges those anyway), so 128k stands. The read-path win that
+/// day was `CHANNEL_DEPTH`, not batch size — see `tick_stream.rs`.
 const READ_BATCH_SIZE: usize = 131_072;
 
 /// Metadata files the loaders expect inside the data root, next to the

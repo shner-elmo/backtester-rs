@@ -54,14 +54,15 @@ other API break rather than spending that churn alone.
 
 ## Smaller follow-ups
 
-- `READ_BATCH_SIZE` (131k rows) was tuned for the old sequential reader, where a
-  bigger batch meant fewer tick straddles. The parallel consumer merges
-  straddles anyway, so batch size now only trades decode efficiency against
-  in-flight memory — worth re-sweeping now that several threads hold batches at
-  once.
-- `MAX_AUTO_THREADS` is 8 with no measurement behind the cap beyond "past this
-  the disk is the limit". The full-dataset runs above used it; a sweep at 4 / 8 /
-  16 on the real dataset would either justify it or move it.
+- ~~`READ_BATCH_SIZE` re-sweep~~ **done 2026-08-15.** Under the parallel consumer
+  512k was a wash-to-slightly-slower; 128k stands. The read-path win was
+  `CHANNEL_DEPTH` (2 -> 8): full cold scan 197.7s -> 142.3s (~28%), warm
+  decode-bound quarter ~17.0M -> ~22.9M bars/s (~35%). Depth 2 was starving the
+  decode pool on the single tick loop; deeper read-ahead overlaps I/O with decode.
+- ~~`MAX_AUTO_THREADS` sweep~~ **done 2026-08-15.** The path is consumer-bound: a
+  warm sweep peaks around 4 threads and degrades past ~12. 8 left as-is — within
+  ~2% of the peak, headroom for slower-decode machines. Real win was
+  `CHANNEL_DEPTH`, above.
 - `benches/baseline.bencher.txt` still holds pre-interning CI numbers and is now
   far off. Per CLAUDE.md, refresh only from a CI run.
 
