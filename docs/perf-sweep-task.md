@@ -35,6 +35,31 @@ Left unchanged:
 Output is unchanged by all of this — the tick stream is deterministic, so these
 are pure throughput/memory trades.
 
+## Storage: SATA vs NVMe (2026-08-16)
+
+The full cold scan above is on the production dataset, which lives on a
+**2.5" SATA SSD** (Kingston, 327 MB/s sequential `dd`). To test whether that
+drive was the ceiling, the 29 GB dataset was copied to a spare
+**NVMe** (1.2 GB/s) and the full scan re-run at `CHANNEL_DEPTH=8`:
+
+| Full 29 GB cold scan, depth 8 | time | bars/s | effective read |
+|-------------------------------|------|--------|----------------|
+| SATA SSD                      | 142.3 s | 12.9M | ~204 MB/s |
+| **NVMe**                      | **78.7–82.8 s** | **22.2–23.3M** | ~363 MB/s |
+| warm from RAM (decode ceiling)| —    | ~22.9M | — |
+
+**We were SSD-bound on SATA; NVMe removes it.** The NVMe scan lands on the
+warm-from-RAM decode ceiling — so on NVMe the single-threaded tick-loop consumer
+is the limit, not storage, and it pulls only ~363 MB/s (≈30% of NVMe bandwidth).
+Faster-than-NVMe storage would not help; the next win is the consumer side (dense
+`Slice` / per-bar work — see `NEXT_STEPS.md`), not more reader/IO tuning.
+
+Note the SATA drive delivered only ~204 MB/s to the real workload vs its 327 MB/s
+sequential `dd` — the parallel row-group reader issues concurrent scattered reads
+across 60 month files, which SATA degrades on and NVMe does not. So the practical
+SATA penalty is larger than the raw spec gap. Actionable: keep the working
+dataset on NVMe — full-universe scans roughly halve (142 s → ~80 s).
+
 ## The knobs
 
 | Knob | Where | Value | Controls | Configurable? |
