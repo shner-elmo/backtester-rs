@@ -734,3 +734,69 @@ fn an_explicitly_configured_missing_metadata_file_is_an_error() {
         .expect_err("a configured-but-missing splits file must fail the run");
     assert!(err.to_string().contains("nope.json"), "error should name the file: {err}");
 }
+
+#[test]
+fn a_chained_ticker_rename_follows_every_hop() {
+    let tmp = tempfile::tempdir().unwrap();
+    // ONE trades 06-05..06-07, becomes TWO on 06-08, then TWO becomes THRE on
+    // 06-13. Only ONE is ever subscribed by the strategy, so the second hop is
+    // only reachable by following the chain.
+    let mut rows = days_of(1, &[5, 6, 7], |_| 100.0);
+    rows.extend(days_of(2, &[8, 9, 12], |_| 100.0));
+    rows.extend(days_of(3, &[13, 14, 15, 16, 20, 21, 22], |_| 100.0));
+    write_fixture(tmp.path(), &rows, &[(1, "ONE"), (2, "TWO"), (3, "THRE")], None, None);
+    fs::write(
+        tmp.path().join("ticker_renames.json"),
+        r#"[{"date": "2023-06-08", "old": "ONE", "new": "TWO"},
+            {"date": "2023-06-13", "old": "TWO", "new": "THRE"}]"#,
+    )
+    .unwrap();
+
+    struct ChainRename {
+        symbol: Option<Symbol>,
+        bought: bool,
+        renames: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl Algorithm for ChainRename {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            self.symbol = Some(ctx.add_equity("ONE"));
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            let Some(symbol) = self.symbol else { return };
+            if !self.bought && data.bars.contains_key(&symbol) {
+                self.bought = true;
+                ctx.market_order(symbol, 10.0);
+            }
+        }
+        fn on_rename(&mut self, ctx: &mut Context, old: Symbol, new: Symbol) {
+            self.renames
+                .lock()
+                .unwrap()
+                .push((ctx.symbol_name(old).to_string(), ctx.symbol_name(new).to_string()));
+            if self.symbol == Some(old) {
+                self.symbol = Some(new);
+            }
+        }
+    }
+
+    let renames = Arc::new(Mutex::new(Vec::new()));
+    let algo = ChainRename { symbol: None, bought: false, renames: renames.clone() };
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+
+    assert_eq!(
+        *renames.lock().unwrap(),
+        vec![("ONE".to_string(), "TWO".to_string()), ("TWO".to_string(), "THRE".to_string())],
+        "both hops of the chain must fire"
+    );
+    // Without the second hop TWO goes silent after 06-12 and the delist scan
+    // force-liquidates it with exit_reason "delisted".
+    assert!(
+        result.trades.is_empty(),
+        "a rename chain must not emit a trade: {:?}",
+        result.trades
+    );
+    let pos = result.open_positions.iter().find(|p| p.symbol == "THRE").unwrap();
+    assert!((pos.quantity - 10.0).abs() < 1e-9);
+    assert!(identity_error(&result) < 1e-6);
+}

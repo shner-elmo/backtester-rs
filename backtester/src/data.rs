@@ -272,8 +272,9 @@ pub fn load_dividends_from<S: BuildHasher>(
 /// Ticker renames keyed by effective date → list of `(old, new)` symbol pairs.
 /// Reads `ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
 /// `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` records; returns an
-/// empty map when the file doesn't exist. Only renames whose `old` symbol is
-/// subscribed are kept.
+/// empty map when the file doesn't exist. Only renames reachable from the
+/// subscribed symbols are kept — following chains, so `FB -> META -> MTA` is
+/// retained in full when only `FB` is subscribed.
 pub fn load_renames(
     data_root: &str,
     symbols: &std::collections::HashSet<String>,
@@ -308,16 +309,27 @@ pub fn load_renames_from<S: BuildHasher>(
             message: format!("not valid renames JSON: {e}"),
         })?;
 
+    // Resolve in date order, treating each accepted rename's successor as
+    // subscribed from that point on. A chain (FB -> META, then META -> MTA)
+    // would otherwise lose every hop after the first: filtering the whole
+    // record set against the initially subscribed names in one pass drops
+    // META -> MTA, because META only becomes a name worth following once
+    // FB -> META has been accepted.
+    let mut dated: Vec<(chrono::NaiveDate, String, String)> = records
+        .into_iter()
+        .filter_map(|r| Some((r.date.parse::<chrono::NaiveDate>().ok()?, r.old, r.new)))
+        .collect();
+    dated.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut live: HashSet<String> = symbols.iter().cloned().collect();
     let mut renames: std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>> =
         std::collections::BTreeMap::new();
-    for r in records {
-        if !symbols.contains(&r.old) {
+    for (date, old, new) in dated {
+        if !live.contains(&old) {
             continue;
         }
-        let Ok(date) = r.date.parse::<chrono::NaiveDate>() else {
-            continue;
-        };
-        renames.entry(date).or_default().push((r.old, r.new));
+        live.insert(new.clone());
+        renames.entry(date).or_default().push((old, new));
     }
     Ok(renames)
 }
