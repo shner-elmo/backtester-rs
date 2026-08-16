@@ -146,12 +146,23 @@ impl Context {
         Self { tickers, ..Self::default() }
     }
 
+    /// # Panics
+    ///
+    /// If `y-m-d` is not a real calendar date. Storing `None` instead would
+    /// silently mean "unbounded", so a typo like `(2023, 6, 31)` would run the
+    /// backtest over the whole dataset and report a plausible but completely
+    /// different equity curve — the same class of configuration mistake
+    /// [`add_equity`](Self::add_equity) panics on.
     pub fn set_start_date(&mut self, y: i32, m: u32, d: u32) {
-        self.start_date = NaiveDate::from_ymd_opt(y, m, d);
+        self.start_date = Some(checked_date(y, m, d, "start"));
     }
 
+    /// # Panics
+    ///
+    /// If `y-m-d` is not a real calendar date — see
+    /// [`set_start_date`](Self::set_start_date).
     pub fn set_end_date(&mut self, y: i32, m: u32, d: u32) {
-        self.end_date = NaiveDate::from_ymd_opt(y, m, d);
+        self.end_date = Some(checked_date(y, m, d, "end"));
     }
 
     pub fn set_cash(&mut self, cash: f64) {
@@ -500,6 +511,13 @@ impl Context {
     }
 }
 
+/// Build a `NaiveDate`, panicking with the offending components rather than
+/// letting an impossible date collapse into `None` (= unbounded).
+fn checked_date(y: i32, m: u32, d: u32, which: &str) -> NaiveDate {
+    NaiveDate::from_ymd_opt(y, m, d)
+        .unwrap_or_else(|| panic!("{which} date {y:04}-{m:02}-{d:02} is not a real calendar date"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -581,6 +599,27 @@ mod tests {
         let t2 = et(2023, 1, 3, 15, 56);
         ctx.fire_time_callbacks(&t2, t2.date_naive());
         assert_eq!(*count.lock().unwrap(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "start date 2023-06-31 is not a real calendar date")]
+    fn impossible_start_date_panics_instead_of_becoming_unbounded() {
+        Context::default().set_start_date(2023, 6, 31);
+    }
+
+    #[test]
+    #[should_panic(expected = "end date 2023-02-29 is not a real calendar date")]
+    fn impossible_end_date_panics_instead_of_becoming_unbounded() {
+        Context::default().set_end_date(2023, 2, 29);
+    }
+
+    #[test]
+    fn valid_dates_are_stored() {
+        let mut ctx = Context::default();
+        ctx.set_start_date(2023, 1, 3);
+        ctx.set_end_date(2024, 2, 29); // 2024 is a leap year
+        assert_eq!(ctx.start_date, NaiveDate::from_ymd_opt(2023, 1, 3));
+        assert_eq!(ctx.end_date, NaiveDate::from_ymd_opt(2024, 2, 29));
     }
 
     #[test]
