@@ -473,6 +473,13 @@ impl Context {
 
     pub(crate) fn fire_time_callbacks(&mut self, tick_time: &DateTime<Utc>, tick_date: NaiveDate) {
         use chrono::Timelike;
+        // Checked before the timezone conversion: `with_timezone(&Eastern)` is
+        // a chrono-tz transition-table lookup, and this runs on every tick of
+        // every run — including the majority of strategies (all the examples)
+        // that never register an `on_time` callback at all.
+        if self.time_callbacks.is_empty() {
+            return;
+        }
         let tick_et = tick_time.with_timezone(&Eastern);
         let tick_min = tick_et.hour() * 60 + tick_et.minute();
         let n = self.time_callbacks.len();
