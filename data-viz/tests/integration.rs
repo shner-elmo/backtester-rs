@@ -221,3 +221,16 @@ async fn indicators_unknown_spec_is_skipped() {
     assert_eq!(ind.len(), 1);
     assert!(ind.contains_key("ema:20"));
 }
+
+/// A period large enough to exhaust memory must be clamped, not allocated:
+/// `ta` sizes its ring buffer up front, so an unbounded period aborts the
+/// process rather than raising a catchable error.
+#[tokio::test]
+async fn indicators_with_an_absurd_period_are_clamped_not_allocated() {
+    let (status, json) = get_json("/api/bars?symbol=AAPL&tf=daily&ind=sma:4000000000").await;
+    assert_eq!(status, StatusCode::OK);
+    let ind = json["indicators"].as_object().unwrap();
+    let line = ind["sma:4000000000"]["sma"].as_array().unwrap();
+    let bars = json["bars"].as_array().unwrap();
+    assert_eq!(line.len(), bars.len(), "indicator lines stay index-aligned with the bars");
+}

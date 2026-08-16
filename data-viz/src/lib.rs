@@ -140,8 +140,14 @@ type IndLines = BTreeMap<&'static str, Vec<f64>>;
 /// `bbands:20:2.0`. Returns `None` for an unknown or unbuildable spec.
 fn indicator_lines(spec: &str, bars: &[OhlcBar]) -> Option<IndLines> {
     let p: Vec<&str> = spec.splitn(5, ':').collect();
+    // Periods come straight off the query string and size the indicator's
+    // internal ring buffer: `ta` allocates `vec![0.0; period]` up front, so an
+    // unbounded `?ind=sma:4000000000` is a 32 GB allocation — an allocation
+    // failure aborts the process, taking the server down for every client.
+    // Nothing sensible on a chart exceeds a few thousand bars of lookback.
+    const MAX_PERIOD: usize = 10_000;
     let period = |i: usize, default: usize| {
-        p.get(i).and_then(|s| s.parse::<usize>().ok()).unwrap_or(default).max(2)
+        p.get(i).and_then(|s| s.parse::<usize>().ok()).unwrap_or(default).clamp(2, MAX_PERIOD)
     };
     let mult = |i: usize, default: f64| {
         p.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(default).max(0.1)
