@@ -21,9 +21,13 @@ chrono-tz = "0.10"
 ta = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-datafusion = "48"
+rustc-hash = "2"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 http = "1"
 glob = "0.3"
+# Dev-only: the library no longer reads Parquet through DataFusion (it runs a
+# backtester strategy instead); this remains solely to regenerate the committed
+# test fixture via `cargo run -p data-viz --example make_test_fixture`.
+datafusion = "48"

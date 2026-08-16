@@ -8,9 +8,8 @@ mod ledger;
 mod orders;
 mod run;
 
-use std::collections::HashSet;
-
 use run::{run_prepared, PendingActions};
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -182,7 +181,7 @@ fn load_pending_actions(
 ) -> Result<(SubscriptionMask, PendingActions), BacktestError> {
     // The metadata loaders filter by ticker name, so hand them the names of
     // what is subscribed.
-    let mut names: HashSet<String> = ctx
+    let mut names: FxHashSet<String> = ctx
         .subscribed_symbols
         .iter()
         .filter_map(|&s| ctx.tickers.name(s).map(str::to_string))

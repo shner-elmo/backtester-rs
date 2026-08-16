@@ -35,6 +35,16 @@ The server expects the data root to contain:
 
 (See [data-setup.md](./data-setup.md) for details.)
 
+Every request is logged to stderr with its method, path, status and how long it
+took — handy for seeing the cost of a scan:
+
+```
+GET /api/bars?symbol=AAPL&tf=daily -> 200 in 22.4s
+```
+
+Logging defaults to `info`; set `RUST_LOG` to override (e.g. `RUST_LOG=warn` to
+quiet it, or `RUST_LOG=debug` for more).
+
 ### Everything is US/Eastern
 
 This is the one thing to internalise before reading the API below.

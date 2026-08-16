@@ -47,13 +47,24 @@ use crate::{
     error::BacktestError,
 };
 
-/// Chunks a worker may have queued ahead of the consumer. Two is enough to
-/// keep a thread from idling between handoffs without letting it run far
-/// enough ahead to matter for memory.
-const CHANNEL_DEPTH: usize = 2;
+/// Chunks a worker may have queued ahead of the consumer. The consumer reads
+/// its workers in a fixed rotation, so a shallow channel makes a worker block
+/// the moment the consumer is busy elsewhere in the rotation — the pool then
+/// starves waiting on the single tick loop rather than reading ahead of it.
+/// Measured on the full minute dataset (swap off): raising this from 2 to 8
+/// cut a warm decode-bound scan by ~35% (17.0M → 22.9M bars/s) and a full
+/// cold-disk scan by ~28% (197.7s → 142.3s), read-ahead overlapping disk I/O
+/// with decode. Flat past 8; the cost is `CHANNEL_DEPTH × threads` resident
+/// chunks (~7 MB each on a wide universe, so a few hundred MB at the default
+/// thread count).
+const CHANNEL_DEPTH: usize = 8;
 
-/// Cap on auto-selected decode threads. Past this the run is waiting on the
-/// disk, not on decode, and every extra thread is just more resident batches.
+/// Cap on auto-selected decode threads. The path is consumer-bound: a warm
+/// full-universe sweep peaks around 4 threads (the single tick loop saturates
+/// there) and *degrades* past ~12 as the extra threads only add contention and
+/// resident batches. 8 is a safe ceiling — within ~2% of the peak while leaving
+/// headroom for machines with slower per-thread decode. Measured 2026-08-15;
+/// see `CHANNEL_DEPTH` above, which was the real read-path bottleneck.
 const MAX_AUTO_THREADS: usize = 8;
 
 /// How many decode threads to use when the caller asks for the default.

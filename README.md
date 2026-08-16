@@ -8,7 +8,7 @@ local and fast.
 The repo is a Cargo workspace with three crates:
 
 - **`backtester`** — the core engine and strategy API.
-- **`data-viz`** — a DataFusion-backed Parquet explorer (OHLCV + indicator charts).
+- **`data-viz`** — a Parquet chart explorer (OHLCV + indicator charts) that reads through the backtester engine itself.
 - **`ui`** — the backtest-results dashboard (equity curve, drawdown, trade log).
 
 ## Quick start
@@ -34,6 +34,28 @@ To run against a full dataset, pass a directory containing
 ```bash
 cargo run --release --example ema_cross -- /path/to/data/output
 ```
+
+## Performance
+
+Measured on an AMD Ryzen 7 5700U (8 cores / 16 threads), release build, dataset
+on an NVMe SSD. The dataset is **5 years of US-equity minute bars** — ~1,600
+tickers, **1.835 billion** bars, 29 GB of Parquet.
+
+| Full 5-year scan | Wall-clock | Throughput |
+|------------------|-----------:|-----------:|
+| Whole universe (all ~1,600 tickers, 1.835B bars) | **~80 s** | **~23M bars/s** |
+| A single ticker | **~23 s** | — |
+
+The whole-universe figure is the engine's no-op floor (`examples/no_op_baseline`):
+every bar decoded, every tick assembled, no strategy work — a real strategy adds
+its own per-bar cost on top. Reads stream through a parallel Parquet decoder into
+a single ordered tick loop, which is the throughput ceiling here (storage on NVMe
+is no longer the bottleneck).
+
+A single-ticker query pushes the subscription into the Parquet reader as a row
+filter, so only that ticker's bars are decoded; the ~23 s is dominated by scanning
+the `ticker` column across every file, and a date-ranged query (rather than the
+full 5 years) drops the out-of-range months and is proportionally faster.
 
 ## Documentation
 
