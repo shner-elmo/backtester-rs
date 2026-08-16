@@ -259,6 +259,56 @@ fn volume_participation_cap_rounds_down_to_the_lot() {
 }
 
 #[test]
+fn volume_participation_never_traps_a_position_in_a_thin_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Open on a liquid bar, then try to exit on one thin enough that the whole
+    // allowance (1% of 80 = 0.8 shares) truncates below the 1-share lot. The
+    // allowance resets every tick, so a cap that applies to the exit would
+    // re-derive the same zero on every later bar and strand the position
+    // forever.
+    write_fixture(
+        tmp.path(),
+        &[
+            bar(0, 100.0, 101.0, 99.0, 100.0, 1_000_000),
+            bar(1, 100.0, 101.0, 99.0, 100.0, 80),
+            bar(2, 100.0, 101.0, 99.0, 100.0, 80),
+        ],
+    );
+
+    struct BuyThenLiquidate {
+        seen: usize,
+    }
+    impl Algorithm for BuyThenLiquidate {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("SYM");
+            ctx.set_max_volume_participation(0.01);
+        }
+        fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+            let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+            if !data.bars.contains_key(&sym) {
+                return;
+            }
+            self.seen += 1;
+            match self.seen {
+                1 => ctx.market_order(sym, 500.0),
+                2 => ctx.liquidate(sym),
+                _ => {}
+            }
+        }
+    }
+
+    let result = run_backtest(BuyThenLiquidate { seen: 0 }, tmp.path().to_str().unwrap()).unwrap();
+    assert!(
+        result.open_positions.is_empty(),
+        "liquidate must exit a thin name, but {:?} is still held",
+        result.open_positions
+    );
+    assert_eq!(result.trades.len(), 1, "the exit should close the position lifetime");
+    assert!(identity_error(&result) < 1e-6);
+}
+
+#[test]
 fn volume_participation_is_shared_across_orders_on_the_same_bar() {
     let tmp = tempfile::tempdir().unwrap();
     // Cap is 10% of 1,000 = 100 shares per bar *in aggregate*. Three resting

@@ -505,6 +505,10 @@ impl Context {
     /// partial fills — a resting order's unfilled remainder carries to the next
     /// bar; a market order's remainder is dropped. `0.0` (the default) means
     /// unlimited: fills ignore bar volume. Must be non-negative.
+    ///
+    /// The cap applies only to the exposure-*increasing* part of an order;
+    /// reducing toward flat always passes, so a position in a thin name can
+    /// always be exited.
     pub fn set_max_volume_participation(&mut self, fraction: f64) {
         assert!(fraction >= 0.0, "volume participation must be non-negative");
         self.max_volume_participation = fraction;

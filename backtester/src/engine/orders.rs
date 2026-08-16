@@ -110,11 +110,22 @@ impl Engine {
         // than the configured fraction of its volume *in aggregate* this
         // tick, and the remaining allowance is rounded down to the lot so a
         // capped fill stays on-lot. Unlimited when the fraction is 0.
+        //
+        // The cap applies only to the part of the order that *increases*
+        // exposure. Moving toward flat always passes, mirroring the margin
+        // model's rule: the allowance resets every tick, so on a bar thin
+        // enough that the whole allowance truncates below one lot (e.g. 1% of
+        // 80 shares with lot 1) it re-derives the same zero forever, and a
+        // Liquidate or stop-loss exit could never execute — the strategy
+        // would believe it was flat while carrying the position indefinitely.
         let qty = if self.ctx.max_volume_participation > 0.0 {
             let used = self.participation_used.get(&order.symbol).copied().unwrap_or(0.0);
             let cap = self.ctx.max_volume_participation * fill_bar.volume as f64 - used;
             let cap = ((cap / self.ctx.lot_size).trunc() * self.ctx.lot_size).max(0.0);
-            qty.signum() * qty.abs().min(cap)
+            let reducing =
+                if qty * current_qty < 0.0 { qty.abs().min(current_qty.abs()) } else { 0.0 };
+            let increasing = qty.abs() - reducing;
+            qty.signum() * (reducing + increasing.min(cap))
         } else {
             qty
         };
