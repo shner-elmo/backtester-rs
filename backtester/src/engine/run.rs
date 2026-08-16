@@ -339,7 +339,7 @@ pub(super) fn run_prepared<A: Algorithm>(
     // symbols here, against the ticker map the context was built from.
     let (subscribed, pending) = load_pending_actions(&mut ctx, data_path)?;
 
-    let files = sorted_parquet_files(data_path);
+    let files = sorted_parquet_files(data_path)?;
     if files.is_empty() {
         return Err(BacktestError::NoData { path: data_path.into() });
     }

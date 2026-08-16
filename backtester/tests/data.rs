@@ -73,7 +73,7 @@ fn drain(mask: &backtester::data::SubscriptionMask) -> Vec<(backtester::Symbol, 
 
     let mut projection = None;
     let mut out = Vec::new();
-    for path in sorted_parquet_files(FIXTURE) {
+    for path in sorted_parquet_files(FIXTURE).unwrap() {
         let mut reader = TickReader::new(&path, mask, &mut projection).unwrap();
         while let Some((_, bars)) = reader.next_tick().unwrap() {
             out.extend(bars);

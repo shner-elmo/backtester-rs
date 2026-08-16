@@ -60,6 +60,7 @@ fn main() {
         .collect();
 
     let files: Vec<PathBuf> = sorted_parquet_files(root)
+        .expect("listing data files")
         .into_iter()
         .filter(|p| months.is_empty() || file_year_month(p).is_some_and(|ym| months.contains(&ym)))
         .collect();

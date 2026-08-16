@@ -350,24 +350,38 @@ pub fn file_year_month(path: &std::path::Path) -> Option<(u32, u32)> {
     Some((dir_number(year_dir.file_name()?)?, dir_number(month_dir.file_name()?)?))
 }
 
-pub fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = WalkDir::new(data_root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
-        .map(|e| e.path().to_path_buf())
-        .collect();
+/// Every `.parquet` file under `data_root`, ordered by `(year, month)` and
+/// then by path so part files within a month keep a deterministic order.
+///
+/// Both failure modes here are reported rather than skipped: a directory that
+/// cannot be walked (bad permissions, a dangling symlink) would otherwise make
+/// a whole year of bars silently vanish and the backtest report plausible,
+/// wrong results; and a file outside the `year=/month=` layout has no position
+/// in the stream's order.
+pub fn sorted_parquet_files(data_root: &str) -> Result<Vec<PathBuf>, BacktestError> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in WalkDir::new(data_root) {
+        let entry = entry.map_err(|e| {
+            let path = e.path().unwrap_or_else(|| Path::new(data_root)).to_path_buf();
+            BacktestError::Io {
+                path,
+                source: e.into_io_error().unwrap_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "directory walk failed")
+                }),
+            }
+        })?;
+        if entry.path().extension().is_some_and(|ext| ext == "parquet") {
+            let path = entry.path().to_path_buf();
+            if file_year_month(&path).is_none() {
+                return Err(BacktestError::UnpartitionedDataFile { path });
+            }
+            files.push(path);
+        }
+    }
 
-    // Path as tiebreaker so multiple part files inside one month keep a
-    // deterministic order.
-    files.sort_by(|a, b| {
-        file_year_month(a)
-            .unwrap_or((0, 0))
-            .cmp(&file_year_month(b).unwrap_or((0, 0)))
-            .then_with(|| a.cmp(b))
-    });
+    files.sort_by(|a, b| file_year_month(a).cmp(&file_year_month(b)).then_with(|| a.cmp(b)));
 
-    files
+    Ok(files)
 }
 
 pub fn iter_bars(
@@ -375,7 +389,7 @@ pub fn iter_bars(
     ticker_map: &HashMap<u16, String>,
     mut cb: impl FnMut(String, Bar),
 ) -> Result<(), BacktestError> {
-    let files = sorted_parquet_files(data_root);
+    let files = sorted_parquet_files(data_root)?;
     let mut mask: Option<ProjectionMask> = None;
 
     for file_path in &files {

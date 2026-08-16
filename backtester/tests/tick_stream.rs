@@ -141,7 +141,7 @@ fn parallel(
 fn parallel_decode_matches_a_sequential_sweep() {
     let dir = tempfile::tempdir().unwrap();
     dataset(&dir, 4, 25, 7); // 175 rows/month over 64-row groups: plenty of straddles
-    let files = sorted_parquet_files(dir.path().to_str().unwrap());
+    let files = sorted_parquet_files(dir.path().to_str().unwrap()).unwrap();
     assert_eq!(files.len(), 4);
 
     let mask = all_symbols(7);
@@ -166,7 +166,7 @@ fn parallel_decode_matches_a_sequential_sweep() {
 fn a_selective_subscription_still_matches() {
     let dir = tempfile::tempdir().unwrap();
     dataset(&dir, 2, 40, 9);
-    let files = sorted_parquet_files(dir.path().to_str().unwrap());
+    let files = sorted_parquet_files(dir.path().to_str().unwrap()).unwrap();
 
     // Two of nine ids: selective enough that the reader pushes the mask into
     // Parquet as a row filter, so this covers the filtered path too.
@@ -191,7 +191,7 @@ fn ticks_that_straddle_a_file_boundary_arrive_whole() {
     write_month(dir.path(), 2023, 1, &[(0, shared - 60_000_000_000), (0, shared), (1, shared)]);
     write_month(dir.path(), 2023, 2, &[(2, shared), (3, shared + 60_000_000_000)]);
 
-    let files = sorted_parquet_files(dir.path().to_str().unwrap());
+    let files = sorted_parquet_files(dir.path().to_str().unwrap()).unwrap();
     let mask = all_symbols(4);
     let ticks = parallel(&files, &mask, 4);
 
@@ -214,7 +214,7 @@ fn unsorted_data_fails_the_stream_at_the_first_bad_row() {
     rows[150] = (0, base - 120_000_000_000);
     write_month(dir.path(), 2023, 1, &rows);
 
-    let files = sorted_parquet_files(dir.path().to_str().unwrap());
+    let files = sorted_parquet_files(dir.path().to_str().unwrap()).unwrap();
     let mask = all_symbols(1);
     for threads in [1, 2, 8] {
         let mut stream = TickStream::new(&files, &mask, threads).unwrap();

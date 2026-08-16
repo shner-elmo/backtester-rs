@@ -791,11 +791,7 @@ fn a_chained_ticker_rename_follows_every_hop() {
     );
     // Without the second hop TWO goes silent after 06-12 and the delist scan
     // force-liquidates it with exit_reason "delisted".
-    assert!(
-        result.trades.is_empty(),
-        "a rename chain must not emit a trade: {:?}",
-        result.trades
-    );
+    assert!(result.trades.is_empty(), "a rename chain must not emit a trade: {:?}", result.trades);
     let pos = result.open_positions.iter().find(|p| p.symbol == "THRE").unwrap();
     assert!((pos.quantity - 10.0).abs() < 1e-9);
     assert!(identity_error(&result) < 1e-6);
@@ -845,9 +841,11 @@ fn an_order_placed_on_end_of_day_is_rescaled_by_the_next_morning_split() {
         }
     }
 
-    let result =
-        run_backtest(EodBeforeSplit { last_day: None, placed: false }, tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest(
+        EodBeforeSplit { last_day: None, placed: false },
+        tmp.path().to_str().unwrap(),
+    )
+    .unwrap();
 
     let pos = result.open_positions.iter().find(|p| p.symbol == "SPLT").unwrap();
     assert!(

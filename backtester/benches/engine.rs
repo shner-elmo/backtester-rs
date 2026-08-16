@@ -173,7 +173,8 @@ fn write_replica(
 /// the tempdir (kept alive by the caller) and the total bar count.
 fn generate_dataset() -> (TempDir, u64) {
     let root = fixture_root();
-    let file = sorted_parquet_files(&root).into_iter().next().expect("fixture parquet missing");
+    let file =
+        sorted_parquet_files(&root).unwrap().into_iter().next().expect("fixture parquet missing");
     let fx = read_fixture(&file);
     let rows = fx.ts.len();
     assert!(rows > 0, "fixture produced no rows");

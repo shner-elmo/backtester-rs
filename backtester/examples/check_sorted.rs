@@ -13,7 +13,7 @@ use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMa
 fn main() {
     let root = std::env::args().nth(1).expect("arg 1: data root to sweep");
 
-    let files = sorted_parquet_files(&root);
+    let files = sorted_parquet_files(&root).expect("listing data files");
     assert!(!files.is_empty(), "no parquet files under {root}");
 
     let mut rows = 0;

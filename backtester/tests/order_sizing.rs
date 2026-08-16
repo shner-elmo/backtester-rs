@@ -192,12 +192,8 @@ fn set_holdings_never_inverts_direction_on_negative_equity() {
     // halves to 50 the account is worth 500,000 - 900,000 = -400,000. A
     // request for a 50% *long* allocation must not size off that negative
     // total, which would flip the sign and open a short.
-    let rows = vec![
-        row(1, 5, 0, 100.0),
-        row(1, 5, 1, 100.0),
-        row(1, 6, 0, 50.0),
-        row(1, 6, 1, 50.0),
-    ];
+    let rows =
+        vec![row(1, 5, 0, 100.0), row(1, 5, 1, 100.0), row(1, 6, 0, 50.0), row(1, 6, 1, 50.0)];
     write_fixture(tmp.path(), &rows, &[(1, "SYM")]);
 
     let algo = RebalanceWhileUnderwater { bought: false, rebalanced: false };
@@ -205,10 +201,7 @@ fn set_holdings_never_inverts_direction_on_negative_equity() {
 
     let held = result.open_positions.iter().find(|p| p.symbol == "SYM");
     let qty = held.map(|p| p.quantity).unwrap_or(0.0);
-    assert!(
-        qty >= 0.0,
-        "a long allocation request must never open a short, got {qty} shares"
-    );
+    assert!(qty >= 0.0, "a long allocation request must never open a short, got {qty} shares");
     assert!(result.final_equity.is_finite());
     assert!(identity_error(&result) < 1e-6);
 }
@@ -236,12 +229,8 @@ fn set_holdings_on_a_zero_price_bar_does_not_poison_the_run_with_nan() {
     // A single glitched row prints 0.0. Sizing divides by the price, so an
     // unguarded target is infinite; that quantity survives into apply_fill and
     // turns cash — and every later equity point — into NaN.
-    let rows = vec![
-        row(1, 5, 0, 100.0),
-        row(1, 5, 1, 0.0),
-        row(1, 6, 0, 100.0),
-        row(1, 6, 1, 100.0),
-    ];
+    let rows =
+        vec![row(1, 5, 0, 100.0), row(1, 5, 1, 0.0), row(1, 6, 0, 100.0), row(1, 6, 1, 100.0)];
     write_fixture(tmp.path(), &rows, &[(1, "SYM")]);
 
     let result = run_backtest(RebalanceEveryBar, tmp.path().to_str().unwrap()).unwrap();

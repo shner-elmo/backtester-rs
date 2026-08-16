@@ -30,6 +30,12 @@ pub enum BacktestError {
     /// `window_start` within a file, and a month partition must not contain
     /// rows dated before an earlier partition's bars. Sort the data at ingest.
     OutOfOrderData { path: PathBuf, at: DateTime<Utc>, stream_at: DateTime<Utc> },
+    /// A `.parquet` file that is not inside a `year=/month=` partition. The
+    /// engine streams files in `(year, month)` order, so a file with no
+    /// derivable partition has no position in that order: it used to sort
+    /// ahead of everything as `(0, 0)`, which starts the stream at the wrong
+    /// date and makes the first real file look like a timestamp regression.
+    UnpartitionedDataFile { path: PathBuf },
     /// A decode thread died without finishing its files. Only a panic inside
     /// the reader can cause this, but it must not pass for end of data: a
     /// backtest silently truncated to the bars that made it through would
@@ -54,6 +60,14 @@ impl fmt::Display for BacktestError {
             }
             Self::InvalidDateRange { start, end } => {
                 write!(f, "invalid date range: start date {start} is after end date {end}")
+            }
+            Self::UnpartitionedDataFile { path } => {
+                write!(
+                    f,
+                    "{}: .parquet file is not inside a `year=YYYY/month=M` partition, so it has \
+                     no place in the engine's (year, month) file order",
+                    path.display()
+                )
             }
             Self::ReaderThreadDied => {
                 write!(f, "a Parquet decode thread died before reaching the end of the data")

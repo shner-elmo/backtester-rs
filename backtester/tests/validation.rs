@@ -264,3 +264,30 @@ fn subscribing_after_initialize_panics_instead_of_silently_doing_nothing() {
 
     let _ = run_backtest(SubscribeLate, root.to_str().unwrap());
 }
+
+#[test]
+fn a_parquet_file_outside_a_year_month_partition_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("encoded_tickers.json"), r#"{"1": "XYZ"}"#).unwrap();
+
+    let jun1 = NaiveDate::from_ymd_opt(2023, 6, 1).unwrap();
+    write_part(root, 2023, 6, "part-0.parquet", &[(jun1, 0, 10.0), (jun1, 1, 11.0)]);
+
+    // A leftover ingest artifact at the data root. It has no year=/month=
+    // components, so it used to sort ahead of every real partition as (0, 0):
+    // the stream would start at the wrong date and the first real file would
+    // then look like a timestamp regression.
+    fs::copy(
+        root.join("minute/year=2023/month=6/part-0.parquet"),
+        root.join("minute/part-tmp.parquet"),
+    )
+    .unwrap();
+
+    let algo = RecordTimes::new("XYZ", None, None);
+    let err = run_backtest(algo, root.to_str().unwrap()).unwrap_err();
+    assert!(
+        matches!(err, BacktestError::UnpartitionedDataFile { .. }),
+        "expected UnpartitionedDataFile, got {err:?}"
+    );
+}
