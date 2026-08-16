@@ -12,7 +12,7 @@ use crate::{
     logging::LogConfig,
     margin::{MarginModel, NoMargin},
     slippage::{NoSlippage, SlippageModel},
-    symbol::{Symbol, SymbolSet},
+    symbol::{Symbol, SymbolMap, SymbolSet},
 };
 
 pub(crate) enum OrderKind {
@@ -74,6 +74,11 @@ pub struct Context {
     /// — never per bar.
     pub(crate) tickers: TickerMap,
     pub(crate) consolidators: Vec<ConsolidatorEntry>,
+    /// Indices into `consolidators`, grouped by the symbol they consume, so
+    /// the tick loop can feed a bar without scanning the whole registry —
+    /// keyed the same way `deferred`, `resting_book` and `participation_used`
+    /// are.
+    pub(crate) consolidators_by_symbol: SymbolMap<Vec<usize>>,
     pub(crate) time_callbacks: Vec<ScheduledTimeEntry>,
     pub(crate) warm_up_remaining: usize,
     pub(crate) start_date: Option<NaiveDate>,
@@ -114,6 +119,7 @@ impl Default for Context {
             portfolio: Portfolio::default(),
             tickers: TickerMap::default(),
             consolidators: Vec::new(),
+            consolidators_by_symbol: SymbolMap::default(),
             time_callbacks: Vec::new(),
             warm_up_remaining: 0,
             start_date: None,
@@ -445,7 +451,9 @@ impl Context {
         period: ConsolidatorPeriod,
         cb: impl FnMut(&Bar) + 'static,
     ) {
-        self.consolidators.push(ConsolidatorEntry::new(symbol, period, Box::new(cb)));
+        let index = self.consolidators.len();
+        self.consolidators.push(ConsolidatorEntry::new(period, Box::new(cb)));
+        self.consolidators_by_symbol.entry(symbol).or_default().push(index);
     }
 
     /// Schedule a callback to fire once per trading day when the bar stream first

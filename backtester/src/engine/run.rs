@@ -199,11 +199,17 @@ impl Engine {
         if self.ctx.consolidators.is_empty() {
             return;
         }
+        // Look each bar's symbol up in the index rather than scanning the
+        // whole registry: the natural wide-universe pattern (add_all_equities
+        // plus one consolidator per symbol) made this loop quadratic — ~1600
+        // bars x ~1600 consolidators per minute tick — where only the handful
+        // registered for that symbol can ever match.
+        let consolidators = &mut self.ctx.consolidators;
+        let by_symbol = &self.ctx.consolidators_by_symbol;
         for (symbol, bar) in bars {
-            for c in self.ctx.consolidators.iter_mut() {
-                if c.symbol == *symbol {
-                    c.feed(bar);
-                }
+            let Some(indices) = by_symbol.get(symbol) else { continue };
+            for &i in indices {
+                consolidators[i].feed(bar);
             }
         }
     }

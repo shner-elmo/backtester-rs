@@ -2,15 +2,24 @@
 //! latest market price — including symbols with no bar on the tick the order
 //! fills — not at their cost basis. Uses a synthetic two-symbol fixture where
 //! one symbol appreciates and then goes quiet.
+//!
+//! The same two-symbol fixture also covers order routing and per-symbol
+//! consolidator dispatch, which need more than one symbol to be meaningful.
 
-use std::{fs, path::Path, sync::Arc};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use arrow::{
     array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array},
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, Slice};
+use backtester::{
+    consolidator::ConsolidatorPeriod, run_backtest, Algorithm, BacktestResult, Context, Slice,
+};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
 
@@ -294,4 +303,60 @@ fn an_order_for_a_symbol_silent_this_tick_is_carried_not_dropped() {
         .expect("the carried order must fill once QUIT trades again");
     assert!((quit.quantity - 100.0).abs() < 1e-9, "expected 100 shares, got {}", quit.quantity);
     assert!(identity_error(&result) < 1e-6);
+}
+
+/// Registers a daily consolidator for each of two symbols and records which
+/// symbol's bars each one actually received.
+struct TwoConsolidators {
+    seen: Arc<Mutex<Vec<(&'static str, f64)>>>,
+}
+
+impl Algorithm for TwoConsolidators {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        let a = ctx.add_equity("GROW");
+        let b = ctx.add_equity("OTHR");
+
+        let seen_a = self.seen.clone();
+        ctx.consolidate(a, ConsolidatorPeriod::Daily, move |bar| {
+            seen_a.lock().unwrap().push(("GROW", bar.close));
+        });
+        let seen_b = self.seen.clone();
+        ctx.consolidate(b, ConsolidatorPeriod::Daily, move |bar| {
+            seen_b.lock().unwrap().push(("OTHR", bar.close));
+        });
+    }
+
+    fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+}
+
+#[test]
+fn each_consolidator_receives_only_its_own_symbols_bars() {
+    let tmp = tempfile::tempdir().unwrap();
+    // GROW trades at 100, OTHR at 10, on the same days. A consolidator must
+    // only ever see the closes of the symbol it was registered for.
+    let rows = vec![
+        row(1, 5, 0, 100.0),
+        row(1, 6, 0, 100.0),
+        row(1, 7, 0, 100.0),
+        row(2, 5, 0, 10.0),
+        row(2, 6, 0, 10.0),
+        row(2, 7, 0, 10.0),
+    ];
+    write_fixture(tmp.path(), &rows, &[(1, "GROW"), (2, "OTHR")]);
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let algo = TwoConsolidators { seen: seen.clone() };
+    run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty(), "no consolidated bars fired");
+    for (symbol, close) in seen.iter() {
+        let expected = if *symbol == "GROW" { 100.0 } else { 10.0 };
+        assert!(
+            (close - expected).abs() < 1e-9,
+            "the {symbol} consolidator received a bar closing at {close}, \
+             which belongs to the other symbol"
+        );
+    }
 }

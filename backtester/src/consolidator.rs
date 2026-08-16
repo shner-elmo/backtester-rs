@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use chrono_tz::US::Eastern;
 
-use crate::{bar::Bar, symbol::Symbol};
+use crate::bar::Bar;
 
 pub enum ConsolidatorPeriod {
     Minutes(u32),
@@ -54,7 +54,8 @@ fn et_midnight(date: chrono::NaiveDate) -> DateTime<Utc> {
 }
 
 pub(crate) struct ConsolidatorEntry {
-    pub symbol: Symbol,
+    /// The symbol this consumes is the key it is indexed under in
+    /// `Context::consolidators_by_symbol`, so it is not repeated here.
     period: ConsolidatorPeriod,
     /// The open instant of the bucket `current_bar` is accumulating.
     bucket_start: Option<DateTime<Utc>>,
@@ -63,8 +64,8 @@ pub(crate) struct ConsolidatorEntry {
 }
 
 impl ConsolidatorEntry {
-    pub fn new(symbol: Symbol, period: ConsolidatorPeriod, callback: Box<dyn FnMut(&Bar)>) -> Self {
-        Self { symbol, period, bucket_start: None, current_bar: None, callback }
+    pub fn new(period: ConsolidatorPeriod, callback: Box<dyn FnMut(&Bar)>) -> Self {
+        Self { period, bucket_start: None, current_bar: None, callback }
     }
 
     pub fn feed(&mut self, bar: &Bar) {
@@ -122,7 +123,6 @@ mod tests {
         let fired: Arc<Mutex<Vec<Bar>>> = Arc::new(Mutex::new(Vec::new()));
         let f = fired.clone();
         let mut c = ConsolidatorEntry::new(
-            Symbol::from_ticker_id(1),
             period,
             Box::new(move |b: &Bar| f.lock().unwrap().push(b.clone())),
         );
