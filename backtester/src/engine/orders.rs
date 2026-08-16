@@ -94,8 +94,22 @@ impl Engine {
     ) -> f64 {
         let qty = match order.kind {
             OrderKind::Market(q) => q,
+            OrderKind::SetHoldings(_) if !exec_price.is_finite() || exec_price <= 0.0 => {
+                // No meaningful share count exists at a zero or non-finite
+                // price: dividing by it yields an infinite quantity that
+                // survives the EPSILON check and `NoMargin`, and `apply_fill`
+                // then poisons cash — and every later equity point, drawdown
+                // and Sharpe — with NaN while the run still exits Ok. The
+                // margin model already guards this same value.
+                0.0
+            }
             OrderKind::SetHoldings(pct) => {
-                let total = self.ctx.portfolio.total_value(&self.last_known_prices);
+                // Equity floors at zero. `NoMargin` lets cash go arbitrarily
+                // negative, and a negative total would flip the sign of the
+                // target so that a request for a *long* allocation liquidated
+                // the position and opened a short instead. An account with no
+                // equity can hold nothing, so the target is flat.
+                let total = self.ctx.portfolio.total_value(&self.last_known_prices).max(0.0);
                 let desired_qty = total * pct / exec_price;
                 // Round the *target* (not the delta) to the lot so the held
                 // position stays on-lot instead of drifting.
@@ -134,7 +148,7 @@ impl Engine {
         // fill. The allowed quantity is clamped to the order's own direction
         // and size — a model can only trim, never grow or reverse — and a
         // trimmed fill is rounded down to the lot.
-        if self.ctx.margin.unlimited() {
+        let qty = if self.ctx.margin.unlimited() {
             qty
         } else {
             let equity = self.ctx.portfolio.total_value(&self.last_known_prices);
@@ -164,6 +178,15 @@ impl Engine {
             } else {
                 qty.signum() * (allowed.abs() / self.ctx.lot_size).trunc() * self.ctx.lot_size
             }
+        };
+
+        // Last line of defence: a NaN/infinite quantity from a user-supplied
+        // `Market` size or margin model must never reach `apply_fill`, where
+        // it would silently corrupt cash and every downstream statistic.
+        if qty.is_finite() {
+            qty
+        } else {
+            0.0
         }
     }
 

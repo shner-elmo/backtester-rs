@@ -157,3 +157,100 @@ fn set_holdings_marks_held_symbols_without_a_bar_at_market_not_cost() {
     assert!((result.final_equity - 110_000.0).abs() < 1e-6);
     assert!(identity_error(&result) < 1e-6);
 }
+
+/// Buys a leveraged position on the first bar, then rebalances to a *long*
+/// 50% target after the price collapse has driven equity negative.
+struct RebalanceWhileUnderwater {
+    bought: bool,
+    rebalanced: bool,
+}
+
+impl Algorithm for RebalanceWhileUnderwater {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        ctx.add_equity("SYM");
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+        let Some(bar) = data.bars.get(&sym) else { return };
+        if !self.bought {
+            self.bought = true;
+            // 10,000 @ 100 on 100k of cash: NoMargin allows cash to go to -900k.
+            ctx.market_order(sym, 10_000.0);
+        } else if !self.rebalanced && bar.close < 60.0 {
+            self.rebalanced = true;
+            ctx.set_holdings(sym, 0.5);
+        }
+    }
+}
+
+#[test]
+fn set_holdings_never_inverts_direction_on_negative_equity() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 10,000 shares bought at 100 leaves cash at -900,000. When the price
+    // halves to 50 the account is worth 500,000 - 900,000 = -400,000. A
+    // request for a 50% *long* allocation must not size off that negative
+    // total, which would flip the sign and open a short.
+    let rows = vec![
+        row(1, 5, 0, 100.0),
+        row(1, 5, 1, 100.0),
+        row(1, 6, 0, 50.0),
+        row(1, 6, 1, 50.0),
+    ];
+    write_fixture(tmp.path(), &rows, &[(1, "SYM")]);
+
+    let algo = RebalanceWhileUnderwater { bought: false, rebalanced: false };
+    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+
+    let held = result.open_positions.iter().find(|p| p.symbol == "SYM");
+    let qty = held.map(|p| p.quantity).unwrap_or(0.0);
+    assert!(
+        qty >= 0.0,
+        "a long allocation request must never open a short, got {qty} shares"
+    );
+    assert!(result.final_equity.is_finite());
+    assert!(identity_error(&result) < 1e-6);
+}
+
+/// Rebalances on every bar, including one that prints a zero price.
+struct RebalanceEveryBar;
+
+impl Algorithm for RebalanceEveryBar {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        ctx.add_equity("SYM");
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        let sym = ctx.symbol("SYM").expect("subscribed in initialize");
+        if data.bars.contains_key(&sym) {
+            ctx.set_holdings(sym, 0.5);
+        }
+    }
+}
+
+#[test]
+fn set_holdings_on_a_zero_price_bar_does_not_poison_the_run_with_nan() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A single glitched row prints 0.0. Sizing divides by the price, so an
+    // unguarded target is infinite; that quantity survives into apply_fill and
+    // turns cash — and every later equity point — into NaN.
+    let rows = vec![
+        row(1, 5, 0, 100.0),
+        row(1, 5, 1, 0.0),
+        row(1, 6, 0, 100.0),
+        row(1, 6, 1, 100.0),
+    ];
+    write_fixture(tmp.path(), &rows, &[(1, "SYM")]);
+
+    let result = run_backtest(RebalanceEveryBar, tmp.path().to_str().unwrap()).unwrap();
+
+    assert!(result.final_equity.is_finite(), "final equity was {}", result.final_equity);
+    assert!(
+        result.equity_curve.iter().all(|p| p.equity.is_finite()),
+        "a zero-price bar poisoned the equity curve with NaN/inf"
+    );
+    assert!(result.stats.max_drawdown.is_finite());
+    assert!(identity_error(&result) < 1e-6);
+}
