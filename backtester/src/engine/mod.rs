@@ -241,6 +241,10 @@ fn load_pending_actions(
     for &symbol in &ctx.subscribed_symbols {
         subscribed.insert(symbol);
     }
+    // The mask is now fixed for the run (and is pushed into the Parquet
+    // reader as a row filter), so a later subscription could never produce a
+    // bar. Fail loudly on one instead of silently ignoring it.
+    ctx.subscriptions_frozen = true;
 
     Ok((subscribed, pending))
 }

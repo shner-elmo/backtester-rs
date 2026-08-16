@@ -79,6 +79,11 @@ pub struct Context {
     pub(crate) start_date: Option<NaiveDate>,
     pub(crate) end_date: Option<NaiveDate>,
     pub(crate) subscribed_symbols: SymbolSet,
+    /// Set once the engine has materialized `subscribed_symbols` into the
+    /// reader's `SubscriptionMask`. After that a new subscription can no
+    /// longer reach the reader, so attempting one is a hard error rather
+    /// than a symbol that silently never prints a bar.
+    pub(crate) subscriptions_frozen: bool,
     pub(crate) pending_orders: Vec<Order>,
     pub(crate) resting_orders: Vec<RestingOrder>,
     pub(crate) max_volume_participation: f64,
@@ -114,6 +119,7 @@ impl Default for Context {
             start_date: None,
             end_date: None,
             subscribed_symbols: SymbolSet::default(),
+            subscriptions_frozen: false,
             pending_orders: Vec::new(),
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
@@ -191,6 +197,12 @@ impl Context {
     ///
     /// Subscribing the same ticker twice returns the same symbol.
     ///
+    /// Must be called from `initialize`: the reader's subscription set is
+    /// built once before the run starts, so a symbol added later never
+    /// decodes a bar. For a universe chosen at runtime, subscribe every
+    /// candidate up front — [`add_all_equities`](Self::add_all_equities) or
+    /// [`dataset_symbols`](Self::dataset_symbols) — and filter in `on_data`.
+    ///
     /// # Panics
     ///
     /// If the dataset has no such ticker. That is a configuration mistake
@@ -198,6 +210,8 @@ impl Context {
     /// since an unknown ticker simply never prints a bar. Use
     /// [`try_add_equity`](Self::try_add_equity) when the universe is dynamic
     /// and a miss is expected.
+    ///
+    /// Also panics if called after `initialize` has returned.
     pub fn add_equity(&mut self, ticker: &str) -> Symbol {
         self.try_add_equity(ticker).unwrap_or_else(|| {
             panic!(
@@ -219,6 +233,11 @@ impl Context {
     /// for strategies that screen it rather than pick names up front.
     pub fn add_all_equities(&mut self) -> Vec<Symbol> {
         let all: Vec<Symbol> = self.tickers.symbols().collect();
+        if let Some(&first) = all.first() {
+            // Routed through `subscribe` so the initialize-only rule is
+            // enforced here too; the rest bypass the per-symbol check.
+            self.subscribe(first);
+        }
         self.subscribed_symbols.extend(all.iter().copied());
         all
     }
@@ -249,6 +268,14 @@ impl Context {
     }
 
     pub(crate) fn subscribe(&mut self, symbol: Symbol) {
+        assert!(
+            !self.subscriptions_frozen,
+            "symbols can only be subscribed from initialize(): the reader's subscription set is \
+             built once before the run and is also pushed into the Parquet reader as a row \
+             filter, so a symbol added later never decodes a single bar. Subscribe the whole \
+             candidate universe up front (see add_all_equities / dataset_symbols) and filter it \
+             in on_data."
+        );
         self.subscribed_symbols.insert(symbol);
     }
 

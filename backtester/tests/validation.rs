@@ -236,3 +236,31 @@ fn a_ticker_the_dataset_lacks_can_be_subscribed_optimistically() {
     let result = run_backtest(Optimistic, FIXTURE).unwrap();
     assert!(!result.equity_curve.is_empty(), "AAPL should still have streamed");
 }
+
+#[test]
+#[should_panic(expected = "symbols can only be subscribed from initialize()")]
+fn subscribing_after_initialize_panics_instead_of_silently_doing_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("encoded_tickers.json"), r#"{"1": "XYZ", "2": "LATE"}"#).unwrap();
+
+    let jun1 = NaiveDate::from_ymd_opt(2023, 6, 1).unwrap();
+    write_part(root, 2023, 6, "part-0.parquet", &[(jun1, 0, 10.0), (jun1, 1, 11.0)]);
+
+    /// Tries to grow its universe mid-run, the way a screening strategy would.
+    struct SubscribeLate;
+    impl Algorithm for SubscribeLate {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("XYZ");
+        }
+        fn on_data(&mut self, ctx: &mut Context, _data: &Slice) {
+            // The reader's subscription set is already fixed, so LATE could
+            // never print a bar: this must fail loudly rather than leave the
+            // strategy waiting for data that never arrives.
+            ctx.add_equity("LATE");
+        }
+    }
+
+    let _ = run_backtest(SubscribeLate, root.to_str().unwrap());
+}
