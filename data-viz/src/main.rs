@@ -10,7 +10,12 @@ fn data_root() -> String {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
+    // Default to info so request logs show; RUST_LOG still overrides.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
     let root = data_root();
     tracing::info!("data root: {}", root);

@@ -1,8 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use axum::{
-    extract::{Query, State},
+    extract::{Query, Request, State},
     http::StatusCode,
+    middleware,
     response::{Html, IntoResponse, Json, Response},
     routing::get,
     Router,
@@ -97,6 +98,19 @@ pub async fn create_app(data_root: String) -> Router {
         .route("/", get(index))
         .route("/api/bars", get(bars))
         .with_state(Arc::new(AppState { data_path, tickers }))
+        .layer(middleware::from_fn(log_requests))
+}
+
+/// Logs every request as `METHOD /path?query -> STATUS in DURATION`, so the
+/// cost of each `/api/bars` scan is visible in the server output.
+async fn log_requests(req: Request, next: middleware::Next) -> Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let started = Instant::now();
+    let response = next.run(req).await;
+    let elapsed = started.elapsed();
+    tracing::info!("{method} {uri} -> {} in {:.1?}", response.status().as_u16(), elapsed);
+    response
 }
 
 /// Bars straight from the engine, without the HTTP layer. Used by tests and the
