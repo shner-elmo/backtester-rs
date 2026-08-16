@@ -58,7 +58,13 @@ pub struct BacktestStats {
     pub win_rate: f64,
     /// Sum of realized trade PnL (net of commissions).
     pub total_pnl: f64,
-    pub profit_factor: f64,
+    /// Gross profit ÷ gross loss, or `None` when there were no losing trades
+    /// and the ratio is undefined (conventionally "infinite"). Modelled as an
+    /// `Option` rather than `f64::INFINITY` because `serde_json` writes any
+    /// non-finite float as `null`, which does not deserialize back into `f64`
+    /// — the result file could not be re-read, and consumers checking
+    /// `isFinite` saw a `null` that tests as finite.
+    pub profit_factor: Option<f64>,
     /// Worst peak-to-trough decline of the daily mark-to-market equity curve.
     pub max_drawdown: f64,
     /// Annualized from daily equity-curve returns (√252 scaling), in excess of
@@ -83,12 +89,12 @@ pub fn compute_stats(
     let gross_loss: f64 = trades.iter().filter(|t| t.pnl < 0.0).map(|t| t.pnl.abs()).sum();
     let profit_factor = if gross_loss == 0.0 {
         if gross_profit > 0.0 {
-            f64::INFINITY
+            None
         } else {
-            0.0
+            Some(0.0)
         }
     } else {
-        gross_profit / gross_loss
+        Some(gross_profit / gross_loss)
     };
 
     // Drawdown over the mark-to-market curve, so it captures pain from open
@@ -176,7 +182,20 @@ mod tests {
         assert_eq!(s.trade_count, 4);
         assert_eq!(s.win_rate, 0.5);
         assert_eq!(s.total_pnl, 250.0);
-        assert!((s.profit_factor - 400.0 / 150.0).abs() < 1e-12);
+        assert!((s.profit_factor.unwrap() - 400.0 / 150.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_all_winning_run_serializes_a_round_trippable_profit_factor() {
+        // No losing trades: the ratio is undefined. Reported as `None` rather
+        // than `f64::INFINITY`, which serde_json writes as `null` and then
+        // refuses to read back into an `f64`.
+        let s = compute_stats(&[trade(100.0), trade(50.0)], &[], 0.0);
+        assert_eq!(s.profit_factor, None);
+
+        let json = serde_json::to_string(&s).unwrap();
+        let back: BacktestStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.profit_factor, None);
     }
 
     #[test]

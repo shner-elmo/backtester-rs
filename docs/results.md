@@ -78,6 +78,12 @@ Top-level shape:
 }
 ```
 
+- `stats.profit_factor` — gross profit ÷ gross loss, or `null` when there were
+  no losing trades and the ratio is undefined. It is deliberately not
+  `Infinity`: JSON has no infinite float, so `serde_json` would write `null`
+  anyway — but as a non-finite `f64` the file could no longer be deserialized
+  back into a `BacktestResult`. Consumers should treat `null` as "infinite",
+  the way the dashboard renders it as `∞`.
 - `equity_curve` — one point per trading day (US Eastern dates), starting at
   the initial cash and ending at the final equity.
 - `intraday_equity` — a per-bar mark-to-market curve (RFC 3339 timestamps),

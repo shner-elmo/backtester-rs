@@ -130,9 +130,13 @@ pub fn run_with_ticker_map<A: Algorithm>(
         stats.total_pnl,
         result.final_equity,
     );
+    let profit_factor = match stats.profit_factor {
+        Some(pf) => format!("{pf:.2}"),
+        None => "inf".to_string(),
+    };
     println!(
-        "Profit Factor: {:.2}  |  Max Drawdown: {:.1}%  |  Sharpe: {:.2}  |  Commission: ${:.2}",
-        stats.profit_factor,
+        "Profit Factor: {}  |  Max Drawdown: {:.1}%  |  Sharpe: {:.2}  |  Commission: ${:.2}",
+        profit_factor,
         stats.max_drawdown * 100.0,
         stats.sharpe_ratio,
         result.total_commission,

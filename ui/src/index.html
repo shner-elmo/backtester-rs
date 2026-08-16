@@ -631,7 +631,7 @@
         statTile('Realized PnL', usd(s.total_pnl), deltaClass(s.total_pnl)),
         statTile('Trades', String(s.trade_count)),
         statTile('Win rate', pct(s.win_rate * 100)),
-        statTile('Profit factor', isFinite(s.profit_factor) ? fmt(s.profit_factor) : '∞'),
+        statTile('Profit factor', s.profit_factor === null ? '∞' : fmt(s.profit_factor)),
         statTile('Max drawdown', signed(pct(-s.max_drawdown * 100)), s.max_drawdown > 0 ? 'down' : ''),
         statTile('Sharpe', fmt(s.sharpe_ratio), deltaClass(s.sharpe_ratio)),
         statTile('Commission', usd(r.total_commission)));
@@ -649,7 +649,7 @@
         ['Realized PnL', r.stats.total_pnl, cmp.stats.total_pnl, usd, false],
         ['Trades', r.stats.trade_count, cmp.stats.trade_count, v => fmt(v, 0), false],
         ['Win rate', r.stats.win_rate * 100, cmp.stats.win_rate * 100, pct, false],
-        ['Profit factor', r.stats.profit_factor, cmp.stats.profit_factor, fmt, false],
+        ['Profit factor', r.stats.profit_factor, cmp.stats.profit_factor, pf => pf === null ? '∞' : fmt(pf), false],
         ['Max drawdown', r.stats.max_drawdown * 100, cmp.stats.max_drawdown * 100, pct, true],
         ['Sharpe', r.stats.sharpe_ratio, cmp.stats.sharpe_ratio, fmt, false],
       ];
@@ -660,6 +660,9 @@
           h('span', {}, key('var(--s2)'), cmp.source_file || 'B'),
           'Δ (B − A)'],
         rows.map(([label, a, b, f, lowerBetter]) => {
+          // A metric can be undefined on either side (e.g. a profit factor
+          // with no losing trades); differencing it would coerce null to 0.
+          if (a === null || b === null) return [label, f(a), f(b), { text: '—', cls: '' }];
           const delta = b - a;
           const good = lowerBetter ? delta < 0 : delta > 0;
           return [label, f(a), f(b),
