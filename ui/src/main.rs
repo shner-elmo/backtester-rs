@@ -62,7 +62,17 @@ fn load_result(path: &PathBuf) -> Result<Value, String> {
         std::fs::read_to_string(path).map_err(|e| format!("could not read {path:?}: {e}"))?;
     let mut result: Value =
         serde_json::from_str(&content).map_err(|e| format!("{path:?} is not valid JSON: {e}"))?;
-    result["source_file"] = json!(path.file_name().and_then(|n| n.to_str()).unwrap_or_default());
+    // Indexing a `Value` that is not an object panics, and the router has no
+    // CatchPanicLayer — a truncated or hand-edited file holding a bare array
+    // would unwind the handler and reset the connection instead of producing
+    // the 500 the caller handles.
+    let Some(obj) = result.as_object_mut() else {
+        return Err(format!("{path:?} is not a backtest result object"));
+    };
+    obj.insert(
+        "source_file".to_string(),
+        json!(path.file_name().and_then(|n| n.to_str()).unwrap_or_default()),
+    );
     Ok(result)
 }
 
