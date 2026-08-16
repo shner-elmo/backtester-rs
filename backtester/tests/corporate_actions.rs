@@ -800,3 +800,62 @@ fn a_chained_ticker_rename_follows_every_hop() {
     assert!((pos.quantity - 10.0).abs() < 1e-9);
     assert!(identity_error(&result) < 1e-6);
 }
+
+#[test]
+fn an_order_placed_on_end_of_day_is_rescaled_by_the_next_morning_split() {
+    let tmp = tempfile::tempdir().unwrap();
+    // SPLT trades at 90 through 06-06 and splits 1->3 effective 06-07, so the
+    // tape moves to 30. The strategy places a 10-share market order from
+    // `on_end_of_day` for 06-06 — i.e. worth 900 in pre-split terms. That
+    // order is still queued on the context when the split is applied at the
+    // start of 06-07, so it must be rescaled to 30 shares; filling 10 shares
+    // against the post-split tape would be a third of the intended notional.
+    let price = |d: u32| if d < 7 { 90.0 } else { 30.0 };
+    let rows = days_of(1, &TRADING_DAYS, price);
+    write_fixture(
+        tmp.path(),
+        &rows,
+        &[(1, "SPLT")],
+        Some(
+            r#"[{"execution_date": "2023-06-07", "id": "x", "split_from": 1, "split_to": 3, "ticker": "SPLT"}]"#,
+        ),
+        None,
+    );
+
+    struct EodBeforeSplit {
+        last_day: Option<u32>,
+        placed: bool,
+    }
+    impl Algorithm for EodBeforeSplit {
+        fn initialize(&mut self, ctx: &mut Context) {
+            ctx.set_cash(100_000.0);
+            ctx.add_equity("SPLT");
+        }
+        fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {
+            use chrono::Datelike;
+            self.last_day = Some(data.time.day());
+        }
+        fn on_end_of_day(&mut self, ctx: &mut Context) {
+            if self.placed || self.last_day != Some(6) {
+                return;
+            }
+            self.placed = true;
+            let splt = ctx.symbol("SPLT").expect("subscribed in initialize");
+            ctx.market_order(splt, 10.0);
+        }
+    }
+
+    let result =
+        run_backtest(EodBeforeSplit { last_day: None, placed: false }, tmp.path().to_str().unwrap())
+            .unwrap();
+
+    let pos = result.open_positions.iter().find(|p| p.symbol == "SPLT").unwrap();
+    assert!(
+        (pos.quantity - 30.0).abs() < 1e-9,
+        "expected the order rescaled to 30 post-split shares, got {}",
+        pos.quantity
+    );
+    // 30 shares at the post-split price of 30 is the 900 of notional intended.
+    assert!((pos.quantity * pos.avg_price - 900.0).abs() < 1e-6);
+    assert!(identity_error(&result) < 1e-6);
+}

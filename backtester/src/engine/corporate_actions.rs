@@ -146,6 +146,24 @@ impl Engine {
                 }
             }
         }
+        // Orders still queued on the context have been placed but not yet
+        // routed. `on_end_of_day` runs at this same day boundary, immediately
+        // before the split is applied, so anything it placed is sitting here
+        // in pre-split terms and would otherwise fill unscaled against the
+        // post-split tape — a 10:1 forward split turning an intended ~1,000
+        // post-split shares into 100.
+        for o in self.ctx.pending_orders.iter_mut().filter(|o| o.symbol == symbol) {
+            if let OrderKind::Market(q) = &mut o.kind {
+                *q *= ratio;
+            }
+        }
+        for ro in self.ctx.resting_orders.iter_mut().filter(|ro| ro.symbol == symbol) {
+            ro.qty *= ratio;
+            ro.kind = match ro.kind {
+                RestingKind::Limit(p) => RestingKind::Limit(p / ratio),
+                RestingKind::Stop(p) => RestingKind::Stop(p / ratio),
+            };
+        }
 
         let Some(pos) = self.ctx.portfolio.positions.get_mut(&symbol) else { return };
         pos.quantity *= ratio;
