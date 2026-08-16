@@ -310,9 +310,21 @@ impl Engine {
                 // advanced to this tick's closes, so held symbols *without* a
                 // bar this tick are valued at their latest market price for
                 // sizing, not their cost basis.
+                //
+                // An order whose symbol is silent this tick is carried to the
+                // tick where it next prints rather than discarded. Orders
+                // placed from `on_end_of_day`, `on_time` and the
+                // corporate-action hooks are routed on the day's *first* tick,
+                // which on a wide universe is typically a thin pre-market
+                // minute holding only a few liquid names — dropping them there
+                // silently cancelled end-of-day rebalances and risk controls.
                 for order in orders {
-                    let Some(bar) = slice.bars.get(&order.symbol) else { continue };
-                    self.execute_order(&order, bar.close, bar, tick_time, None);
+                    match slice.bars.get(&order.symbol) {
+                        Some(bar) => {
+                            self.execute_order(&order, bar.close, bar, tick_time, None);
+                        }
+                        None => self.ctx.pending_orders.push(order),
+                    }
                 }
             }
             FillTiming::NextBarOpen => {

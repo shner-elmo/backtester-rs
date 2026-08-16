@@ -254,3 +254,55 @@ fn set_holdings_on_a_zero_price_bar_does_not_poison_the_run_with_nan() {
     assert!(result.stats.max_drawdown.is_finite());
     assert!(identity_error(&result) < 1e-6);
 }
+
+/// Places a market order for QUIET on a tick where QUIET has no bar.
+struct OrderIntoASilentSymbol {
+    placed: bool,
+}
+
+impl Algorithm for OrderIntoASilentSymbol {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_cash(100_000.0);
+        ctx.add_equity("LIQD");
+        ctx.add_equity("QUIT");
+    }
+
+    fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
+        let liqd = ctx.symbol("LIQD").expect("subscribed in initialize");
+        let quit = ctx.symbol("QUIT").expect("subscribed in initialize");
+        // The first tick where the liquid name prints but the quiet one does
+        // not — the shape of a day's first pre-market minute.
+        if !self.placed && data.bars.contains_key(&liqd) && !data.bars.contains_key(&quit) {
+            self.placed = true;
+            ctx.market_order(quit, 100.0);
+        }
+    }
+}
+
+#[test]
+fn an_order_for_a_symbol_silent_this_tick_is_carried_not_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    // LIQD prints every day; QUIT skips 06-06. The order is placed on 06-06,
+    // when QUIT has no bar, and must still fill when QUIT next trades on
+    // 06-07 rather than being silently discarded.
+    let rows = vec![
+        row(1, 5, 0, 100.0),
+        row(1, 6, 0, 100.0),
+        row(1, 7, 0, 100.0),
+        row(2, 5, 0, 50.0),
+        row(2, 7, 0, 50.0),
+    ];
+    write_fixture(tmp.path(), &rows, &[(1, "LIQD"), (2, "QUIT")]);
+
+    let result =
+        run_backtest(OrderIntoASilentSymbol { placed: false }, tmp.path().to_str().unwrap())
+            .unwrap();
+
+    let quit = result
+        .open_positions
+        .iter()
+        .find(|p| p.symbol == "QUIT")
+        .expect("the carried order must fill once QUIT trades again");
+    assert!((quit.quantity - 100.0).abs() < 1e-9, "expected 100 shares, got {}", quit.quantity);
+    assert!(identity_error(&result) < 1e-6);
+}
