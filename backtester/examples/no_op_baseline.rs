@@ -130,3 +130,18 @@ fn main() {
 // universe, page cache warm): ~17.0M -> ~22.9M bars/s. Sweep the knobs with
 // NOOP_THREADS / a warmed slice; warm a slice small enough to stay in page
 // cache so you measure decode, not cold I/O.
+//
+// 2026-08-16, same dataset copied to NVMe (1.2 GB/s) vs the SATA SSD
+// (327 MB/s) it normally lives on. depth 8, default threads, swap off, cold
+// (29 GB >> RAM). Three runs: 83.9s / 81.0s / 79.0s.
+//
+// elapsed:    79.0s
+// ticks:      1120001
+// bars:       1835105812
+// throughput: 23237513 bars/s
+// final equity: 100000.00 (should equal starting cash)
+//
+// That lands on the warm-from-RAM decode ceiling (~23M bars/s), so on NVMe the
+// full scan is no longer storage-bound — the single tick loop is the limit (it
+// pulls only ~363 MB/s, ~30% of NVMe). We *were* SATA-bound: 142.3s -> ~80s.
+// See docs/perf-sweep-task.md for the full SATA-vs-NVMe comparison.
