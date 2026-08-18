@@ -42,9 +42,9 @@ impl Algorithm for VizStrategy {
             ctx.set_end_date(e.year(), e.month(), e.day());
         }
 
-        // A ticker the dataset doesn't carry yields an empty chart, never a
-        // panic (`add_equity` would panic; `try_add_equity` doesn't).
-        let Some(symbol) = ctx.try_add_equity(&self.ticker) else { return };
+        // The API layer already checked this ticker against the dataset map,
+        // so this unwrap only panics if that validation boundary is broken.
+        let symbol = ctx.try_add_equity(&self.ticker).unwrap();
         self.symbol = Some(symbol);
 
         // A higher timeframe registers the same consolidator a backtest would
