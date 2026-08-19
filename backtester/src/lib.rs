@@ -36,6 +36,7 @@ pub mod data;
 pub mod engine;
 pub mod error;
 pub mod indicators;
+pub mod insider;
 pub mod logging;
 pub mod margin;
 pub mod slice;
