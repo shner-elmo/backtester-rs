@@ -54,6 +54,57 @@ run_with_ticker_map(algo, data_path, Some(Path::new("my_tickers.json")))?;
 run_backtest_with_ticker_map(algo, data_path, Some(&path))?;  // no printing
 ```
 
+### Insider transactions (SEC Form 4)
+
+A fourth optional file, `insider_transactions.json`, holds open-market
+insider trades extracted from SEC Form 4 filings. Unlike the files above,
+**the engine never reads it** — it's strategy-side data: an algorithm loads
+it in `initialize()` via `backtester::insider::load_insider_transactions`
+(which streams and filters, so a full-market multi-year file is fine) and
+keys the result off the slice date in `on_data`.
+
+Generate it with the `insider-fetch` crate (SEC's quarterly structured data
+sets, 2006q1 onward; the SEC requires a contact User-Agent):
+
+```bash
+cargo run --release -p insider-fetch -- \
+    --start 2022q1 --end 2023q4 \
+    --out "$STONKS_DATA_ROOT/../insider_transactions.json" \
+    --user-agent "Your Name you@example.com"     # or set $SEC_USER_AGENT
+```
+
+Only original Form 4s (no amendments) with open-market codes `P` (purchase)
+and `S` (sale) are kept — grants, option exercises and gifts are dropped. A
+full-market run covers thousands of tickers; pass `--tickers AAPL,MSFT` to
+bound the universe. Record fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `filing_date` | date | When the Form 4 became public — **trade on this, not `trans_date`, or the backtest has lookahead bias** |
+| `trans_date` | date? | When the insider actually traded (predates the filing) |
+| `ticker` | string | Issuer symbol as reported to EDGAR (may occasionally differ from the dataset's symbol, e.g. `BRK.B` vs `BRK-B`; unmatched tickers are dropped at load time) |
+| `code` | `"P"` / `"S"` | Open-market purchase / sale |
+| `shares`, `price`, `value` | float | `value = shares * price` |
+| `owner_name`, `officer_title` | string? | First reporting owner on the filing |
+| `is_officer`, `is_director`, `is_ten_pct_owner` | bool | OR-ed across all reporting owners |
+| `shares_owned_after` | float? | Post-transaction holdings |
+
+Two insider files ship with the repo, both loadable without downloading
+anything:
+
+- `backtester/tests/fixtures/insider_transactions.json` — four **synthetic**
+  AAPL records (not real filings): CEO/COO/SVP purchases filed Jan 4–5 2023
+  and a CEO sale filed Jan 6, lined up with the committed minute fixture so a
+  copy-trading strategy produces a round trip against it.
+- `backtester/tests/fixtures/insider_sample/insider_transactions.json` — 965
+  **real** records, straight out of `insider-fetch`: every open-market Form 4
+  transaction for AAPL, MSFT, JPM, INTC, XOM, PFE, BA, F, GE and T filed
+  between 2020-01-06 and 2026-03-23 (158 purchases, 807 sales). The repo has
+  no price bars for those names, so this is a parser fixture and a reference
+  for the real-world shapes — six years of filings, empty `officer_title`s,
+  a realistic 1:5 buy/sell ratio — rather than something to backtest
+  directly. Copy it into your own data root to trade on it.
+
 ### Parquet schema
 
 The engine reads exactly these columns (the `COLUMNS` const in

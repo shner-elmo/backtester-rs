@@ -1,5 +1,5 @@
 [workspace]
-members = ["backtester", "ui", "data-viz"]
+members = ["backtester", "ui", "data-viz", "insider-fetch"]
 resolver = "2"
 
 # The tick loop calls into arrow/parquet once per batch and per row, so
