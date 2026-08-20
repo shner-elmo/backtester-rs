@@ -20,12 +20,11 @@
 //! cargo run --example insider_following -- backtester/tests/fixtures
 //! ```
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use backtester::{
-    data::load_ticker_map,
     insider::{load_insider_transactions, TransCode},
-    run, Algorithm, Context, Slice, Symbol, SymbolMap,
+    run, Algorithm, Context, Slice, Symbol, SymbolMap, SymbolSet,
 };
 use chrono::NaiveDate;
 use chrono_tz::US::Eastern;
@@ -117,20 +116,15 @@ impl Algorithm for InsiderFollowing {
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
 
-        // Universe = symbols present in the dataset; insider records for
-        // anything else can't be traded and are dropped at load time.
-        let universe: HashSet<String> = load_ticker_map(&self.data_root)
-            .expect("data root must contain encoded_tickers.json")
-            .into_values()
-            .collect();
-        let transactions = load_insider_transactions(&self.data_root, &universe)
+        // Universe = every symbol the dataset carries; insider records for
+        // anything else can't be traded and are dropped at load time, which
+        // is also where the filings' tickers become dataset ids.
+        let transactions = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)
             .expect("insider_transactions.json failed to load");
 
-        // Signals are collected by ticker first, then resolved to dataset
-        // ids in one pass below.
-        let mut buy_tickers: BTreeMap<NaiveDate, Vec<String>> = BTreeMap::new();
-        let mut sell_tickers: BTreeMap<NaiveDate, Vec<String>> = BTreeMap::new();
-        for (ticker, by_date) in transactions {
+        let mut buy_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
+        let mut sell_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
+        for (symbol, by_date) in transactions {
             for (filing_date, txs) in by_date {
                 let buys: f64 = txs
                     .iter()
@@ -144,36 +138,30 @@ impl Algorithm for InsiderFollowing {
                 let sells: f64 =
                     txs.iter().filter(|t| t.code == TransCode::Sale).map(|t| t.value).sum();
                 if buys >= MIN_BUY_VALUE {
-                    buy_tickers.entry(filing_date).or_default().push(ticker.clone());
+                    buy_signals.entry(filing_date).or_default().push(symbol);
                 }
                 if sells >= MIN_SELL_VALUE {
-                    sell_tickers.entry(filing_date).or_default().push(ticker.clone());
+                    sell_signals.entry(filing_date).or_default().push(symbol);
                 }
             }
         }
 
-        // Subscribe once per ticker that actually produced a signal — the
-        // universe is far wider than the names we end up trading — and keep
-        // the returned `Symbol` so the signal maps hold dataset ids, not
-        // strings, for the rest of the run.
-        let mut ids: HashMap<String, Symbol> = HashMap::new();
-        for ticker in buy_tickers.values().chain(sell_tickers.values()).flatten() {
-            if !ids.contains_key(ticker) {
-                if let Some(symbol) = ctx.try_add_equity(ticker) {
-                    ids.insert(ticker.clone(), symbol);
+        // Subscribe once per symbol that actually produced a signal — the
+        // universe is far wider than the names we end up trading. Sorting
+        // each day's list pins the order capital is committed in: a day with
+        // more signals than open slots would otherwise fill whichever names
+        // the load happened to visit first.
+        let mut subscribed = SymbolSet::default();
+        for symbols in buy_signals.values_mut().chain(sell_signals.values_mut()) {
+            symbols.sort_unstable();
+            for &symbol in symbols.iter() {
+                if subscribed.insert(symbol) {
+                    ctx.add_symbol(symbol);
                 }
             }
         }
-        let resolve = |by_date: BTreeMap<NaiveDate, Vec<String>>| {
-            by_date
-                .into_iter()
-                .map(|(date, tickers)| {
-                    (date, tickers.iter().filter_map(|t| ids.get(t).copied()).collect())
-                })
-                .collect()
-        };
-        self.buy_signals = resolve(buy_tickers);
-        self.sell_signals = resolve(sell_tickers);
+        self.buy_signals = buy_signals;
+        self.sell_signals = sell_signals;
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {

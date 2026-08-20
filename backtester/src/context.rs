@@ -272,6 +272,15 @@ impl Context {
         self.tickers.name(symbol).unwrap_or("?")
     }
 
+    /// The dataset's naming, both directions. The engine reads this file
+    /// before `initialize`, so a strategy loading its own ticker-keyed
+    /// side data — [`load_insider_transactions`](crate::insider::load_insider_transactions),
+    /// say — can resolve against it instead of reading
+    /// `encoded_tickers.json` a second time.
+    pub fn ticker_map(&self) -> &TickerMap {
+        &self.tickers
+    }
+
     /// Set the slippage model applied to every fill (built-in, trait impl, or
     /// closure — see [`slippage`](crate::slippage)). Defaults to none.
     pub fn set_slippage(&mut self, model: impl SlippageModel + 'static) {

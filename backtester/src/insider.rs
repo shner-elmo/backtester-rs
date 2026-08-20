@@ -6,9 +6,16 @@
 //! `initialize()` and keys the result off the slice date in `on_data`. The
 //! `filing_date` is when a transaction became public knowledge — acting on it
 //! any earlier (e.g. on `trans_date`) is lookahead bias.
+//!
+//! Records are resolved to dataset [`Symbol`]s as they stream in, so the map a
+//! strategy gets back is already keyed the way the rest of the engine is
+//! keyed: no ticker strings to re-resolve, no per-record `String` to keep
+//! alive, and — unlike a `HashMap<String, _>`, whose iteration order is
+//! reseeded every process — a stable iteration order, so a strategy that
+//! allocates capital in signal order produces the same run twice.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::BTreeMap,
     fmt,
     fs::File,
     path::{Path, PathBuf},
@@ -17,7 +24,11 @@ use std::{
 use chrono::NaiveDate;
 use serde::de::{Deserializer, SeqAccess, Visitor};
 
-use crate::error::BacktestError;
+use crate::{
+    data::TickerMap,
+    error::BacktestError,
+    symbol::{Symbol, SymbolMap, SymbolSet},
+};
 
 /// Default file name inside the data root, next to `encoded_tickers.json`.
 pub const INSIDER_FILE: &str = "insider_transactions.json";
@@ -38,7 +49,10 @@ pub struct InsiderTransaction {
     pub filing_date: NaiveDate,
     /// When the insider actually traded (informational; predates the filing).
     pub trans_date: Option<NaiveDate>,
-    pub ticker: String,
+    /// The issuer, as the dataset encodes it. The filing's ticker string is
+    /// resolved through the [`TickerMap`] at load time; records naming a
+    /// ticker the dataset has no data for are dropped.
+    pub symbol: Symbol,
     pub code: TransCode,
     pub shares: f64,
     pub price: f64,
@@ -53,7 +67,7 @@ pub struct InsiderTransaction {
 }
 
 /// Transactions per symbol, grouped by filing date.
-pub type InsiderMap = HashMap<String, BTreeMap<NaiveDate, Vec<InsiderTransaction>>>;
+pub type InsiderMap = SymbolMap<BTreeMap<NaiveDate, Vec<InsiderTransaction>>>;
 
 /// Raw JSON shape; dates stay strings and `code` stays open so one malformed
 /// or unknown-code record is skipped instead of failing the whole file
@@ -85,17 +99,24 @@ struct RawRecord {
 /// Insider transactions per symbol: filing date → transactions filed that
 /// day. Reads `insider_transactions.json` next to `encoded_tickers.json`;
 /// returns an empty map when the file doesn't exist (e.g. a data root without
-/// insider data). Only transactions for `symbols` are kept.
+/// insider data).
+///
+/// `tickers` is the dataset's naming — inside `initialize`, that is
+/// [`Context::ticker_map`](crate::Context::ticker_map). Records for a ticker
+/// the dataset doesn't carry are dropped. Pass `symbols` to narrow further to
+/// a subset of the dataset; `None` keeps every ticker it knows.
 ///
 /// A full-market history spanning years is hundreds of MB, so this streams
 /// the JSON array one record at a time and keeps only the matches, like
 /// [`crate::data::load_dividends`].
 pub fn load_insider_transactions(
     data_root: &str,
-    symbols: &HashSet<String>,
+    tickers: &TickerMap,
+    symbols: Option<&SymbolSet>,
 ) -> Result<InsiderMap, BacktestError> {
     load_insider_transactions_from(
         &PathBuf::from(format!("{data_root}/{INSIDER_FILE}")),
+        tickers,
         symbols,
         false,
     )
@@ -106,13 +127,14 @@ pub fn load_insider_transactions(
 /// the caller configured the path on purpose and silence would hide a typo.
 pub fn load_insider_transactions_from(
     path: &Path,
-    symbols: &HashSet<String>,
+    tickers: &TickerMap,
+    symbols: Option<&SymbolSet>,
     required: bool,
 ) -> Result<InsiderMap, BacktestError> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(HashMap::new())
+            return Ok(InsiderMap::default())
         }
         Err(source) => return Err(BacktestError::Io { path: path.to_path_buf(), source }),
     };
@@ -120,7 +142,8 @@ pub fn load_insider_transactions_from(
     // A seq visitor that filters records as they stream in, so peak memory is
     // the matched transactions, not the whole file.
     struct FilterVisitor<'a> {
-        symbols: &'a HashSet<String>,
+        tickers: &'a TickerMap,
+        symbols: Option<&'a SymbolSet>,
     }
     impl<'de> Visitor<'de> for FilterVisitor<'_> {
         type Value = InsiderMap;
@@ -130,9 +153,15 @@ pub fn load_insider_transactions_from(
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<InsiderMap, A::Error> {
-            let mut map: InsiderMap = HashMap::new();
+            let mut map = InsiderMap::default();
             while let Some(r) = seq.next_element::<RawRecord>()? {
-                if !self.symbols.contains(&r.ticker) {
+                // Resolving here is what the ticker `String` is for; it is
+                // dropped with the raw record rather than stored per
+                // transaction.
+                let Some(symbol) = self.tickers.symbol(&r.ticker) else {
+                    continue;
+                };
+                if self.symbols.is_some_and(|wanted| !wanted.contains(&symbol)) {
                     continue;
                 }
                 let code = match r.code.as_str() {
@@ -149,7 +178,7 @@ pub fn load_insider_transactions_from(
                 let tx = InsiderTransaction {
                     filing_date,
                     trans_date: r.trans_date.and_then(|d| d.parse().ok()),
-                    ticker: r.ticker,
+                    symbol,
                     code,
                     shares: r.shares,
                     price: r.price,
@@ -161,7 +190,7 @@ pub fn load_insider_transactions_from(
                     officer_title: r.officer_title,
                     shares_owned_after: r.shares_owned_after,
                 };
-                map.entry(tx.ticker.clone()).or_default().entry(filing_date).or_default().push(tx);
+                map.entry(symbol).or_default().entry(filing_date).or_default().push(tx);
             }
             Ok(map)
         }
@@ -169,7 +198,7 @@ pub fn load_insider_transactions_from(
 
     let reader = std::io::BufReader::new(file);
     let mut de = serde_json::Deserializer::from_reader(reader);
-    de.deserialize_seq(FilterVisitor { symbols }).map_err(|e| BacktestError::Json {
+    de.deserialize_seq(FilterVisitor { tickers, symbols }).map_err(|e| BacktestError::Json {
         path: path.to_path_buf(),
         message: format!("not valid insider transactions JSON: {e}"),
     })
@@ -177,10 +206,20 @@ pub fn load_insider_transactions_from(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
-    fn symbols(list: &[&str]) -> HashSet<String> {
-        list.iter().map(|s| s.to_string()).collect()
+    /// A ticker map with the tickers this module's samples name, ids assigned
+    /// in the order given.
+    fn ticker_map(list: &[&str]) -> TickerMap {
+        let pairs: HashMap<u16, String> =
+            list.iter().enumerate().map(|(i, s)| (i as u16, s.to_string())).collect();
+        TickerMap::from_pairs(pairs)
+    }
+
+    fn only(map: &TickerMap, ticker: &str) -> SymbolSet {
+        SymbolSet::from_iter([map.symbol(ticker).unwrap()])
     }
 
     fn write_temp(content: &str) -> (tempfile::TempDir, PathBuf) {
@@ -211,10 +250,14 @@ mod tests {
     #[test]
     fn parses_and_filters_to_requested_symbols() {
         let (_dir, path) = write_temp(SAMPLE);
-        let map = load_insider_transactions_from(&path, &symbols(&["AAPL"]), true).unwrap();
+        let tickers = ticker_map(&["AAPL", "MSFT"]);
+        let aapl = tickers.symbol("AAPL").unwrap();
+        let map =
+            load_insider_transactions_from(&path, &tickers, Some(&only(&tickers, "AAPL")), true)
+                .unwrap();
 
         assert_eq!(map.len(), 1, "MSFT was not requested");
-        let by_date = &map["AAPL"];
+        let by_date = &map[&aapl];
         // Bad code, bad date and zero shares are skipped; the two valid
         // 2023-01-06 records group under one date.
         assert_eq!(by_date.len(), 1);
@@ -222,6 +265,7 @@ mod tests {
         assert_eq!(day.len(), 2);
 
         let buy = &day[0];
+        assert_eq!(buy.symbol, aapl);
         assert_eq!(buy.code, TransCode::Purchase);
         assert_eq!(buy.trans_date, NaiveDate::from_ymd_opt(2023, 1, 4));
         assert_eq!(buy.value, 125000.0);
@@ -235,30 +279,50 @@ mod tests {
     }
 
     #[test]
+    fn no_filter_keeps_every_ticker_the_dataset_knows() {
+        let (_dir, path) = write_temp(SAMPLE);
+        // The dataset has no data for MSFT, so its records are dropped even
+        // though nothing filtered them out.
+        let tickers = ticker_map(&["AAPL"]);
+        let map = load_insider_transactions_from(&path, &tickers, None, true).unwrap();
+        assert_eq!(map.keys().copied().collect::<Vec<_>>(), vec![tickers.symbol("AAPL").unwrap()]);
+
+        let tickers = ticker_map(&["AAPL", "MSFT"]);
+        let map = load_insider_transactions_from(&path, &tickers, None, true).unwrap();
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
     fn missing_file_is_empty_unless_required() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(INSIDER_FILE);
-        let syms = symbols(&["AAPL"]);
+        let tickers = ticker_map(&["AAPL"]);
 
-        let map = load_insider_transactions_from(&path, &syms, false).unwrap();
+        let map = load_insider_transactions_from(&path, &tickers, None, false).unwrap();
         assert!(map.is_empty());
 
-        let err = load_insider_transactions_from(&path, &syms, true).unwrap_err();
+        let err = load_insider_transactions_from(&path, &tickers, None, true).unwrap_err();
         assert!(matches!(err, BacktestError::Io { .. }));
     }
 
     #[test]
     fn malformed_json_is_an_error() {
         let (_dir, path) = write_temp("{\"not\": \"an array\"}");
-        let err = load_insider_transactions_from(&path, &symbols(&["AAPL"]), true).unwrap_err();
+        let tickers = ticker_map(&["AAPL"]);
+        let err = load_insider_transactions_from(&path, &tickers, None, true).unwrap_err();
         assert!(matches!(err, BacktestError::Json { .. }));
     }
 
     #[test]
     fn default_root_lookup_uses_the_standard_file_name() {
         let (dir, _path) = write_temp(SAMPLE);
-        let map =
-            load_insider_transactions(dir.path().to_str().unwrap(), &symbols(&["MSFT"])).unwrap();
-        assert_eq!(map["MSFT"].len(), 1);
+        let tickers = ticker_map(&["AAPL", "MSFT"]);
+        let map = load_insider_transactions(
+            dir.path().to_str().unwrap(),
+            &tickers,
+            Some(&only(&tickers, "MSFT")),
+        )
+        .unwrap();
+        assert_eq!(map[&tickers.symbol("MSFT").unwrap()].len(), 1);
     }
 }
