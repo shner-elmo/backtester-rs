@@ -7,6 +7,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Debug info is the bulk of a debug build of the arrow/parquet stack, and CI
+  # never opens a debugger. It matters because any Cargo.toml/Cargo.lock edit
+  # misses the rust-cache key: the job restores the previous cache, rebuilds a
+  # second generation of artifacts on top of it, and `cargo test` then links
+  # five doc-tests — ~90 rlibs each, four at a time — into /tmp. That filled the
+  # runner's disk, and rust-lld, which mmaps its output file, died with SIGBUS
+  # instead of a clean ENOSPC (2026-08-20, run 32409153757).
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 # Supersede in-flight runs on the same ref so pushes don't pile up.
 concurrency:
