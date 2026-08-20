@@ -96,14 +96,15 @@ anything:
   AAPL records (not real filings): CEO/COO/SVP purchases filed Jan 4–5 2023
   and a CEO sale filed Jan 6, lined up with the committed minute fixture so a
   copy-trading strategy produces a round trip against it.
-- `backtester/tests/fixtures/insider_sample/insider_transactions.json` — 965
+- `backtester/tests/fixtures/insider_sample/insider_transactions.json` — 305
   **real** records, straight out of `insider-fetch`: every open-market Form 4
-  transaction for AAPL, MSFT, JPM, INTC, XOM, PFE, BA, F, GE and T filed
-  between 2020-01-06 and 2026-03-23 (158 purchases, 807 sales). The repo has
-  no price bars for those names, so this is a parser fixture and a reference
-  for the real-world shapes — six years of filings, empty `officer_title`s,
-  a realistic 1:5 buy/sell ratio — rather than something to backtest
-  directly. Copy it into your own data root to trade on it.
+  transaction for AAPL and INTC filed between 2020-01-06 and 2026-02-03 (52
+  purchases, 253 sales). The repo has no price bars for those names, so this
+  is a parser fixture and a reference for the real-world shapes — six years of
+  filings, empty `officer_title`s, a realistic buy/sell ratio — rather than
+  something to backtest directly. Two issuers keep it reviewable; re-run
+  `insider-fetch` for a wider slice and copy it into your own data root to
+  trade on it.
 
 ### Parquet schema
 
