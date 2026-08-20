@@ -380,11 +380,11 @@ fn ignores_unmapped_tickers_and_below_threshold_buys() {
 }
 
 /// The committed slice of genuine `insider-fetch` output: every open-market
-/// Form 4 transaction for ten large-cap issuers, 2020-01-06 .. 2026-03-23.
-/// Synthetic fixtures can only prove the loader handles the shapes we thought
-/// to write down; this proves it handles what the SEC actually publishes.
-const SAMPLE_TICKERS: [&str; 10] =
-    ["AAPL", "MSFT", "JPM", "INTC", "XOM", "PFE", "BA", "F", "GE", "T"];
+/// Form 4 transaction for AAPL and INTC, 2020-01-06 .. 2026-02-03. Synthetic
+/// fixtures can only prove the loader handles the shapes we thought to write
+/// down; this proves it handles what the SEC actually publishes. Two issuers
+/// are enough for that and keep the fixture reviewable.
+const SAMPLE_TICKERS: [&str; 2] = ["AAPL", "INTC"];
 
 fn sample_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -401,18 +401,18 @@ fn parses_the_committed_sample_of_real_sec_output() {
     let map = load_insider_transactions_from(&sample_path(), &universe, true).unwrap();
 
     assert_eq!(map.len(), SAMPLE_TICKERS.len(), "every issuer in the slice was kept");
-    assert_eq!(count(&map), 965);
+    assert_eq!(count(&map), 305);
 
     let all: Vec<_> = map.values().flat_map(|by_date| by_date.values()).flatten().collect();
     let purchases = all.iter().filter(|t| t.code == TransCode::Purchase).count();
-    assert_eq!((purchases, all.len() - purchases), (158, 807), "P/S split");
+    assert_eq!((purchases, all.len() - purchases), (52, 253), "P/S split");
 
     // The property every insider strategy leans on: a filing never becomes
     // public before the trade it reports.
     assert!(all.iter().all(|t| t.trans_date.is_none_or(|d| d <= t.filing_date)));
     // Real filings leave optional fields empty; they have to survive as None
     // rather than failing the record.
-    assert_eq!(all.iter().filter(|t| t.officer_title.is_none()).count(), 118);
+    assert_eq!(all.iter().filter(|t| t.officer_title.is_none()).count(), 34);
     assert!(all.iter().all(|t| t.value > 0.0 && t.shares > 0.0 && t.price > 0.0));
 
     // Transactions land under the date the filing became public, not the
