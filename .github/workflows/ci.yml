@@ -29,6 +29,40 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # `scripts/` lives outside the Cargo workspace — deliberately, so its
+  # dependencies (arrow/parquet for the ingest, an HTTPS stack for the SEC
+  # downloader) never reach anyone building the engine. The cost is that
+  # `cargo test --workspace` above cannot see these files at all, so without
+  # this job they rot silently.
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # rust-script compiles each script into its own cache dir, which the
+      # cargo cache above doesn't cover. Keyed on the scripts themselves: an
+      # edit to either one rebuilds, anything else restores.
+      - name: Cache rust-script builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rust-script
+          key: rust-script-${{ runner.os }}-${{ hashFiles('scripts/*.rs') }}
+          restore-keys: rust-script-${{ runner.os }}-
+      - name: Install rust-script
+        run: cargo install rust-script --locked
+      - name: Format
+        run: rustfmt --check --edition 2021 scripts/*.rs
+      # --test compiles the script and runs whatever tests it has:
+      # insider_fetch has 6, ingest_arrow has none, so that one is a
+      # compile-and-link check.
+      - name: Test scripts/insider_fetch.rs
+        run: rust-script --test scripts/insider_fetch.rs
+      - name: Check scripts/ingest_arrow.rs
+        run: rust-script --test scripts/ingest_arrow.rs
+
   bench:
     runs-on: ubuntu-latest
     # Read-only: no token, no branch pushes, no third-party actions. Regressions
