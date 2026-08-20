@@ -31,6 +31,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save the cache even when the job fails. Otherwise a failing run
+          # never stores artifacts under its key, so every rerun repeats the
+          # same full rebuild — which is what turned one bad run into a
+          # persistent red rather than a one-time cost.
+          cache-on-failure: true
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
