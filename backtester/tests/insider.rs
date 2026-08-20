@@ -379,7 +379,7 @@ fn ignores_unmapped_tickers_and_below_threshold_buys() {
     assert!(identity_error(&result) < 1e-6);
 }
 
-/// The committed slice of genuine `insider-fetch` output: every open-market
+/// The committed slice of genuine `insider_fetch.rs` output: every open-market
 /// Form 4 transaction for AAPL and INTC, 2020-01-06 .. 2026-02-03. Synthetic
 /// fixtures can only prove the loader handles the shapes we thought to write
 /// down; this proves it handles what the SEC actually publishes. Two issuers

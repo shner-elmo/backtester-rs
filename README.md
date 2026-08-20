@@ -5,12 +5,16 @@ by implementing a single trait; the engine handles data loading, order
 execution, and performance reporting. Think QuantConnect-style ergonomics, but
 local and fast.
 
-The repo is a Cargo workspace with four crates:
+The repo is a Cargo workspace with three crates:
 
 - **`backtester`** — the core engine and strategy API.
 - **`data-viz`** — a Parquet chart explorer (OHLCV + indicator charts) that reads through the backtester engine itself.
 - **`ui`** — the backtest-results dashboard (equity curve, drawdown, trade log).
-- **`insider-fetch`** — downloads SEC Form 4 insider transactions into `insider_transactions.json`.
+
+Data-wrangling tools that shouldn't drag dependencies into the workspace live
+in `scripts/` as standalone [rust-script](https://rust-script.org) files:
+`ingest_arrow.rs` (raw CSVs → Hive-partitioned Parquet) and
+`insider_fetch.rs` (SEC Form 4 filings → `insider_transactions.json`).
 
 ## Quick start
 
@@ -113,7 +117,7 @@ cargo run --example ema_cross -- backtester/tests/fixtures   # run a backtest
 cargo run --example kitchen_sink -- backtester/tests/fixtures  # every feature at once
 cargo run -p ui                                              # results dashboard at :3001
 DATA_PATH=/path/to/data/output cargo run -p data-viz         # chart explorer at :3000
-cargo run --release -p insider-fetch -- --start 2023q1 --end 2023q4 \
+rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4 \
     --out /path/to/data/insider_transactions.json            # SEC Form 4 insider trades
 ```
 

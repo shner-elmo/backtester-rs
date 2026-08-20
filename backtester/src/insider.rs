@@ -1,5 +1,5 @@
-//! SEC Form 4 insider-transaction data, produced by the `insider-fetch`
-//! crate (`cargo run -p insider-fetch`).
+//! SEC Form 4 insider-transaction data, produced by `scripts/insider_fetch.rs`
+//! (`rust-script scripts/insider_fetch.rs`).
 //!
 //! This is strategy-side data: the engine never reads it. An algorithm that
 //! wants to follow insider trades calls [`load_insider_transactions`] in its
