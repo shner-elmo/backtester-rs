@@ -1,3 +1,4 @@
+#!/usr/bin/env rust-script
 //! Download SEC EDGAR Form 4 insider transactions and emit backtester JSON.
 //!
 //! Pulls the SEC's quarterly "Insider Transactions Data Sets" (structured TSV
@@ -14,6 +15,24 @@
 //! cached and skipped on re-runs. The SEC's fair-access policy requires a
 //! descriptive User-Agent with a contact address: pass `--user-agent` or set
 //! `SEC_USER_AGENT`.
+//!
+//! Requires: cargo install rust-script
+//! Run: rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4 \
+//!          --out <data-root>/insider_transactions.json
+//! Tests: rust-script --test scripts/insider_fetch.rs
+//!
+//! ```cargo
+//! [dependencies]
+//! chrono = "0.4"
+//! csv = "1"
+//! serde = { version = "1", features = ["derive"] }
+//! serde_json = "1"
+//! ureq = { version = "3", features = ["platform-verifier"] }
+//! zip = { version = "2", default-features = false, features = ["deflate"] }
+//!
+//! [dev-dependencies]
+//! tempfile = "3"
+//! ```
 
 use std::{
     collections::{HashMap, HashSet},
@@ -29,7 +48,7 @@ const MONTHS: [&str; 12] =
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
 fn usage() -> String {
-    let exe = "insider-fetch";
+    let exe = "rust-script scripts/insider_fetch.rs";
     format!(
         "Usage:
     {exe} --start 2023q1 --end 2023q4 --out /path/to/data-root/insider_transactions.json

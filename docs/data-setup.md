@@ -63,11 +63,11 @@ it in `initialize()` via `backtester::insider::load_insider_transactions`
 (which streams and filters, so a full-market multi-year file is fine) and
 keys the result off the slice date in `on_data`.
 
-Generate it with the `insider-fetch` crate (SEC's quarterly structured data
+Generate it with `scripts/insider_fetch.rs` (SEC's quarterly structured data
 sets, 2006q1 onward; the SEC requires a contact User-Agent):
 
 ```bash
-cargo run --release -p insider-fetch -- \
+rust-script scripts/insider_fetch.rs \
     --start 2022q1 --end 2023q4 \
     --out "$STONKS_DATA_ROOT/../insider_transactions.json" \
     --user-agent "Your Name you@example.com"     # or set $SEC_USER_AGENT
@@ -97,13 +97,13 @@ anything:
   and a CEO sale filed Jan 6, lined up with the committed minute fixture so a
   copy-trading strategy produces a round trip against it.
 - `backtester/tests/fixtures/insider_sample/insider_transactions.json` — 305
-  **real** records, straight out of `insider-fetch`: every open-market Form 4
+  **real** records, straight out of `insider_fetch.rs`: every open-market Form 4
   transaction for AAPL and INTC filed between 2020-01-06 and 2026-02-03 (52
   purchases, 253 sales). The repo has no price bars for those names, so this
   is a parser fixture and a reference for the real-world shapes — six years of
   filings, empty `officer_title`s, a realistic buy/sell ratio — rather than
   something to backtest directly. Two issuers keep it reviewable; re-run
-  `insider-fetch` for a wider slice and copy it into your own data root to
+  `insider_fetch.rs` for a wider slice and copy it into your own data root to
   trade on it.
 
 ### Parquet schema

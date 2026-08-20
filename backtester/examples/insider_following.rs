@@ -1,7 +1,7 @@
 //! Copy-trade corporate insiders ("CEO Stockwatcher" style).
 //!
 //! Reads `insider_transactions.json` from the data root (produced by the
-//! `insider-fetch` crate from SEC Form 4 filings) and:
+//! `scripts/insider_fetch.rs` script from SEC Form 4 filings) and:
 //!
 //! - **buys** a stock the trading day after officers/directors disclose
 //!   open-market purchases totalling at least `MIN_BUY_VALUE` on one filing
