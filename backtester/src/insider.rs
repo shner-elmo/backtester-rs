@@ -17,7 +17,6 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -106,9 +105,13 @@ struct RawRecord {
 /// the dataset doesn't carry are dropped. Pass `symbols` to narrow further to
 /// a subset of the dataset; `None` keeps every ticker it knows.
 ///
-/// A full-market history spanning years is hundreds of MB, so this streams
-/// the JSON array one record at a time and keeps only the matches, like
-/// [`crate::data::load_dividends`].
+/// Records are filtered as they are parsed, so what the map holds is the
+/// matches, not the file. The file itself is read into memory first: a
+/// full-market history is a few hundred MB, and `serde_json` parses a slice
+/// roughly twice as fast as it parses a reader (its `IoRead` path goes byte
+/// by byte, which a bigger `BufReader` does not fix). The read buffer is
+/// freed on return, so the cost is transient peak memory during
+/// `initialize`, before the engine has allocated anything per-bar.
 pub fn load_insider_transactions(
     data_root: &str,
     tickers: &TickerMap,
@@ -131,8 +134,8 @@ pub fn load_insider_transactions_from(
     symbols: Option<&SymbolSet>,
     required: bool,
 ) -> Result<InsiderMap, BacktestError> {
-    let file = match File::open(path) {
-        Ok(f) => f,
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
         Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(InsiderMap::default())
         }
@@ -196,8 +199,7 @@ pub fn load_insider_transactions_from(
         }
     }
 
-    let reader = std::io::BufReader::new(file);
-    let mut de = serde_json::Deserializer::from_reader(reader);
+    let mut de = serde_json::Deserializer::from_slice(&bytes);
     de.deserialize_seq(FilterVisitor { tickers, symbols }).map_err(|e| BacktestError::Json {
         path: path.to_path_buf(),
         message: format!("not valid insider transactions JSON: {e}"),
