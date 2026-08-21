@@ -21,12 +21,11 @@
 //! cargo run --example insider_cluster -- backtester/tests/fixtures
 //! ```
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use backtester::{
-    data::load_ticker_map,
     insider::{load_insider_transactions, TransCode},
-    run, Algorithm, Context, Slice, Symbol, SymbolMap,
+    run, Algorithm, Context, Slice, Symbol, SymbolMap, SymbolSet,
 };
 use chrono::NaiveDate;
 use chrono_tz::US::Eastern;
@@ -101,18 +100,16 @@ impl Algorithm for InsiderCluster {
         ctx.set_end_date(2023, 12, 31);
         ctx.set_cash(100_000.0);
 
-        let universe: HashSet<String> = load_ticker_map(&self.data_root)
-            .expect("data root must contain encoded_tickers.json")
-            .into_values()
-            .collect();
-        let transactions = load_insider_transactions(&self.data_root, &universe)
+        // Tickers resolve to dataset ids as the file streams in, so the
+        // signal map below is keyed by `Symbol` from the start.
+        let transactions = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)
             .expect("insider_transactions.json failed to load");
 
         // Cluster detection: slide a WINDOW_DAYS window over each symbol's
         // officer/director purchases (already date-sorted via BTreeMap) and
         // signal on any day the window holds MIN_INSIDERS distinct buyers.
-        let mut buy_tickers: BTreeMap<NaiveDate, Vec<String>> = BTreeMap::new();
-        for (ticker, by_date) in transactions {
+        let mut buy_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
+        for (symbol, by_date) in transactions {
             let buys: Vec<(NaiveDate, String, f64)> = by_date
                 .into_iter()
                 .flat_map(|(date, txs)| {
@@ -136,30 +133,27 @@ impl Algorithm for InsiderCluster {
                 let insiders: HashSet<&str> = window.iter().map(|(_, n, _)| n.as_str()).collect();
                 let total: f64 = window.iter().map(|(_, _, v)| v).sum();
                 if insiders.len() >= MIN_INSIDERS && total >= MIN_TOTAL_VALUE {
-                    let tickers = buy_tickers.entry(day).or_default();
-                    if !tickers.contains(&ticker) {
-                        tickers.push(ticker.clone());
+                    let day_signals = buy_signals.entry(day).or_default();
+                    if !day_signals.contains(&symbol) {
+                        day_signals.push(symbol);
                     }
                 }
             }
         }
 
-        // Subscribe once per ticker that produced a cluster, keeping the
-        // returned `Symbol` so the signal map holds dataset ids, not strings.
-        let mut ids: HashMap<String, Symbol> = HashMap::new();
-        for ticker in buy_tickers.values().flatten() {
-            if !ids.contains_key(ticker) {
-                if let Some(symbol) = ctx.try_add_equity(ticker) {
-                    ids.insert(ticker.clone(), symbol);
+        // Subscribe once per symbol that produced a cluster. Sorting each
+        // day's list pins the order capital is committed in, so a day with
+        // more clusters than open slots fills the same names every run.
+        let mut subscribed = SymbolSet::default();
+        for symbols in buy_signals.values_mut() {
+            symbols.sort_unstable();
+            for &symbol in symbols.iter() {
+                if subscribed.insert(symbol) {
+                    ctx.add_symbol(symbol);
                 }
             }
         }
-        self.buy_signals = buy_tickers
-            .into_iter()
-            .map(|(date, tickers)| {
-                (date, tickers.iter().filter_map(|t| ids.get(t).copied()).collect())
-            })
-            .collect();
+        self.buy_signals = buy_signals;
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {

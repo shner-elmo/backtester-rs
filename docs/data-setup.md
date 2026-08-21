@@ -63,6 +63,25 @@ it in `initialize()` via `backtester::insider::load_insider_transactions`
 (which streams and filters, so a full-market multi-year file is fine) and
 keys the result off the slice date in `on_data`.
 
+```rust
+fn initialize(&mut self, ctx: &mut Context) {
+    // `None` keeps every ticker the dataset carries; pass a `&SymbolSet` to
+    // narrow it. `ctx.ticker_map()` is the map the engine already read, so
+    // this does not re-parse `encoded_tickers.json`.
+    let txns = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)?;
+    for (symbol, by_filing_date) in txns { /* ... */ }
+}
+```
+
+The returned [`InsiderMap`] is keyed by `Symbol`, not by ticker string:
+filings are resolved against the ticker map as they stream in, and records
+naming a ticker the dataset has no bars for are dropped there. Two
+consequences worth knowing: signals come out ready to trade with no second
+ticker→id pass, and iteration order is stable across processes (a
+`HashMap<String, _>` reseeds its hasher every run, so a strategy that
+commits capital in signal order would produce a different backtest each
+time).
+
 Generate it with `scripts/insider_fetch.rs` (SEC's quarterly structured data
 sets, 2006q1 onward; the SEC requires a contact User-Agent):
 
@@ -82,7 +101,7 @@ bound the universe. Record fields:
 |-------|------|-------|
 | `filing_date` | date | When the Form 4 became public — **trade on this, not `trans_date`, or the backtest has lookahead bias** |
 | `trans_date` | date? | When the insider actually traded (predates the filing) |
-| `ticker` | string | Issuer symbol as reported to EDGAR (may occasionally differ from the dataset's symbol, e.g. `BRK.B` vs `BRK-B`; unmatched tickers are dropped at load time) |
+| `ticker` | string | Issuer symbol as reported to EDGAR (may occasionally differ from the dataset's symbol, e.g. `BRK.B` vs `BRK-B`; unmatched tickers are dropped at load time). Loaded as `InsiderTransaction::symbol`, the dataset's id — the string is not kept |
 | `code` | `"P"` / `"S"` | Open-market purchase / sale |
 | `shares`, `price`, `value` | float | `value = shares * price` |
 | `owner_name`, `officer_title` | string? | First reporting owner on the filing |

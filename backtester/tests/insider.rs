@@ -4,12 +4,7 @@
 //! first trading day strictly *after* the Form 4 `filing_date` (no
 //! lookahead), never on it.
 
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fs,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
 use arrow::{
     array::{Float64Array, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt8Array},
@@ -17,9 +12,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use backtester::{
-    data::load_ticker_map,
+    data::TickerMap,
     insider::{load_insider_transactions, load_insider_transactions_from, TransCode},
-    run_backtest, Algorithm, BacktestResult, Context, Slice, Symbol, SymbolMap,
+    run_backtest, Algorithm, BacktestResult, Context, Slice, Symbol, SymbolMap, SymbolSet,
 };
 use chrono::{NaiveDate, TimeZone, Utc};
 use chrono_tz::US::Eastern;
@@ -193,13 +188,12 @@ impl Algorithm for Follower {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_cash(100_000.0);
 
-        let universe: HashSet<String> =
-            load_ticker_map(&self.data_root).unwrap().into_values().collect();
-        let transactions = load_insider_transactions(&self.data_root, &universe).unwrap();
+        let transactions =
+            load_insider_transactions(&self.data_root, ctx.ticker_map(), None).unwrap();
 
-        let mut buy_tickers: BTreeMap<NaiveDate, Vec<String>> = BTreeMap::new();
-        let mut sell_tickers: BTreeMap<NaiveDate, Vec<String>> = BTreeMap::new();
-        for (ticker, by_date) in transactions {
+        let mut buy_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
+        let mut sell_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
+        for (symbol, by_date) in transactions {
             for (filing_date, txs) in by_date {
                 let buys: f64 = txs
                     .iter()
@@ -209,32 +203,24 @@ impl Algorithm for Follower {
                 let sells: f64 =
                     txs.iter().filter(|t| t.code == TransCode::Sale).map(|t| t.value).sum();
                 if buys >= self.min_buy {
-                    buy_tickers.entry(filing_date).or_default().push(ticker.clone());
+                    buy_signals.entry(filing_date).or_default().push(symbol);
                 }
                 if sells >= self.min_sell {
-                    sell_tickers.entry(filing_date).or_default().push(ticker.clone());
+                    sell_signals.entry(filing_date).or_default().push(symbol);
                 }
             }
         }
 
-        // Subscribe the whole fixture universe, keeping each returned
-        // `Symbol` so the signal maps hold dataset ids rather than strings.
-        let mut ids: HashMap<String, Symbol> = HashMap::new();
-        for ticker in &universe {
-            if let Some(symbol) = ctx.try_add_equity(ticker) {
-                ids.insert(ticker.clone(), symbol);
-            }
+        // Subscribe the whole fixture universe; each day's signals are
+        // sorted so capital is committed in a fixed order.
+        for symbol in ctx.ticker_map().symbols().collect::<Vec<_>>() {
+            ctx.add_symbol(symbol);
         }
-        let resolve = |by_date: BTreeMap<NaiveDate, Vec<String>>| {
-            by_date
-                .into_iter()
-                .map(|(date, tickers)| {
-                    (date, tickers.iter().filter_map(|t| ids.get(t).copied()).collect())
-                })
-                .collect()
-        };
-        self.buy_signals = resolve(buy_tickers);
-        self.sell_signals = resolve(sell_tickers);
+        for symbols in buy_signals.values_mut().chain(sell_signals.values_mut()) {
+            symbols.sort_unstable();
+        }
+        self.buy_signals = buy_signals;
+        self.sell_signals = sell_signals;
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
@@ -395,10 +381,17 @@ fn count(map: &backtester::insider::InsiderMap) -> usize {
     map.values().flat_map(|by_date| by_date.values()).map(Vec::len).sum()
 }
 
+/// A ticker map naming the sample's issuers, ids assigned in array order.
+fn sample_tickers() -> TickerMap {
+    TickerMap::from_pairs(
+        SAMPLE_TICKERS.iter().enumerate().map(|(i, t)| (i as u16, t.to_string())).collect(),
+    )
+}
+
 #[test]
 fn parses_the_committed_sample_of_real_sec_output() {
-    let universe: HashSet<String> = SAMPLE_TICKERS.iter().map(|t| t.to_string()).collect();
-    let map = load_insider_transactions_from(&sample_path(), &universe, true).unwrap();
+    let tickers = sample_tickers();
+    let map = load_insider_transactions_from(&sample_path(), &tickers, None, true).unwrap();
 
     assert_eq!(map.len(), SAMPLE_TICKERS.len(), "every issuer in the slice was kept");
     assert_eq!(count(&map), 305);
@@ -417,7 +410,7 @@ fn parses_the_committed_sample_of_real_sec_output() {
 
     // Transactions land under the date the filing became public, not the
     // trade date, and each issuer's dates come back in order.
-    let intc = &map["INTC"];
+    let intc = &map[&tickers.symbol("INTC").unwrap()];
     assert!(intc.keys().zip(intc.keys().skip(1)).all(|(a, b)| a < b));
     let intc_buys = intc.values().flatten().filter(|t| t.code == TransCode::Purchase).count();
     assert_eq!(intc_buys, 52);
@@ -425,9 +418,24 @@ fn parses_the_committed_sample_of_real_sec_output() {
 
 #[test]
 fn sample_load_filters_to_the_requested_issuers() {
-    let universe: HashSet<String> = ["AAPL".to_string()].into();
-    let map = load_insider_transactions_from(&sample_path(), &universe, true).unwrap();
+    let tickers = sample_tickers();
+    let aapl = tickers.symbol("AAPL").unwrap();
+    let only_aapl = SymbolSet::from_iter([aapl]);
+    let map =
+        load_insider_transactions_from(&sample_path(), &tickers, Some(&only_aapl), true).unwrap();
 
-    assert_eq!(map.keys().collect::<Vec<_>>(), vec!["AAPL"]);
+    assert_eq!(map.keys().copied().collect::<Vec<_>>(), vec![aapl]);
     assert_eq!(count(&map), 207);
+    assert!(map[&aapl].values().flatten().all(|t| t.symbol == aapl));
+}
+
+/// A ticker the dataset has no bars for can't be traded, so its filings are
+/// dropped at load time rather than surfacing as an unusable signal.
+#[test]
+fn issuers_missing_from_the_dataset_are_dropped() {
+    let tickers = TickerMap::from_pairs([(7u16, "INTC".to_string())].into());
+    let map = load_insider_transactions_from(&sample_path(), &tickers, None, true).unwrap();
+
+    assert_eq!(map.keys().copied().collect::<Vec<_>>(), vec![tickers.symbol("INTC").unwrap()]);
+    assert_eq!(count(&map), 305 - 207, "AAPL's records went nowhere");
 }
