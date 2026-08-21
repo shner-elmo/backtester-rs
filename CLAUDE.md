@@ -68,7 +68,7 @@ Parquet files → Bar stream → Engine loop → Consolidators → Algorithm cal
 - `slice.rs` — `Slice`: point-in-time snapshot of bars for all subscribed symbols, keyed by `Symbol`
 - `stats.rs` — `Trade`, `EquityPoint`, `BacktestStats`; `compute_stats` derives drawdown/Sharpe from the daily mark-to-market equity curve
 - `indicators.rs` — Re-exports from the `ta` crate: `Ema`, `Sma`, `Macd`, `Rsi`, `BollingerBands`
-- `insider.rs` — Loads `insider_transactions.json` (SEC Form 4 open-market trades, produced by `scripts/insider_fetch.rs`) with the same streaming symbol-filtered pattern as the dividends loader. The engine never reads it — strategies load it in `initialize()` and act on `filing_date`
+- `insider.rs` — Loads `insider_transactions.json` (SEC Form 4 open-market trades, produced by `scripts/insider_fetch.rs`) with the same streaming symbol-filtered pattern as the dividends loader. Filings resolve against the `TickerMap` (`Context::ticker_map()`) as they stream, so the returned `InsiderMap` is a `SymbolMap` — no ticker strings survive the load, and iteration order is stable across runs where a `HashMap<String, _>`'s is not. The engine never reads it — strategies load it in `initialize()` and act on `filing_date`
 - `logging.rs` — `LogConfig`: per-category flags for what the engine logs to stderr as it runs (run summary, every fill/trade, daily recap, corporate events, data-quality warnings). Defaults to warnings only; set via `Context::set_log_config` (`LogConfig::all()` / `::none()` shortcuts)
 
 **Writing a strategy:** implement `Algorithm`, call `ctx.add_equity()` (keep the `Symbol` it returns) and set dates/cash in `initialize()`, then trade in `on_data()`. See `examples/ema_cross.rs` for a complete example.
