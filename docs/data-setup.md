@@ -69,7 +69,7 @@ sets, 2006q1 onward; the SEC requires a contact User-Agent):
 ```bash
 rust-script scripts/insider_fetch.rs \
     --start 2022q1 --end 2023q4 \
-    --out "$STONKS_DATA_ROOT/../insider_transactions.json" \
+    --out "$STONKS_DATA_ROOT/insider_transactions.json" \
     --user-agent "Your Name you@example.com"     # or set $SEC_USER_AGENT
 ```
 

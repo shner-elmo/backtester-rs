@@ -118,7 +118,7 @@ cargo run --example kitchen_sink -- backtester/tests/fixtures  # every feature a
 cargo run -p ui                                              # results dashboard at :3001
 DATA_PATH=/path/to/data/output cargo run -p data-viz         # chart explorer at :3000
 rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4 \
-    --out /path/to/data/insider_transactions.json            # SEC Form 4 insider trades
+    --out /path/to/data/output/insider_transactions.json     # SEC Form 4 insider trades
 ```
 
 ## Data format
