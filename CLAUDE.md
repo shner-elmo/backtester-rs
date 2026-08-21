@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `docs/` answers most schema/API questions without spelunking the code:
 
 - `docs/backtesting.md` — the full user-facing API: `Algorithm` trait, every `Context` method (a table), fill timing, order types, slippage/commission/margin models, financing, corporate-action semantics, consolidators, the example strategies
-- `docs/data-setup.md` — Parquet dataset layout (Hive `year=/month=` partitioning), column schema, the metadata JSON files (`encoded_tickers.json`, splits/dividends/renames) and their formats, `STONKS_DATA_ROOT`, regenerating the dataset from raw CSVs (`scripts/ingest_arrow.rs`), the committed test fixture, helper examples
+- `docs/data-setup.md` — Parquet dataset layout (Hive `year=/month=` partitioning), column schema, the metadata JSON files (`encoded_tickers.json`, splits/dividends/renames) and their formats, `STONKS_DATA_ROOT`, SEC Form 4 insider transactions (`insider_transactions.json` + the `scripts/insider_fetch.rs` downloader), regenerating the dataset from raw CSVs (`scripts/ingest_arrow.rs`), the committed test fixtures, helper examples
 - `docs/results.md` — the `backtest_result_*.json` shape (full example), stat definitions, trade-netting semantics, `jq` recipes
 - `docs/visualization.md` — the `data-viz` (:3000) and `ui` (:3001) servers and their HTTP APIs
 
@@ -23,6 +23,7 @@ cargo fmt                       # Format (max width 100, groups: std > external 
 cargo clippy                    # Lint
 cargo run --example ema_cross -- backtester/tests/fixtures  # Run the EMA cross example on the committed fixture
 cargo run -p ui                 # Results dashboard at :3001 (newest backtest_result_*.json in CWD)
+rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4 --out <data-root>/insider_transactions.json  # SEC Form 4 downloader (needs --user-agent or $SEC_USER_AGENT)
 cargo bench -p backtester --bench engine  # Throughput benchmarks (loader + a full backtest)
 cargo bench -p backtester --bench consolidators  # Consolidator dispatch across a wide (100/500-symbol) universe
 ```
@@ -67,6 +68,7 @@ Parquet files → Bar stream → Engine loop → Consolidators → Algorithm cal
 - `slice.rs` — `Slice`: point-in-time snapshot of bars for all subscribed symbols, keyed by `Symbol`
 - `stats.rs` — `Trade`, `EquityPoint`, `BacktestStats`; `compute_stats` derives drawdown/Sharpe from the daily mark-to-market equity curve
 - `indicators.rs` — Re-exports from the `ta` crate: `Ema`, `Sma`, `Macd`, `Rsi`, `BollingerBands`
+- `insider.rs` — Loads `insider_transactions.json` (SEC Form 4 open-market trades, produced by `scripts/insider_fetch.rs`) with the same streaming symbol-filtered pattern as the dividends loader. The engine never reads it — strategies load it in `initialize()` and act on `filing_date`
 - `logging.rs` — `LogConfig`: per-category flags for what the engine logs to stderr as it runs (run summary, every fill/trade, daily recap, corporate events, data-quality warnings). Defaults to warnings only; set via `Context::set_log_config` (`LogConfig::all()` / `::none()` shortcuts)
 
 **Writing a strategy:** implement `Algorithm`, call `ctx.add_equity()` (keep the `Symbol` it returns) and set dates/cash in `initialize()`, then trade in `on_data()`. See `examples/ema_cross.rs` for a complete example.
