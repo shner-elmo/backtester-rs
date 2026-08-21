@@ -11,6 +11,11 @@ The repo is a Cargo workspace with three crates:
 - **`data-viz`** — a Parquet chart explorer (OHLCV + indicator charts) that reads through the backtester engine itself.
 - **`ui`** — the backtest-results dashboard (equity curve, drawdown, trade log).
 
+Data-wrangling tools that shouldn't drag dependencies into the workspace live
+in `scripts/` as standalone [rust-script](https://rust-script.org) files:
+`ingest_arrow.rs` (raw CSVs → Hive-partitioned Parquet) and
+`insider_fetch.rs` (SEC Form 4 filings → `insider_transactions.json`).
+
 ## Quick start
 
 Run the built-in EMA-crossover strategy against the committed test fixture
@@ -112,6 +117,8 @@ cargo run --example ema_cross -- backtester/tests/fixtures   # run a backtest
 cargo run --example kitchen_sink -- backtester/tests/fixtures  # every feature at once
 cargo run -p ui                                              # results dashboard at :3001
 DATA_PATH=/path/to/data/output cargo run -p data-viz         # chart explorer at :3000
+rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4 \
+    --out /path/to/data/output/insider_transactions.json     # SEC Form 4 insider trades
 ```
 
 ## Data format
