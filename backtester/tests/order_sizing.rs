@@ -15,7 +15,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use backtester::{
-    consolidator::ConsolidatorPeriod, run_backtest, Algorithm, BacktestResult, Context, Slice,
+    consolidator::ConsolidatorPeriod, run_backtest_with_data_dir, Algorithm, BacktestResult,
+    Context, Slice,
 };
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
@@ -86,7 +87,7 @@ fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)]) {
     )
     .unwrap();
 
-    let dir = root.join("minute/year=2023/month=6");
+    let dir = root.join("year=2023/month=6");
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -152,7 +153,7 @@ fn set_holdings_marks_held_symbols_without_a_bar_at_market_not_cost() {
     write_fixture(tmp.path(), &rows, &[(1, "GROW"), (2, "OTHR")]);
 
     let algo = SizeAgainstStale { bought: false, rebalanced: false };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
 
     let othr = result.open_positions.iter().find(|p| p.symbol == "OTHR").unwrap();
     assert!(
@@ -206,7 +207,7 @@ fn each_consolidator_receives_only_its_own_symbols_bars() {
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let algo = TwoConsolidators { seen: seen.clone() };
-    run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
 
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty(), "no consolidated bars fired");

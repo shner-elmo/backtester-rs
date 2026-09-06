@@ -4,11 +4,11 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    // Parquet file to inspect: first CLI arg, else $STONKS_DATA_ROOT/2025/3/part-0.parquet
+    // Parquet file to inspect: first CLI arg, else a canonical dataset partition.
     let path = args.get(1).cloned().unwrap_or_else(|| {
-        let root = env::var("STONKS_DATA_ROOT")
-            .expect("pass a Parquet path as arg 1, or set STONKS_DATA_ROOT to the minute/ dir");
-        format!("{root}/2025/3/part-0.parquet")
+        let root = env::var("BACKTEST_DATA_DIR")
+            .expect("pass a Parquet path as arg 1, or set BACKTEST_DATA_DIR");
+        format!("{root}/year=2025/month=3/part-0.parquet")
     });
 
     let file = File::open(&path).unwrap_or_else(|e| panic!("failed to open {}: {}", path, e));

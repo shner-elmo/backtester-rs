@@ -27,12 +27,11 @@
 //! there — point it at a real dataset:
 //!
 //! ```sh
-//! cargo run --release --example premarket_pump_fade -- /path/to/data/output
+//! BACKTEST_DATA_DIR=/path/to/data cargo run --release --example premarket_pump_fade
 //! ```
 
 use backtester::{
-    bar::MarketSession, data::load_ticker_map, run, Algorithm, Context, PercentSlippage, Slice,
-    SymbolMap, SymbolSet,
+    bar::MarketSession, run, Algorithm, Context, PercentSlippage, Slice, SymbolMap, SymbolSet,
 };
 use chrono::{NaiveDate, NaiveTime};
 use chrono_tz::US::Eastern;
@@ -49,7 +48,6 @@ const MAX_POSITIONS: usize = 10;
 const COVER_AT: (u32, u32) = (15, 55);
 
 struct PremarketPumpFade {
-    data_root: String,
     /// Last main-session close of the previous trading day per symbol.
     prev_close: SymbolMap<f64>,
     /// Main-session closes seen so far today; rolled into `prev_close` at
@@ -65,9 +63,8 @@ struct PremarketPumpFade {
 }
 
 impl PremarketPumpFade {
-    fn new(data_root: &str) -> Self {
+    fn new() -> Self {
         Self {
-            data_root: data_root.to_string(),
             prev_close: SymbolMap::default(),
             today_close: SymbolMap::default(),
             premarket_last: SymbolMap::default(),
@@ -101,11 +98,7 @@ impl Algorithm for PremarketPumpFade {
         ctx.set_slippage(PercentSlippage::bps(10.0)); // 0.1% against the aggressor
 
         // "Every ticker": the whole dataset universe.
-        let universe =
-            load_ticker_map(&self.data_root).expect("data root must contain encoded_tickers.json");
-        for ticker in universe.into_values() {
-            ctx.add_equity(&ticker);
-        }
+        ctx.add_all_equities();
     }
 
     fn on_data(&mut self, ctx: &mut Context, data: &Slice) {
@@ -151,10 +144,7 @@ impl Algorithm for PremarketPumpFade {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
-    run(PremarketPumpFade::new(data_path), data_path).unwrap_or_else(|e| {
+    run(PremarketPumpFade::new()).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

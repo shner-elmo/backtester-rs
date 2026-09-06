@@ -7,6 +7,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 /// diagnosable failures — bad paths, malformed metadata, unreadable Parquet.
 #[derive(Debug)]
 pub enum BacktestError {
+    /// A required environment variable was not set.
+    MissingConfiguration { variable: &'static str },
+    /// The configured dataset root does not contain a usable canonical
+    /// dataset (for example, its ticker map is missing or malformed).
+    InvalidDataset { path: PathBuf, message: String },
     /// A file could not be opened, read, or written.
     Io { path: PathBuf, source: io::Error },
     /// A JSON file (ticker map, splits, result output) failed to parse or
@@ -40,6 +45,12 @@ pub enum BacktestError {
 impl fmt::Display for BacktestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingConfiguration { variable } => {
+                write!(f, "required configuration `{variable}` is not set")
+            }
+            Self::InvalidDataset { path, message } => {
+                write!(f, "invalid dataset at {}: {message}", path.display())
+            }
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Json { path, message } => write!(f, "{}: {message}", path.display()),
             Self::Parquet { path, message } => write!(f, "{}: {message}", path.display()),

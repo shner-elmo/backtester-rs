@@ -6,17 +6,17 @@
 //!
 //! * `read_all_bars` — raw loader throughput: stream every bar and do nothing
 //!   but count them. Captures the per-bar decode + symbol-string allocation.
-//! * `ema_cross_backtest` — a full `run_backtest` of a small EMA-cross strategy
+//! * `ema_cross_backtest` — a full `run_backtest_with_data_dir` of a small EMA-cross strategy
 //!   (indicator updates + `set_holdings` / `liquidate` orders) over the same
 //!   data.
 //!
 //! CI has no access to the real dataset, so by default the benches build their
-//! input by **replicating the committed AAPL fixture** (`tests/fixtures`, 5,000
+//! input by **replicating the committed AAPL fixture** (`test-data`, 5,000
 //! Jan-2023 minute bars) across ~30 months: replica `k` is the fixture shifted
 //! forward `k` calendar months with its OHLC scaled by `1.02^k`, giving a
 //! monotonic multi-month single-symbol dataset from real-shaped data. Set
 //! `BENCH_DATA_ROOT` to a real data root (the dir holding `encoded_tickers.json`
-//! and `minute/year=.../month=.../*.parquet`) to benchmark against it instead;
+//! and `year=.../month=.../*.parquet`) to benchmark against it instead;
 //! `BENCH_SYMBOLS` (comma-separated, default `AAPL`) picks what the strategy
 //! trades in that case.
 //!
@@ -34,7 +34,7 @@ use arrow::{
 use backtester::{
     data::{iter_bars, load_ticker_map, sorted_parquet_files},
     indicators::{Ema, Next},
-    run_backtest, Algorithm, Context, Slice, Symbol,
+    run_backtest_with_data_dir, Algorithm, Context, Slice, Symbol,
 };
 use chrono::{Datelike, Months, NaiveDate, TimeZone, Utc};
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
@@ -47,7 +47,7 @@ const TARGET_BARS: usize = 150_000;
 
 /// The committed fixture: one symbol (AAPL), Jan 2023, ~5,000 minute bars.
 fn fixture_root() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures").to_string()
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data").to_string()
 }
 
 fn schema() -> Arc<Schema> {
@@ -132,7 +132,7 @@ fn read_fixture(file: &std::path::Path) -> FixtureColumns {
     cols
 }
 
-/// Write one replica to `minute/year=Y/month=M/part-0.parquet`.
+/// Write one replica to `year=Y/month=M/part-0.parquet`.
 #[allow(clippy::too_many_arguments)]
 fn write_replica(
     root: &std::path::Path,
@@ -161,7 +161,7 @@ fn write_replica(
     )
     .unwrap();
 
-    let dir = root.join(format!("minute/year={year}/month={month}"));
+    let dir = root.join(format!("year={year}/month={month}"));
     std::fs::create_dir_all(&dir).unwrap();
     let file = std::fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -307,7 +307,7 @@ fn benches(c: &mut Criterion) {
     group.bench_function("ema_cross_backtest", |b| {
         b.iter(|| {
             let algo = EmaCross::new(&symbols);
-            black_box(run_backtest(algo, &path).unwrap())
+            black_box(run_backtest_with_data_dir(algo, &path).unwrap())
         });
     });
 

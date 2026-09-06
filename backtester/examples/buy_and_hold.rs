@@ -2,7 +2,7 @@
 //! Mirrors QuantConnect's `BasicTemplateAlgorithm` — the baseline every active
 //! strategy should be measured against.
 //!
-//!   cargo run --example buy_and_hold -- backtester/tests/fixtures
+//!   BACKTEST_DATA_DIR=test-data cargo run --example buy_and_hold
 
 use backtester::{run, Algorithm, Context, Slice, Symbol};
 
@@ -30,12 +30,9 @@ impl Algorithm for BuyAndHold {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let algo = BuyAndHold { symbol: None, invested: false };
 
-    run(algo, data_path).unwrap_or_else(|e| {
+    run(algo).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

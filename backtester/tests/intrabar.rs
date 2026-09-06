@@ -9,7 +9,9 @@ use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, PercentSlippage, Slice};
+use backtester::{
+    run_backtest_with_data_dir, Algorithm, BacktestResult, Context, PercentSlippage, Slice,
+};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
 
@@ -65,7 +67,7 @@ fn write_fixture(root: &Path, bars: &[Ohlc]) {
     )
     .unwrap();
 
-    let dir = root.join("minute/year=2023/month=6");
+    let dir = root.join("year=2023/month=6");
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -138,7 +140,9 @@ fn limit_buy_fills_at_the_limit_when_the_range_touches_it() {
         ],
     );
 
-    let result = run_backtest(RestOnce::limit(100.0, 95.0), tmp.path().to_str().unwrap()).unwrap();
+    let result =
+        run_backtest_with_data_dir(RestOnce::limit(100.0, 95.0), tmp.path().to_str().unwrap())
+            .unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!((pos.quantity - 100.0).abs() < 1e-9);
     assert!((pos.avg_price - 95.0).abs() < 1e-9, "expected fill at 95, got {}", pos.avg_price);
@@ -156,7 +160,9 @@ fn limit_order_never_touched_does_not_fill() {
         ],
     );
 
-    let result = run_backtest(RestOnce::limit(100.0, 95.0), tmp.path().to_str().unwrap()).unwrap();
+    let result =
+        run_backtest_with_data_dir(RestOnce::limit(100.0, 95.0), tmp.path().to_str().unwrap())
+            .unwrap();
     assert!(result.trades.is_empty());
     assert!(result.open_positions.is_empty(), "an untouched limit must not fill");
     assert!((result.final_equity - 100_000.0).abs() < 1e-9);
@@ -180,7 +186,7 @@ fn stop_loss_sell_triggers_when_the_low_breaches_it() {
         participation: 0.0,
         placed: false,
     };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
 
     assert_eq!(result.trades.len(), 1);
     let t = &result.trades[0];
@@ -223,7 +229,8 @@ fn limit_fill_is_never_worse_than_the_limit_even_with_slippage() {
     }
 
     let result =
-        run_backtest(SlippedLimit { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+        run_backtest_with_data_dir(SlippedLimit { placed: false }, tmp.path().to_str().unwrap())
+            .unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     // Slippage would push the buy to 95.095; a limit clamps it at 95.
     assert!(
@@ -248,7 +255,7 @@ fn volume_participation_cap_rounds_down_to_the_lot() {
         participation: 0.0333,
         placed: false,
     };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 33.0).abs() < 1e-9,
@@ -293,7 +300,9 @@ fn volume_participation_is_shared_across_orders_on_the_same_bar() {
         }
     }
 
-    let result = run_backtest(ThreeLimits { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+    let result =
+        run_backtest_with_data_dir(ThreeLimits { placed: false }, tmp.path().to_str().unwrap())
+            .unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 200.0).abs() < 1e-9,
@@ -319,7 +328,7 @@ fn volume_participation_caps_a_market_fill_and_drops_the_rest() {
         participation: 0.1,
         placed: false,
     };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 100.0).abs() < 1e-9,
@@ -350,7 +359,7 @@ fn volume_participation_fills_a_resting_limit_across_bars() {
         participation: 0.1,
         placed: false,
     };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 250.0).abs() < 1e-9,

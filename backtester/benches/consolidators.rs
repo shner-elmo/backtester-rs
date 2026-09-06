@@ -30,8 +30,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use backtester::{
-    consolidator::ConsolidatorPeriod, data::sorted_parquet_files, run_backtest, Algorithm, Context,
-    Slice, Symbol,
+    consolidator::ConsolidatorPeriod, data::sorted_parquet_files, run_backtest_with_data_dir,
+    Algorithm, Context, Slice, Symbol,
 };
 use criterion::{
     black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode, Throughput,
@@ -45,7 +45,7 @@ use tempfile::TempDir;
 const UNIVERSES: [usize; 2] = [100, 500];
 
 fn fixture_root() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures").to_string()
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data").to_string()
 }
 
 fn schema() -> Arc<Schema> {
@@ -168,7 +168,7 @@ fn generate_wide_dataset(n_symbols: usize) -> (TempDir, u64) {
     )
     .unwrap();
 
-    let dir = tmp.path().join("minute/year=2023/month=1");
+    let dir = tmp.path().join("year=2023/month=1");
     std::fs::create_dir_all(&dir).unwrap();
     let file = std::fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -229,7 +229,7 @@ impl Algorithm for ConsolidatorBench {
 fn run(path: &str, shape: Shape) -> u64 {
     let fired = Arc::new(AtomicU64::new(0));
     let algo = ConsolidatorBench { shape, fired: fired.clone() };
-    black_box(run_backtest(algo, path).unwrap());
+    black_box(run_backtest_with_data_dir(algo, path).unwrap());
     fired.load(Ordering::Relaxed)
 }
 

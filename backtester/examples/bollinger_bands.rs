@@ -2,7 +2,7 @@
 //! buy when price closes below the lower band and exit once it reverts back up
 //! through the middle band.
 //!
-//!   cargo run --example bollinger_bands -- backtester/tests/fixtures
+//!   BACKTEST_DATA_DIR=test-data cargo run --example bollinger_bands
 
 use backtester::{
     indicators::{BollingerBands, Next},
@@ -45,9 +45,6 @@ impl Algorithm for BollingerReversion {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let period = 20;
     let algo = BollingerReversion {
         symbol: None,
@@ -56,7 +53,7 @@ fn main() {
         bars_seen: 0,
     };
 
-    run(algo, data_path).unwrap_or_else(|e| {
+    run(algo).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

@@ -14,7 +14,8 @@ use arrow::{
 use backtester::{
     data::TickerMap,
     insider::{load_insider_transactions, load_insider_transactions_from, TransCode},
-    run_backtest, Algorithm, BacktestResult, Context, Slice, Symbol, SymbolMap, SymbolSet,
+    run_backtest_with_data_dir, Algorithm, BacktestResult, Context, Slice, Symbol, SymbolMap,
+    SymbolSet,
 };
 use chrono::{NaiveDate, TimeZone, Utc};
 use chrono_tz::US::Eastern;
@@ -44,7 +45,8 @@ fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)], insider_jso
             .join(", ")
     );
     fs::write(root.join("encoded_tickers.json"), tickers_json).unwrap();
-    fs::write(root.join("insider_transactions.json"), insider_json).unwrap();
+    fs::create_dir_all(root.join("metadata")).unwrap();
+    fs::write(root.join("metadata/insider_transactions.json"), insider_json).unwrap();
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("ticker", DataType::UInt16, false),
@@ -81,7 +83,7 @@ fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)], insider_jso
     )
     .unwrap();
 
-    let dir = root.join("minute/year=2023/month=6");
+    let dir = root.join("year=2023/month=6");
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -261,9 +263,11 @@ fn buys_on_the_day_after_the_filing_not_the_filing_day() {
     );
     write_fixture(tmp.path(), &bars_for(&[1]), &[(1, "INSD")], &json);
 
-    let result =
-        run_backtest(Follower::new(tmp.path().to_str().unwrap()), tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(
+        Follower::new(tmp.path().to_str().unwrap()),
+        tmp.path().to_str().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(result.trades.len(), 1);
     let trade = &result.trades[0];
@@ -286,9 +290,11 @@ fn exits_on_insider_sale_filing_the_next_trading_day() {
     );
     write_fixture(tmp.path(), &bars_for(&[1]), &[(1, "INSD")], &json);
 
-    let result =
-        run_backtest(Follower::new(tmp.path().to_str().unwrap()), tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(
+        Follower::new(tmp.path().to_str().unwrap()),
+        tmp.path().to_str().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(result.trades.len(), 1);
     assert!(
@@ -308,7 +314,7 @@ fn exits_after_hold_days_without_a_sale_filing() {
 
     let mut algo = Follower::new(tmp.path().to_str().unwrap());
     algo.hold_days = 3;
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
 
     // Entry Wed 06-07 (day 0); the count hits 3 at the open of Mon 06-12.
     assert_eq!(result.trades.len(), 1);
@@ -333,9 +339,11 @@ fn weekend_filing_enters_monday_and_stale_signals_are_dropped() {
     );
     write_fixture(tmp.path(), &bars_for(&[1, 2]), &[(1, "FRID"), (2, "OLDD")], &json);
 
-    let result =
-        run_backtest(Follower::new(tmp.path().to_str().unwrap()), tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(
+        Follower::new(tmp.path().to_str().unwrap()),
+        tmp.path().to_str().unwrap(),
+    )
+    .unwrap();
 
     assert!(result.trades.is_empty(), "no round trips expected: {:?}", result.trades);
     assert_eq!(result.open_positions.len(), 1, "only FRID should be held");
@@ -355,9 +363,11 @@ fn ignores_unmapped_tickers_and_below_threshold_buys() {
     );
     write_fixture(tmp.path(), &bars_for(&[1]), &[(1, "CHEP")], &json);
 
-    let result =
-        run_backtest(Follower::new(tmp.path().to_str().unwrap()), tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(
+        Follower::new(tmp.path().to_str().unwrap()),
+        tmp.path().to_str().unwrap(),
+    )
+    .unwrap();
 
     assert!(result.trades.is_empty());
     assert!(result.open_positions.is_empty());

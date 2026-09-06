@@ -19,7 +19,7 @@
 //! multi-month dataset:
 //!
 //! ```sh
-//! cargo run --release --example insider_dip -- /path/to/data/output
+//! BACKTEST_DATA_DIR=/path/to/data cargo run --release --example insider_dip
 //! ```
 
 use std::collections::{BTreeMap, VecDeque};
@@ -50,7 +50,6 @@ const HOLD_DAYS: usize = 45;
 const MAX_SIGNAL_AGE_DAYS: i64 = 5;
 
 struct InsiderDip {
-    data_root: String,
     buy_signals: BTreeMap<NaiveDate, Vec<Symbol>>,
     sell_signals: BTreeMap<NaiveDate, Vec<Symbol>>,
     /// Rolling daily closes per symbol (newest at the back), for the
@@ -65,9 +64,8 @@ struct InsiderDip {
 }
 
 impl InsiderDip {
-    fn new(data_root: &str) -> Self {
+    fn new() -> Self {
         Self {
-            data_root: data_root.to_string(),
             buy_signals: BTreeMap::new(),
             sell_signals: BTreeMap::new(),
             daily_closes: SymbolMap::default(),
@@ -147,7 +145,7 @@ impl Algorithm for InsiderDip {
 
         // Tickers resolve to dataset ids as the file streams in, so the
         // signal maps below are keyed by `Symbol` from the start.
-        let transactions = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)
+        let transactions = load_insider_transactions(ctx.data_dir(), ctx.ticker_map(), None)
             .expect("insider_transactions.json failed to load");
 
         let mut buy_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
@@ -199,10 +197,7 @@ impl Algorithm for InsiderDip {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
-    run(InsiderDip::new(data_path), data_path).unwrap_or_else(|e| {
+    run(InsiderDip::new()).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

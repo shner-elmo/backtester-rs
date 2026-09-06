@@ -8,7 +8,7 @@ without any printing or file output, call `run_backtest` instead:
 ```rust
 use backtester::run_backtest;
 
-let result = run_backtest(algo, "backtester/tests/fixtures");
+let result = run_backtest(algo)?; // dataset from BACKTEST_DATA_DIR
 println!("{} trades, Sharpe {:.2}", result.stats.trade_count, result.stats.sharpe_ratio);
 ```
 

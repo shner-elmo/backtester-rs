@@ -51,7 +51,7 @@ pub use algorithm::Algorithm;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
 pub use context::{Context, FillTiming};
 pub use engine::{
-    run, run_backtest, run_backtest_with_ticker_map, run_with_ticker_map, BacktestResult,
+    run, run_backtest, run_backtest_with_data_dir, run_with_data_dir, BacktestResult,
 };
 pub use error::BacktestError;
 pub use logging::LogConfig;

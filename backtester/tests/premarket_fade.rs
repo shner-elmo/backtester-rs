@@ -15,7 +15,7 @@ use arrow::{
 use backtester::{
     bar::{Bar, MarketSession},
     data::load_ticker_map,
-    run_backtest, Algorithm, BacktestResult, Context, Slice, SymbolMap, SymbolSet,
+    run_backtest_with_data_dir, Algorithm, BacktestResult, Context, Slice, SymbolMap, SymbolSet,
 };
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::US::Eastern;
@@ -125,7 +125,7 @@ fn write_fixture(root: &Path, rows: &[Row], tickers: &[(u16, &str)]) {
     )
     .unwrap();
 
-    let dir = root.join("minute/year=2023/month=6");
+    let dir = root.join("year=2023/month=6");
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -247,7 +247,7 @@ fn shorts_the_pump_at_the_open_and_covers_at_the_close() {
     write_fixture(tmp.path(), &pump_rows(), &[(1, "PUMP"), (2, "TAME")]);
     let root = tmp.path().to_str().unwrap();
 
-    let result = run_backtest(Fader::new(root), root).unwrap();
+    let result = run_backtest_with_data_dir(Fader::new(root), root).unwrap();
 
     // Only PUMP qualifies (+150% pre-market); TAME's +50% is below the bar.
     assert_eq!(result.trades.len(), 1, "trades: {:?}", result.trades);
@@ -282,7 +282,7 @@ fn gap_is_measured_against_the_main_session_close_not_after_hours() {
     write_fixture(tmp.path(), &rows, &[(1, "PUMP")]);
     let root = tmp.path().to_str().unwrap();
 
-    let result = run_backtest(Fader::new(root), root).unwrap();
+    let result = run_backtest_with_data_dir(Fader::new(root), root).unwrap();
 
     assert_eq!(result.trades.len(), 1, "trades: {:?}", result.trades);
     assert_eq!(result.trades[0].direction, "short");
@@ -307,7 +307,7 @@ fn no_premarket_or_no_previous_close_means_no_trade() {
     write_fixture(tmp.path(), &rows, &[(1, "GAPO"), (2, "FRSH")]);
     let root = tmp.path().to_str().unwrap();
 
-    let result = run_backtest(Fader::new(root), root).unwrap();
+    let result = run_backtest_with_data_dir(Fader::new(root), root).unwrap();
 
     assert!(result.trades.is_empty(), "trades: {:?}", result.trades);
     assert!(result.open_positions.is_empty());
@@ -336,7 +336,7 @@ fn short_stranded_by_missing_bars_is_covered_next_morning() {
     write_fixture(tmp.path(), &rows, &[(1, "PUMP"), (2, "STAY")]);
     let root = tmp.path().to_str().unwrap();
 
-    let result = run_backtest(Fader::new(root), root).unwrap();
+    let result = run_backtest_with_data_dir(Fader::new(root), root).unwrap();
 
     assert_eq!(result.trades.len(), 1, "trades: {:?}", result.trades);
     let trade = &result.trades[0];

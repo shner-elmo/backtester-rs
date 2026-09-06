@@ -641,7 +641,6 @@ dependencies = [
  "serde_json",
  "ta",
  "tempfile",
- "walkdir",
 ]
 
 [[package]]

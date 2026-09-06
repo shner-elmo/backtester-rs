@@ -18,7 +18,7 @@
 //! Run against the committed fixture (synthetic CEO/COO purchases):
 //!
 //! ```sh
-//! cargo run --example insider_conviction -- backtester/tests/fixtures
+//! BACKTEST_DATA_DIR=test-data cargo run --example insider_conviction
 //! ```
 
 use std::collections::BTreeMap;
@@ -81,7 +81,6 @@ fn stake_increase(tx: &InsiderTransaction) -> f64 {
 }
 
 struct InsiderConviction {
-    data_root: String,
     buy_signals: BTreeMap<NaiveDate, Vec<Symbol>>,
     sell_signals: BTreeMap<NaiveDate, Vec<Symbol>>,
     /// symbol → trading days held so far.
@@ -90,9 +89,8 @@ struct InsiderConviction {
 }
 
 impl InsiderConviction {
-    fn new(data_root: &str) -> Self {
+    fn new() -> Self {
         Self {
-            data_root: data_root.to_string(),
             buy_signals: BTreeMap::new(),
             sell_signals: BTreeMap::new(),
             held: SymbolMap::default(),
@@ -146,7 +144,7 @@ impl Algorithm for InsiderConviction {
 
         // Tickers resolve to dataset ids as the file streams in, so the
         // signal maps below are keyed by `Symbol` from the start.
-        let transactions = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)
+        let transactions = load_insider_transactions(ctx.data_dir(), ctx.ticker_map(), None)
             .expect("insider_transactions.json failed to load");
 
         let mut buy_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
@@ -199,10 +197,7 @@ impl Algorithm for InsiderConviction {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
-    run(InsiderConviction::new(data_path), data_path).unwrap_or_else(|e| {
+    run(InsiderConviction::new()).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });
