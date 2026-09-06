@@ -4,7 +4,9 @@
 //! full-dataset sweep is quick. Also checks the boundary between consecutive
 //! files (the stream must be globally non-decreasing).
 //!
-//! Usage: BACKTEST_DATA_DIR=/path/to/data/root cargo run --release --example check_sorted
+//! Usage:
+//!   export BACKTEST_DATA_DIR=/path/to/data/root
+//!   cargo run --release --example check_sorted
 
 use arrow::array::TimestampNanosecondArray;
 use backtester::data::sorted_parquet_files;

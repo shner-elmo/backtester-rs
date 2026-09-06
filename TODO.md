@@ -14,7 +14,8 @@ data-setup).
   (see `docs/data-setup.md`).
 - No external data needed for tests/dev: committed fixtures at
   `test-data` (AAPL, Jan 2023). Demo flow:
-  `BACKTEST_DATA_DIR=test-data cargo run --example ema_cross` then
+  `export BACKTEST_DATA_DIR=test-data`, then
+  `cargo run --example ema_cross`, then
   `cargo run -p ui` → http://localhost:3001.
 - `cargo test --workspace` green; `cargo clippy` clean.
 

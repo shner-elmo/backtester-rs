@@ -18,7 +18,8 @@
 //! Run against the committed fixture (synthetic CEO/COO purchases):
 //!
 //! ```sh
-//! BACKTEST_DATA_DIR=test-data cargo run --example insider_conviction
+//! export BACKTEST_DATA_DIR=test-data
+//! cargo run --example insider_conviction
 //! ```
 
 use std::collections::BTreeMap;

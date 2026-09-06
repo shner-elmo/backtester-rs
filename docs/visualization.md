@@ -19,7 +19,8 @@ frontend.
 ### Run it
 
 ```bash
-BACKTEST_DATA_DIR=/path/to/data cargo run -p data-viz
+export BACKTEST_DATA_DIR=/path/to/data
+cargo run -p data-viz
 # open http://localhost:3000   (override the port with PORT=8080)
 ```
 
@@ -161,7 +162,8 @@ in the directory without restarting the server.
 
 ```bash
 # 1. Produce a result file:
-BACKTEST_DATA_DIR=test-data cargo run --example ema_cross
+export BACKTEST_DATA_DIR=test-data
+cargo run --example ema_cross
 
 # 2. Serve every backtest_result_*.json in the current dir (newest selected):
 cargo run -p ui

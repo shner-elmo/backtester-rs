@@ -27,7 +27,8 @@
 //! there — point it at a real dataset:
 //!
 //! ```sh
-//! BACKTEST_DATA_DIR=/path/to/data cargo run --release --example premarket_pump_fade
+//! export BACKTEST_DATA_DIR=/path/to/data
+//! cargo run --release --example premarket_pump_fade
 //! ```
 
 use backtester::{

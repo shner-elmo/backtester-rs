@@ -2,7 +2,8 @@
 //! buy when price closes below the lower band and exit once it reverts back up
 //! through the middle band.
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example bollinger_bands
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example bollinger_bands
 
 use backtester::{
     indicators::{BollingerBands, Next},

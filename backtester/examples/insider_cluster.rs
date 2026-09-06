@@ -18,7 +18,8 @@
 //! Run against the committed fixture (three synthetic insiders buying AAPL):
 //!
 //! ```sh
-//! BACKTEST_DATA_DIR=test-data cargo run --example insider_cluster
+//! export BACKTEST_DATA_DIR=test-data
+//! cargo run --example insider_cluster
 //! ```
 
 use std::collections::{BTreeMap, HashSet};

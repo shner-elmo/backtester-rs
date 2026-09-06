@@ -5,7 +5,8 @@
 //! across that day's names, then cover everything at 15:55 — always flat
 //! overnight.
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example gap_short
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example gap_short
 //!
 //! `ctx.add_all_equities()` subscribes every symbol in the dataset, so
 //! `on_data` slices carry them all. Per-symbol state is keyed by `Symbol` —

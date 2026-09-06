@@ -19,7 +19,8 @@
 //! multi-month dataset:
 //!
 //! ```sh
-//! BACKTEST_DATA_DIR=/path/to/data cargo run --release --example insider_dip
+//! export BACKTEST_DATA_DIR=/path/to/data
+//! cargo run --release --example insider_dip
 //! ```
 
 use std::collections::{BTreeMap, VecDeque};

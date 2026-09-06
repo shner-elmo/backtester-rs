@@ -5,7 +5,9 @@
 //! the layer that actually costs the time (I/O, Parquet decode, timestamp
 //! conversion, tick grouping, engine bookkeeping) instead of guessed at.
 //!
-//! Usage: BACKTEST_DATA_DIR=/path/to/data/root cargo run --release --example scan_stages -- [YYYY-MM ...]
+//! Usage:
+//!   export BACKTEST_DATA_DIR=/path/to/data/root
+//!   cargo run --release --example scan_stages -- [YYYY-MM ...]
 //!
 //! With no month arguments it scans every file, which is the whole dataset —
 //! pass one or two months for an iteration-speed run. The first stage warms

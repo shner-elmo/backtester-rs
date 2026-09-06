@@ -2,7 +2,8 @@
 //! volume invariants hold on every bar. Not part of the test suite —
 //! run it manually against the full dataset:
 //!
-//!   BACKTEST_DATA_DIR=/path/to/data cargo run --release --example data_invariants_check
+//!   export BACKTEST_DATA_DIR=/path/to/data
+//!   cargo run --release --example data_invariants_check
 
 use std::collections::HashMap;
 

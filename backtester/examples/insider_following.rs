@@ -17,7 +17,8 @@
 //! Run against the committed fixture (one synthetic AAPL round trip):
 //!
 //! ```sh
-//! BACKTEST_DATA_DIR=test-data cargo run --example insider_following
+//! export BACKTEST_DATA_DIR=test-data
+//! cargo run --example insider_following
 //! ```
 
 use std::collections::BTreeMap;

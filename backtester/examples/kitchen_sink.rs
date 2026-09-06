@@ -13,7 +13,8 @@
 //!   - a hand-rolled rolling-low lookback and a protective resting `stop_order`
 //!   - the `on_split` / `on_delisted` / `on_dividend` / `on_rename` / `on_end_of_day` hooks
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example kitchen_sink
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example kitchen_sink
 //!
 //! The signal itself: buy oversold dips (RSI) that are trading above a slower
 //! hourly trend, arm a protective stop under each entry, exit when overbought

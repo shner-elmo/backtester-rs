@@ -2,7 +2,8 @@
 //! MACD line is above its signal line (positive histogram) and flatten when it
 //! crosses back below.
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example macd_trend
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example macd_trend
 
 use backtester::{
     indicators::{Macd, Next},
