@@ -124,7 +124,7 @@ fn current_bar_close_fills_at_the_same_bars_close() {
     three_bars(tmp.path());
 
     let algo = BuyOnceThenHold { timing: FillTiming::CurrentBarClose, bought: false };
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!((pos.quantity - 100.0).abs() < 1e-9);
@@ -143,7 +143,7 @@ fn next_bar_open_fills_at_the_following_bars_open() {
     three_bars(tmp.path());
 
     let algo = BuyOnceThenHold { timing: FillTiming::NextBarOpen, bought: false };
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!((pos.quantity - 100.0).abs() < 1e-9);
@@ -163,7 +163,7 @@ fn order_on_the_final_bar_never_fills_under_next_bar_open() {
     write_fixture(tmp.path(), &[bar(2023, 6, 5, 0, 10.0, 11.0)]);
 
     let algo = BuyOnceThenHold { timing: FillTiming::NextBarOpen, bought: false };
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     assert!(result.trades.is_empty());
     assert!(result.open_positions.is_empty(), "order with no following bar must not fill");

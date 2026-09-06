@@ -105,8 +105,7 @@ fn cash_account_trims_a_buy_to_buying_power() {
         }
     }
 
-    let result =
-        run_backtest_with_data_dir(BigBuy { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(BigBuy { placed: false }, tmp.path()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 333.0).abs() < 1e-9,
@@ -142,9 +141,7 @@ fn set_holdings_is_clamped_to_the_leverage_cap() {
         }
     }
 
-    let result =
-        run_backtest_with_data_dir(DoubleUp { placed: false }, tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(DoubleUp { placed: false }, tmp.path()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 1_500.0).abs() < 1e-9,
@@ -186,9 +183,7 @@ fn over_levered_book_can_liquidate_but_not_buy() {
         }
     }
 
-    let result =
-        run_backtest_with_data_dir(LeveredLong { bars_seen: 0 }, tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(LeveredLong { bars_seen: 0 }, tmp.path()).unwrap();
 
     assert!(result.open_positions.is_empty());
     assert_eq!(result.trades.len(), 1);
@@ -236,9 +231,7 @@ fn a_closure_works_as_a_margin_model() {
         }
     }
 
-    let result =
-        run_backtest_with_data_dir(ShortThenLong { bars_seen: 0 }, tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(ShortThenLong { bars_seen: 0 }, tmp.path()).unwrap();
 
     assert!(result.open_positions.is_empty());
     assert_eq!(result.trades.len(), 1, "the rejected short must not create a trade");

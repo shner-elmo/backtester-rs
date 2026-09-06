@@ -558,8 +558,8 @@ mod tests {
     #[test]
     fn output_is_under_dataset_metadata() {
         assert_eq!(
-            insider_output(Path::new("/data/minute")),
-            Path::new("/data/minute/metadata/insider_transactions.json")
+            insider_output(Path::new("/data")),
+            Path::new("/data/metadata/insider_transactions.json")
         );
     }
 
