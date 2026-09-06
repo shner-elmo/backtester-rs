@@ -145,7 +145,7 @@ fn out_of_order_bars_across_files_are_an_error() {
     write_part(root, 2023, 7, "part-1.parquet", &[(jun1, 1, 99.0)]);
 
     let algo = RecordTimes::new("XYZ", None, None);
-    let err = run_backtest_with_data_dir(algo, &root).unwrap_err();
+    let err = run_backtest_with_data_dir(algo, root).unwrap_err();
     assert!(
         matches!(err, BacktestError::OutOfOrderData { .. }),
         "expected OutOfOrderData, got: {err}"
@@ -174,7 +174,7 @@ fn in_order_bars_across_files_run_clean() {
 
     let algo = RecordTimes::new("XYZ", None, None);
     let times = algo.times.clone();
-    run_backtest_with_data_dir(algo, &root).unwrap();
+    run_backtest_with_data_dir(algo, root).unwrap();
 
     let times = times.lock().unwrap();
     assert_eq!(times.len(), 4, "expected every bar to reach on_data: {times:?}");
@@ -199,7 +199,7 @@ fn unsorted_bars_within_a_file_are_an_error() {
     );
 
     let algo = RecordTimes::new("XYZ", None, None);
-    let err = run_backtest_with_data_dir(algo, &root).unwrap_err();
+    let err = run_backtest_with_data_dir(algo, root).unwrap_err();
     assert!(
         matches!(err, BacktestError::OutOfOrderData { .. }),
         "expected OutOfOrderData, got: {err}"
