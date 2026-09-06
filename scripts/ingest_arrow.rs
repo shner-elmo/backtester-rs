@@ -2,8 +2,9 @@
 //! Convert minute-bar CSV.gz files to Hive-partitioned Parquet using Arrow/Parquet directly.
 //!
 //! Requires: cargo install rust-script
-//! Run: BACKTEST_DATA_DIR=<output_dir> rust-script scripts/ingest_arrow.rs \
-//!          --input <raw-minute-dir> [--extend-tickers]
+//! Run:
+//!   export BACKTEST_DATA_DIR=/path/to/dataset
+//!   rust-script scripts/ingest_arrow.rs --input <raw-minute-dir> [--extend-tickers]
 //!
 //! If `encoded_tickers.json` does not exist it is bootstrapped first: all input
 //! files are scanned for distinct tickers, which are sorted and assigned
@@ -101,8 +102,8 @@ impl DayColumns {
 }
 
 fn usage() -> &'static str {
-    "Usage: BACKTEST_DATA_DIR=/path/to/dataset ingest_arrow --input <raw-minute-dir> \
-     [--extend-tickers]"
+    "Usage:\n    export BACKTEST_DATA_DIR=/path/to/dataset\n    ingest_arrow --input \
+     <raw-minute-dir> [--extend-tickers]"
 }
 
 struct Args {

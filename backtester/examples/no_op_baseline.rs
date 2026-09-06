@@ -4,7 +4,9 @@
 //! grouping, slice assembly, day boundaries) with no strategy work on top —
 //! the floor any real backtest pays.
 //!
-//! Usage: BACKTEST_DATA_DIR=/path/to/data/root cargo run --release --example no_op_baseline -- [start] [end]
+//! Usage:
+//!   export BACKTEST_DATA_DIR=/path/to/data/root
+//!   cargo run --release --example no_op_baseline -- [start] [end]
 //!
 //! `start` / `end` are optional YYYY-MM-DD bounds; omit both to run the whole
 //! dataset.

@@ -1,7 +1,8 @@
 //! Classic RSI mean reversion (à la QuantConnect's RSI examples): go long when
 //! the 14-bar RSI is oversold, and flatten once it recovers toward neutral.
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example rsi_mean_reversion
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example rsi_mean_reversion
 
 use backtester::{
     indicators::{Next, Rsi},

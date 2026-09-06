@@ -478,7 +478,8 @@ strategies, smallest first. Run any of them against the committed fixture
 (AAPL, Jan 2023) — no external data needed:
 
 ```bash
-BACKTEST_DATA_DIR=test-data cargo run --example <name>
+export BACKTEST_DATA_DIR=test-data
+cargo run --example <name>
 ```
 
 | Example | What it shows |
@@ -502,10 +503,12 @@ hand-rolled rolling-low lookback, and the `on_split` / `on_delisted` /
 
 ```bash
 # Against the committed fixture (AAPL, Jan 2023) — no external data needed:
-BACKTEST_DATA_DIR=test-data cargo run --example ema_cross
+export BACKTEST_DATA_DIR=test-data
+cargo run --example ema_cross
 
 # Against your full dataset (a directory containing encoded_tickers.json):
-BACKTEST_DATA_DIR=/path/to/data cargo run --release --example ema_cross
+export BACKTEST_DATA_DIR=/path/to/data
+cargo run --release --example ema_cross
 ```
 
 `run` and `run_backtest` require `BACKTEST_DATA_DIR`. For callers that already

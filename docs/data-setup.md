@@ -83,7 +83,8 @@ Generate it with `scripts/insider_fetch.rs` (SEC's quarterly structured data
 sets, 2006q1 onward; the SEC requires a contact User-Agent):
 
 ```bash
-BACKTEST_DATA_DIR=/path/to/data rust-script scripts/insider_fetch.rs \
+export BACKTEST_DATA_DIR=/path/to/data
+rust-script scripts/insider_fetch.rs \
     --start 2022q1 --end 2023q4 \
     --user-agent "Your Name you@example.com"     # or set $SEC_USER_AGENT
 ```
@@ -174,7 +175,8 @@ Hive-partitioned Parquet layout above:
 
 ```bash
 cargo install rust-script   # once
-BACKTEST_DATA_DIR=/path/to/data rust-script scripts/ingest_arrow.rs \
+export BACKTEST_DATA_DIR=/path/to/data
+rust-script scripts/ingest_arrow.rs \
   --input <raw-minute-dir>
 ```
 
@@ -199,7 +201,8 @@ rows) converts in about 5 minutes.
 Verify before pointing the engine at the result:
 
 ```bash
-BACKTEST_DATA_DIR=/path/to/data cargo run --release -p backtester --example check_sorted
+export BACKTEST_DATA_DIR=/path/to/data
+cargo run --release -p backtester --example check_sorted
 ```
 
 ## Committed test fixture
@@ -221,8 +224,8 @@ Parser-only real-world SEC samples remain under
 Regenerate the fixture from the full dataset with:
 
 ```bash
-BACKTEST_DATA_DIR=/path/to/data \
-  cargo run -p data-viz --example make_test_fixture
+export BACKTEST_DATA_DIR=/path/to/data
+cargo run -p data-viz --example make_test_fixture
 # writes the shared test-data fixture
 ```
 

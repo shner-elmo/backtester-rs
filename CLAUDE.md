@@ -21,9 +21,11 @@ cargo build --release           # Release build
 cargo test                      # Run tests
 cargo fmt                       # Format (max width 100, groups: std > external > crate)
 cargo clippy                    # Lint
-BACKTEST_DATA_DIR=test-data cargo run --example ema_cross  # Run against the committed fixture
+export BACKTEST_DATA_DIR=test-data
+cargo run --example ema_cross    # Run against the committed fixture
 cargo run -p ui                 # Results dashboard at :3001 (newest backtest_result_*.json in CWD)
-BACKTEST_DATA_DIR=<data-root> rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4  # SEC Form 4 downloader (needs --user-agent or $SEC_USER_AGENT)
+export BACKTEST_DATA_DIR=/path/to/data
+rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4  # SEC Form 4 downloader (needs --user-agent or $SEC_USER_AGENT)
 cargo bench -p backtester --bench engine  # Throughput benchmarks (loader + a full backtest)
 cargo bench -p backtester --bench consolidators  # Consolidator dispatch across a wide (100/500-symbol) universe
 ```

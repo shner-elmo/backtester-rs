@@ -16,7 +16,8 @@ Run the EMA crossover example against the included AAPL fixture, then open the
 generated result:
 
 ```bash
-BACKTEST_DATA_DIR=test-data cargo run --example ema_cross
+export BACKTEST_DATA_DIR=test-data
+cargo run --example ema_cross
 cargo run -p ui
 ```
 
@@ -25,7 +26,8 @@ Visit <http://localhost:3001>. No external data is required.
 To run against a full dataset:
 
 ```bash
-BACKTEST_DATA_DIR=/path/to/dataset cargo run --release --example ema_cross
+export BACKTEST_DATA_DIR=/path/to/dataset
+cargo run --release --example ema_cross
 ```
 
 ## Write a strategy
@@ -91,7 +93,8 @@ The metadata files are optional. Both the backtester and chart explorer read
 the same `BACKTEST_DATA_DIR`:
 
 ```bash
-BACKTEST_DATA_DIR=/path/to/dataset cargo run -p data-viz
+export BACKTEST_DATA_DIR=/path/to/dataset
+cargo run -p data-viz
 ```
 
 See [Data Setup](docs/data-setup.md) for the schema, metadata files, ingestion

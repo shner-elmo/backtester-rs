@@ -17,8 +17,9 @@
 //! `SEC_USER_AGENT`.
 //!
 //! Requires: cargo install rust-script
-//! Run: BACKTEST_DATA_DIR=<data-root> rust-script scripts/insider_fetch.rs \
-//!          --start 2023q1 --end 2023q4
+//! Run:
+//!   export BACKTEST_DATA_DIR=/path/to/data
+//!   rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4
 //! Tests: rust-script --test scripts/insider_fetch.rs
 //!
 //! ```cargo
@@ -51,7 +52,8 @@ fn usage() -> String {
     let exe = "rust-script scripts/insider_fetch.rs";
     format!(
         "Usage:
-    BACKTEST_DATA_DIR=/path/to/data-root {exe} --start 2023q1 --end 2023q4
+    export BACKTEST_DATA_DIR=/path/to/data-root
+    {exe} --start 2023q1 --end 2023q4
         [--cache-dir ~/.cache/sec-form345]     downloaded zips kept here; re-runs skip download
         [--tickers AAPL,MSFT]                  optional filter; default = all issuers
         [--user-agent \"Your Name you@example.com\"]  falls back to $SEC_USER_AGENT

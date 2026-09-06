@@ -2,8 +2,9 @@
 //! models applied. Run it and compare the summary against `ema_cross` (no
 //! friction) to see the costs eat into PnL:
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example ema_cross
-//!   BACKTEST_DATA_DIR=test-data cargo run --example slippage_demo
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example ema_cross
+//!   cargo run --example slippage_demo
 //!
 //! Swap the `set_slippage(..)` line below for any built-in model or your own
 //! closure.

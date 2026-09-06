@@ -2,7 +2,8 @@
 //! Mirrors QuantConnect's `BasicTemplateAlgorithm` — the baseline every active
 //! strategy should be measured against.
 //!
-//!   BACKTEST_DATA_DIR=test-data cargo run --example buy_and_hold
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example buy_and_hold
 
 use backtester::{run, Algorithm, Context, Slice, Symbol};
 
