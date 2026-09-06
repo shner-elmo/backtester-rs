@@ -70,7 +70,7 @@ struct FixtureColumns {
 }
 
 fn read_fixture() -> FixtureColumns {
-    let file = sorted_parquet_files(&fixture_root()).into_iter().next().expect("fixture missing");
+    let file = sorted_parquet_files(fixture_root()).into_iter().next().expect("fixture missing");
     let f = std::fs::File::open(file).unwrap();
     let reader = ParquetRecordBatchReaderBuilder::try_new(f).unwrap().build().unwrap();
 
