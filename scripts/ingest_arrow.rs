@@ -115,7 +115,7 @@ struct Args {
 fn parse_args_from(
     args: impl IntoIterator<Item = String>,
     output: Option<PathBuf>,
-) -> Result<Args, String> {
+) -> Result<Option<Args>, String> {
     let mut input = None;
     let mut extend_tickers = false;
     let mut args = args.into_iter();
@@ -125,19 +125,25 @@ fn parse_args_from(
                 input = Some(PathBuf::from(args.next().ok_or("--input needs a value")?));
             }
             "--extend-tickers" => extend_tickers = true,
-            "--help" | "-h" => return Err(usage().into()),
+            "--help" | "-h" => return Ok(None),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
     let input = input.ok_or("--input is required")?;
     let output = output.ok_or("BACKTEST_DATA_DIR must point to the canonical dataset root")?;
-    Ok(Args { input, output, extend_tickers })
+    Ok(Some(Args { input, output, extend_tickers }))
 }
 
 fn main() {
     let output = env::var_os("BACKTEST_DATA_DIR").filter(|value| !value.is_empty()).map(Into::into);
-    let result = parse_args_from(env::args().skip(1), output)
-        .and_then(|args| ingest(&args.input, &args.output, args.extend_tickers));
+    let result = match parse_args_from(env::args().skip(1), output) {
+        Ok(Some(args)) => ingest(&args.input, &args.output, args.extend_tickers),
+        Ok(None) => {
+            println!("{}", usage());
+            return;
+        }
+        Err(error) => Err(error),
+    };
     if let Err(error) = result {
         eprintln!("error: {error}");
         eprintln!("{}", usage());
@@ -277,9 +283,9 @@ fn discover_months(input: &Path) -> Result<Vec<(i32, i32, Vec<PathBuf>)>, String
 
 fn scan_tickers(months: &[(i32, i32, Vec<PathBuf>)]) -> Result<HashSet<String>, String> {
     let all_days: Vec<&PathBuf> = months.iter().flat_map(|(_, _, days)| days).collect();
-    let sets: Vec<Result<HashSet<String>, String>> = all_days
+    all_days
         .par_iter()
-        .map(|src| {
+        .try_fold(HashSet::new, |mut distinct, src| {
             let file = fs::File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
             let gz = GzDecoder::new(BufReader::new(file));
             let mut rdr = csv::Reader::from_reader(gz);
@@ -289,7 +295,6 @@ fn scan_tickers(months: &[(i32, i32, Vec<PathBuf>)]) -> Result<HashSet<String>, 
                 .iter()
                 .position(|h| h == "ticker")
                 .ok_or_else(|| format!("{}: missing ticker column", src.display()))?;
-            let mut set = HashSet::new();
             let mut last = String::new();
             let mut rec = csv::StringRecord::new();
             // Rows are grouped by ticker, so skipping consecutive repeats keeps
@@ -298,17 +303,15 @@ fn scan_tickers(months: &[(i32, i32, Vec<PathBuf>)]) -> Result<HashSet<String>, 
                 let t = &rec[ticker_idx];
                 if t != last {
                     last = t.to_string();
-                    set.insert(last.clone());
+                    distinct.insert(last.clone());
                 }
             }
-            Ok(set)
+            Ok(distinct)
         })
-        .collect();
-    let mut distinct = HashSet::new();
-    for set in sets {
-        distinct.extend(set?);
-    }
-    Ok(distinct)
+        .try_reduce(HashSet::new, |mut distinct, set| {
+            distinct.extend(set);
+            Ok(distinct)
+        })
 }
 
 fn prepare_ticker_map(
@@ -585,11 +588,13 @@ mod tests {
             ["--input".into(), "/raw/minute".into(), "--extend-tickers".into()],
             Some(PathBuf::from("/dataset")),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(args.input, Path::new("/raw/minute"));
         assert_eq!(args.output, Path::new("/dataset"));
         assert!(args.extend_tickers);
         assert!(parse_args_from(Vec::<String>::new(), Some("/dataset".into())).is_err());
         assert!(parse_args_from(["--input".into(), "/raw".into()], None).is_err());
+        assert!(parse_args_from(["--help".into()], None).unwrap().is_none());
     }
 }
