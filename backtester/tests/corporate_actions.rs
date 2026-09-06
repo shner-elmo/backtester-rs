@@ -196,7 +196,7 @@ fn forward_split_adjusts_position_and_keeps_equity_flat() {
 
     let algo = BuyAndHold::new("SPLT", 10.0);
     let splits = algo.splits.clone();
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     // The callback fired exactly once with the ratio.
     assert_eq!(*splits.lock().unwrap(), vec![("SPLT".to_string(), 3.0)]);
@@ -238,7 +238,7 @@ fn reverse_split_cashes_out_a_fractional_position_in_lieu() {
     // 5 shares * 0.1 = 0.5 shares -> rounds to 0 against the whole-share lot;
     // the entire position is cashed out in lieu.
     let algo = BuyAndHold::new("TINY", 5.0);
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     assert!(result.open_positions.iter().all(|p| p.symbol != "TINY"));
     assert_eq!(result.trades.len(), 1);
@@ -261,7 +261,7 @@ fn silent_symbol_is_force_liquidated_as_delisted() {
 
     let algo = BuyAndHold::new("GONE", 10.0);
     let delistings = algo.delistings.clone();
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     assert_eq!(*delistings.lock().unwrap(), vec!["GONE".to_string()]);
     assert!(result.open_positions.iter().all(|p| p.symbol != "GONE"));
@@ -349,9 +349,7 @@ fn resting_orders_are_rescaled_across_a_split() {
         }
     }
 
-    let result =
-        run_backtest_with_data_dir(LimitOnce { placed: false }, tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(LimitOnce { placed: false }, tmp.path()).unwrap();
 
     assert!(result.trades.is_empty(), "unexpected trades: {:?}", result.trades);
     let pos = result.open_positions.iter().find(|p| p.symbol == "SPLT").unwrap();
@@ -385,7 +383,7 @@ fn cash_dividend_credits_a_held_long_position() {
 
     let algo = BuyAndHold::new("DIV", 10.0);
     let dividends = algo.dividends.clone();
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     // The callback fired once with the per-share amount.
     assert_eq!(*dividends.lock().unwrap(), vec![("DIV".to_string(), 2.0)]);
@@ -412,7 +410,7 @@ fn cash_dividend_debits_a_held_short_position() {
 
     // Short 10 shares: a dividend on a short is a cash *debit* of qty*amount.
     let algo = BuyAndHold::new("DIV", -10.0);
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let pos = result.open_positions.iter().find(|p| p.symbol == "DIV").unwrap();
     assert!((pos.realized_pnl - -20.0).abs() < 1e-9);
@@ -444,7 +442,7 @@ fn dividend_is_not_paid_when_the_symbol_is_not_held() {
         fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
     }
 
-    let result = run_backtest_with_data_dir(Idle, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(Idle, tmp.path()).unwrap();
     // No position on the ex-date means no cash flow at all.
     assert!(result.trades.is_empty());
     assert!(result.open_positions.is_empty());
@@ -531,7 +529,7 @@ fn ticker_rename_transfers_the_position_without_a_trade() {
     let renames = Arc::new(Mutex::new(Vec::new()));
     let algo =
         Rename { ticker: "OLD".into(), symbol: None, bought: false, renames: renames.clone() };
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     assert_eq!(*renames.lock().unwrap(), vec![("OLD".to_string(), "NEW".to_string())]);
     // No round trip and no forced liquidation — the position just moved symbols.
@@ -625,9 +623,7 @@ fn margin_interest_falls_back_to_the_short_book_when_there_are_no_longs() {
         }
     }
 
-    let result =
-        run_backtest_with_data_dir(AllShortMargin { bars_seen: 0 }, tmp.path().to_str().unwrap())
-            .unwrap();
+    let result = run_backtest_with_data_dir(AllShortMargin { bars_seen: 0 }, tmp.path()).unwrap();
 
     assert_eq!(result.trades.len(), 1); // the CRSH round trip, pnl -9,000
     let pos = result.open_positions.iter().find(|p| p.symbol == "SHRT").unwrap();
@@ -746,7 +742,7 @@ fn an_explicitly_configured_missing_metadata_file_is_an_error() {
         fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
     }
 
-    let err = run_backtest_with_data_dir(MissingSplits, tmp.path().to_str().unwrap())
+    let err = run_backtest_with_data_dir(MissingSplits, tmp.path())
         .expect_err("a configured-but-missing splits file must fail the run");
     assert!(err.to_string().contains("nope.json"), "error should name the file: {err}");
 }

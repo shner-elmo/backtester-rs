@@ -153,7 +153,7 @@ fn set_holdings_marks_held_symbols_without_a_bar_at_market_not_cost() {
     write_fixture(tmp.path(), &rows, &[(1, "GROW"), (2, "OTHR")]);
 
     let algo = SizeAgainstStale { bought: false, rebalanced: false };
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let othr = result.open_positions.iter().find(|p| p.symbol == "OTHR").unwrap();
     assert!(
@@ -207,7 +207,7 @@ fn each_consolidator_receives_only_its_own_symbols_bars() {
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let algo = TwoConsolidators { seen: seen.clone() };
-    run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let seen = seen.lock().unwrap();
     assert!(!seen.is_empty(), "no consolidated bars fired");

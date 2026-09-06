@@ -314,7 +314,7 @@ fn exits_after_hold_days_without_a_sale_filing() {
 
     let mut algo = Follower::new(tmp.path().to_str().unwrap());
     algo.hold_days = 3;
-    let result = run_backtest_with_data_dir(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     // Entry Wed 06-07 (day 0); the count hits 3 at the open of Mon 06-12.
     assert_eq!(result.trades.len(), 1);
