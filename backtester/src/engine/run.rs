@@ -336,7 +336,6 @@ impl Engine {
 pub(super) fn run_prepared<A: Algorithm>(
     mut algo: A,
     mut ctx: Context,
-    data_path: &str,
 ) -> Result<BacktestResult, BacktestError> {
     // An inverted date range is a configuration mistake, not a data problem:
     // fail up front instead of silently producing an empty backtest.
@@ -348,11 +347,11 @@ pub(super) fn run_prepared<A: Algorithm>(
 
     // The last place ticker strings are read: the metadata files resolve to
     // symbols here, against the ticker map the context was built from.
-    let (subscribed, pending) = load_pending_actions(&mut ctx, data_path)?;
+    let (subscribed, pending) = load_pending_actions(&mut ctx)?;
 
-    let files = sorted_parquet_files(data_path);
+    let files = sorted_parquet_files(ctx.data_dir());
     if files.is_empty() {
-        return Err(BacktestError::NoData { path: data_path.into() });
+        return Err(BacktestError::NoData { path: ctx.data_dir().to_path_buf() });
     }
 
     let mut eng = Engine::new(ctx, pending);

@@ -1,14 +1,13 @@
 //! Generates the small committed test fixture from the full minute dataset.
 //!
 //! Reads AAPL (ticker id 47) minute bars from a single real Parquet file and
-//! writes a trimmed copy — plus a matching `encoded_tickers.json` — into
-//! `data-viz/tests/fixtures/`, laid out as the app expects:
+//! writes a trimmed copy — plus a matching `encoded_tickers.json` — into the
+//! workspace's shared `test-data/` fixture:
 //!
 //! ```text
-//! tests/fixtures/
-//!   minute/
-//!     encoded_tickers.json            {"47": "AAPL"}
-//!     year=2023/month=1/part-0.parquet
+//! test-data/
+//!   encoded_tickers.json            {"47": "AAPL"}
+//!   year=2023/month=1/part-0.parquet
 //! ```
 //!
 //! Usage (source path may be overridden as the first arg):
@@ -23,20 +22,18 @@ const MAX_ROWS: usize = 5_000;
 
 #[tokio::main]
 async fn main() -> datafusion::error::Result<()> {
-    // Source month file: first CLI arg, else $STONKS_DATA_ROOT/year=2023/month=1/part-0.parquet
+    // Source month file: first CLI arg, else a partition under $BACKTEST_DATA_DIR.
     let source = std::env::args().nth(1).unwrap_or_else(|| {
-        let root = std::env::var("STONKS_DATA_ROOT").expect(
-            "pass a source Parquet path as arg 1, or set STONKS_DATA_ROOT to the minute/ dir",
-        );
+        let root = std::env::var("BACKTEST_DATA_DIR")
+            .expect("pass a source Parquet path as arg 1, or set BACKTEST_DATA_DIR");
         format!("{root}/year=2023/month=1/part-0.parquet")
     });
 
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let month_dir = fixtures.join("minute/year=2023/month=1");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-data");
+    let month_dir = fixtures.join("year=2023/month=1");
     fs::create_dir_all(&month_dir).unwrap();
 
-    // encoded_tickers.json lives in minute/ alongside the parquet files, mirroring live data layout.
-    fs::write(fixtures.join("minute/encoded_tickers.json"), "{\n  \"47\": \"AAPL\"\n}\n").unwrap();
+    fs::write(fixtures.join("encoded_tickers.json"), "{\n  \"47\": \"AAPL\"\n}\n").unwrap();
 
     let ctx = SessionContext::new();
     let df = ctx

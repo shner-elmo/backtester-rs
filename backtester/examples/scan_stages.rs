@@ -5,7 +5,7 @@
 //! the layer that actually costs the time (I/O, Parquet decode, timestamp
 //! conversion, tick grouping, engine bookkeeping) instead of guessed at.
 //!
-//! Usage: cargo run --release --example scan_stages -- /path/to/data/root [YYYY-MM ...]
+//! Usage: BACKTEST_DATA_DIR=/path/to/data/root cargo run --release --example scan_stages -- [YYYY-MM ...]
 //!
 //! With no month arguments it scans every file, which is the whole dataset —
 //! pass one or two months for an iteration-speed run. The first stage warms
@@ -50,8 +50,10 @@ fn stage(label: &str, rows: u64, f: impl FnOnce() -> u64) -> f64 {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let root = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-    let months: Vec<(u32, u32)> = args[2..]
+    let root = std::env::var_os("BACKTEST_DATA_DIR")
+        .map(PathBuf::from)
+        .expect("BACKTEST_DATA_DIR must point to the canonical dataset root");
+    let months: Vec<(u32, u32)> = args[1..]
         .iter()
         .map(|s| {
             let (y, m) = s.split_once('-').expect("month arg looks like YYYY-MM");
@@ -59,7 +61,7 @@ fn main() {
         })
         .collect();
 
-    let files: Vec<PathBuf> = sorted_parquet_files(root)
+    let files: Vec<PathBuf> = sorted_parquet_files(&root)
         .into_iter()
         .filter(|p| months.is_empty() || file_year_month(p).is_some_and(|ym| months.contains(&ym)))
         .collect();

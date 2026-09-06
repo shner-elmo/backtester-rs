@@ -11,6 +11,7 @@ mod run;
 use run::{run_prepared, PendingActions};
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 use crate::{
     algorithm::Algorithm,
@@ -46,36 +47,43 @@ pub struct BacktestResult {
     pub trades: Vec<Trade>,
 }
 
-/// Run a backtest and return its full results without printing anything.
-pub fn run_backtest<A: Algorithm>(
-    algo: A,
-    data_path: &str,
-) -> Result<BacktestResult, BacktestError> {
-    run_backtest_with_ticker_map(algo, data_path, None)
+const DATA_DIR_ENV: &str = "BACKTEST_DATA_DIR";
+
+/// Run a backtest against the dataset configured by `BACKTEST_DATA_DIR` and
+/// return its full results without printing anything.
+pub fn run_backtest<A: Algorithm>(algo: A) -> Result<BacktestResult, BacktestError> {
+    run_backtest_with_data_dir(algo, configured_data_dir()?)
 }
 
-/// [`run_backtest`] against a ticker map that isn't `encoded_tickers.json` in
-/// the data root. A relative path is resolved against the data root, an
-/// absolute one used as-is.
-pub fn run_backtest_with_ticker_map<A: Algorithm>(
+/// [`run_backtest`] against an explicit canonical dataset root. This entry
+/// point does not read `BACKTEST_DATA_DIR`.
+pub fn run_backtest_with_data_dir<A: Algorithm>(
     mut algo: A,
-    data_path: &str,
-    ticker_map: Option<&std::path::Path>,
+    data_dir: impl AsRef<Path>,
 ) -> Result<BacktestResult, BacktestError> {
-    let mut ctx = prepare_context(data_path, ticker_map)?;
+    let mut ctx = prepare_context(data_dir.as_ref())?;
     algo.initialize(&mut ctx);
-    run_prepared(algo, ctx, data_path)
+    run_prepared(algo, ctx)
+}
+
+fn configured_data_dir() -> Result<PathBuf, BacktestError> {
+    std::env::var_os(DATA_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or(BacktestError::MissingConfiguration { variable: DATA_DIR_ENV })
 }
 
 /// Load the dataset's ticker map and build the context around it. This runs
 /// *before* `initialize`, which is what lets `Context::add_equity` hand back
 /// the ticker id the data itself uses instead of inventing one.
-fn prepare_context(
-    data_path: &str,
-    ticker_map: Option<&std::path::Path>,
-) -> Result<Context, BacktestError> {
-    let (path, _) = resolve_data_file(data_path, &ticker_map.map(Into::into), TICKER_MAP_FILE);
-    Ok(Context::with_tickers(TickerMap::load(&path)?))
+fn prepare_context(data_dir: &Path) -> Result<Context, BacktestError> {
+    let data_dir = data_dir.to_path_buf();
+    let ticker_map = data_dir.join(TICKER_MAP_FILE);
+    let tickers = TickerMap::load(&ticker_map).map_err(|error| BacktestError::InvalidDataset {
+        path: data_dir.clone(),
+        message: format!("failed to load {}: {error}", TICKER_MAP_FILE),
+    })?;
+    Ok(Context::with_tickers(data_dir, tickers))
 }
 
 /// Run a backtest, print a summary, and write the full result JSON
@@ -83,19 +91,17 @@ fn prepare_context(
 /// to the directory set via `Context::set_output_dir`, else to
 /// `$BACKTEST_OUTPUT_DIR` when that is set, else to the current directory
 /// (the directory is created if missing).
-pub fn run<A: Algorithm>(algo: A, data_path: &str) -> Result<BacktestResult, BacktestError> {
-    run_with_ticker_map(algo, data_path, None)
+pub fn run<A: Algorithm>(algo: A) -> Result<BacktestResult, BacktestError> {
+    run_with_data_dir(algo, configured_data_dir()?)
 }
 
-/// [`run`] against a ticker map that isn't `encoded_tickers.json` in the data
-/// root. Same path resolution as
-/// [`run_backtest_with_ticker_map`](run_backtest_with_ticker_map).
-pub fn run_with_ticker_map<A: Algorithm>(
+/// [`run`] against an explicit canonical dataset root. This entry point does
+/// not read `BACKTEST_DATA_DIR`.
+pub fn run_with_data_dir<A: Algorithm>(
     mut algo: A,
-    data_path: &str,
-    ticker_map: Option<&std::path::Path>,
+    data_dir: impl AsRef<Path>,
 ) -> Result<BacktestResult, BacktestError> {
-    let mut ctx = prepare_context(data_path, ticker_map)?;
+    let mut ctx = prepare_context(data_dir.as_ref())?;
     algo.initialize(&mut ctx);
     // set_output_dir wins over the env var: the strategy author's explicit
     // choice shouldn't be silently redirected by the environment.
@@ -103,7 +109,7 @@ pub fn run_with_ticker_map<A: Algorithm>(
         std::env::var("BACKTEST_OUTPUT_DIR").ok().filter(|d| !d.is_empty()).map(Into::into)
     });
 
-    let result = run_prepared(algo, ctx, data_path)?;
+    let result = run_prepared(algo, ctx)?;
     let stats = &result.stats;
 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
@@ -155,14 +161,14 @@ pub fn run_with_ticker_map<A: Algorithm>(
 /// the path was explicitly configured — missing *optional* files are only
 /// tolerated at the defaults; an explicitly set file must exist.
 fn resolve_data_file(
-    data_root: &str,
-    custom: &Option<std::path::PathBuf>,
+    data_root: &Path,
+    custom: &Option<PathBuf>,
     default_name: &str,
-) -> (std::path::PathBuf, bool) {
+) -> (PathBuf, bool) {
     match custom {
         Some(p) if p.is_absolute() => (p.clone(), true),
-        Some(p) => (std::path::Path::new(data_root).join(p), true),
-        None => (std::path::Path::new(data_root).join(default_name), false),
+        Some(p) => (data_root.join(p), true),
+        None => (data_root.join(default_name), false),
     }
 }
 
@@ -177,8 +183,8 @@ fn resolve_data_file(
 /// back is keyed by [`Symbol`](crate::Symbol).
 fn load_pending_actions(
     ctx: &mut Context,
-    data_path: &str,
 ) -> Result<(SubscriptionMask, PendingActions), BacktestError> {
+    let data_dir = ctx.data_dir.clone();
     // The metadata loaders filter by ticker name, so hand them the names of
     // what is subscribed.
     let mut names: FxHashSet<String> = ctx
@@ -190,7 +196,7 @@ fn load_pending_actions(
     let mut pending = PendingActions::default();
 
     let (renames_path, renames_required) =
-        resolve_data_file(data_path, &ctx.renames_file, RENAMES_FILE);
+        resolve_data_file(&data_dir, &ctx.renames_file, RENAMES_FILE);
     for (date, pairs) in load_renames_from(&renames_path, &names, renames_required)? {
         for (old, new) in pairs {
             // A successor the dataset has no id for can never print a bar, so
@@ -214,7 +220,7 @@ fn load_pending_actions(
     }
 
     let (splits_path, splits_required) =
-        resolve_data_file(data_path, &ctx.splits_file, SPLITS_FILE);
+        resolve_data_file(&data_dir, &ctx.splits_file, SPLITS_FILE);
     for (ticker, by_date) in load_splits_from(&splits_path, &names, splits_required)? {
         let Some(symbol) = ctx.tickers.symbol(&ticker) else { continue };
         for (date, ratio) in by_date {
@@ -223,7 +229,7 @@ fn load_pending_actions(
     }
 
     let (dividends_path, dividends_required) =
-        resolve_data_file(data_path, &ctx.dividends_file, DIVIDENDS_FILE);
+        resolve_data_file(&data_dir, &ctx.dividends_file, DIVIDENDS_FILE);
     for (ticker, by_date) in load_dividends_from(&dividends_path, &names, dividends_required)? {
         let Some(symbol) = ctx.tickers.symbol(&ticker) else { continue };
         for (date, amount) in by_date {

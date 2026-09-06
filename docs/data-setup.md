@@ -1,7 +1,7 @@
 # Data Setup & Configuration
 
 Everything reads the same minute-bar Parquet dataset. This page covers its
-layout, the `STONKS_DATA_ROOT` environment variable, the committed test
+layout, the `BACKTEST_DATA_DIR` environment variable, the committed test
 fixture, and the helper examples.
 
 ## Dataset layout
@@ -12,10 +12,14 @@ Parquet plus a ticker-encoding JSON:
 ```
 <data root>/
   encoded_tickers.json                       # {"47": "AAPL", ...}  (id -> symbol)
-  minute/
-    year=2023/month=1/part-0.parquet
-    year=2023/month=2/part-0.parquet
-    ...
+  year=2023/month=1/part-0.parquet
+  year=2023/month=2/part-0.parquet
+  ...
+  metadata/                                  # optional
+    get_splits.json
+    get_dividends.json
+    ticker_renames.json
+    insider_transactions.json
 ```
 
 `encoded_tickers.json` maps the encoded `ticker` id (a `u16`) to its ticker.
@@ -26,10 +30,10 @@ array index (a subscribed-or-not flag) and never touches the ticker string.
 
 ### Optional metadata files & custom paths
 
-Next to `encoded_tickers.json` the engine also looks for three optional
-files: `get_splits.json` (stock splits), `get_dividends.json` (cash
-dividends), and `ticker_renames.json` (ticker renames). When absent they
-simply mean "no such events" (the committed test fixture has none of them).
+Under `metadata/` the engine looks for three optional files:
+`get_splits.json` (stock splits), `get_dividends.json` (cash dividends), and
+`ticker_renames.json` (ticker renames). When absent they simply mean "no such
+events" (the committed test fixture has none of them).
 
 These three can be pointed elsewhere from `initialize`:
 
@@ -39,24 +43,17 @@ ctx.set_dividends_file("my_dividends.json");
 ctx.set_renames_file("renames/2023.json");
 ```
 
-A relative path resolves against the data root passed to `run`; an absolute
+A relative path resolves against the canonical data root; an absolute
 path is used as-is. Note the missing-file rule flips once you set a path
 explicitly: a configured splits/dividends/renames file **must exist**, so a
 typo fails the run instead of silently skipping every event.
 
-The ticker map is different: it must be read *before* `initialize` runs (that
-is what lets `ctx.add_equity` return the dataset's id for a ticker), so it
-can't be configured from inside it. Pass a non-default location to the run
-instead:
-
-```rust
-run_with_ticker_map(algo, data_path, Some(Path::new("my_tickers.json")))?;
-run_backtest_with_ticker_map(algo, data_path, Some(&path))?;  // no printing
-```
+The ticker map is always `<data root>/encoded_tickers.json`. It must be read
+before `initialize`, so there is no custom ticker-map entry point.
 
 ### Insider transactions (SEC Form 4)
 
-A fourth optional file, `insider_transactions.json`, holds open-market
+A fourth optional file, `metadata/insider_transactions.json`, holds open-market
 insider trades extracted from SEC Form 4 filings. Unlike the files above,
 **the engine never reads it** — it's strategy-side data: an algorithm loads
 it in `initialize()` via `backtester::insider::load_insider_transactions`
@@ -68,7 +65,7 @@ fn initialize(&mut self, ctx: &mut Context) {
     // `None` keeps every ticker the dataset carries; pass a `&SymbolSet` to
     // narrow it. `ctx.ticker_map()` is the map the engine already read, so
     // this does not re-parse `encoded_tickers.json`.
-    let txns = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)?;
+    let txns = load_insider_transactions(ctx.data_dir(), ctx.ticker_map(), None)?;
     for (symbol, by_filing_date) in txns { /* ... */ }
 }
 ```
@@ -86,9 +83,8 @@ Generate it with `scripts/insider_fetch.rs` (SEC's quarterly structured data
 sets, 2006q1 onward; the SEC requires a contact User-Agent):
 
 ```bash
-rust-script scripts/insider_fetch.rs \
+BACKTEST_DATA_DIR=/path/to/data rust-script scripts/insider_fetch.rs \
     --start 2022q1 --end 2023q4 \
-    --out "$STONKS_DATA_ROOT/insider_transactions.json" \
     --user-agent "Your Name you@example.com"     # or set $SEC_USER_AGENT
 ```
 
@@ -111,7 +107,7 @@ bound the universe. Record fields:
 Two insider files ship with the repo, both loadable without downloading
 anything:
 
-- `backtester/tests/fixtures/insider_transactions.json` — four **synthetic**
+- `test-data/metadata/insider_transactions.json` — four **synthetic**
   AAPL records (not real filings): CEO/COO/SVP purchases filed Jan 4–5 2023
   and a CEO sale filed Jan 6, lined up with the committed minute fixture so a
   copy-trading strategy produces a round trip against it.
@@ -149,36 +145,25 @@ session is derived from the timestamp's US Eastern time-of-day via
 > the loader once; it's now guarded by
 > [`backtester/tests/data.rs`](../backtester/tests/data.rs).
 
-## Who consumes what
+## `BACKTEST_DATA_DIR`
 
-The two entry points have slightly different expectations for their path
-argument:
-
-- **backtester** (`run(algo, data_path)`): `data_path` is a directory
-  containing `encoded_tickers.json`, with Parquet files anywhere beneath it
-  (discovered recursively).
-- **data-viz** (`DATA_PATH`): a data root containing `encoded_tickers.json`
-  **and** a `minute/` subdirectory of Parquet.
-
-The committed fixture (below) satisfies both.
-
-## `STONKS_DATA_ROOT`
-
-The example programs don't hardcode any machine-specific paths. They read
-`STONKS_DATA_ROOT`, which should point at the **`minute/` directory** of your
-dataset:
+The backtester, data-viz binary, scripts, and examples all use the same
+canonical root:
 
 ```bash
-export STONKS_DATA_ROOT=/path/to/data/output/minute
+export BACKTEST_DATA_DIR=/path/to/data
 ```
 
-Each example either uses this directly or appends a sub-path (e.g.
-`make_test_fixture` reads `$STONKS_DATA_ROOT/year=2023/month=1/part-0.parquet`).
+`run(algo)` and `run_backtest(algo)` return `BacktestError::MissingConfiguration`
+when it is absent. Library callers with an already selected path can use
+`run_with_data_dir(algo, path)` or `run_backtest_with_data_dir(algo, path)`;
+those explicit APIs do not inspect the environment. `Context::data_dir()`
+exposes the selected root to strategy-side loaders.
 
 ## Regenerating the dataset from raw CSVs
 
-The raw source is one gzipped CSV per trading day at
-`<input>/minute/<YYYY>/<MM>/<YYYY-MM-DD>.csv.gz` with columns
+The `--input` raw-minute directory contains one gzipped CSV per trading day at
+`<input>/<YYYY>/<MM>/<YYYY-MM-DD>.csv.gz` with columns
 `ticker,volume,open,close,high,low,window_start,transactions`
 (`window_start` in epoch nanoseconds). Rows are grouped by ticker,
 **not** globally time-sorted.
@@ -189,14 +174,17 @@ Hive-partitioned Parquet layout above:
 
 ```bash
 cargo install rust-script   # once
-rust-script scripts/ingest_arrow.rs <input>/minute <output>/minute \
-  <output>/minute/encoded_tickers.json
+BACKTEST_DATA_DIR=/path/to/data rust-script scripts/ingest_arrow.rs \
+  --input <raw-minute-dir>
 ```
 
-If the `encoded_tickers.json` argument doesn't exist yet, the script
-bootstraps it first (scans the input for distinct tickers, assigns sequential
-u16 ids in sorted order). Pass an **existing** map to keep ids consistent with
-previously written parquet.
+If `encoded_tickers.json` does not exist, the script bootstraps it by scanning
+the input, sorting distinct tickers, and assigning sequential `u16` ids. On a
+rerun, existing ids remain stable. An input ticker missing from an existing
+map fails before any partition is written; pass `--extend-tickers` to append
+all new tickers in sorted order. Both initial creation and extension publish
+the map through a temporary file and atomic rename. CSV parse errors fail the
+month instead of silently dropping rows.
 
 Design: each daily file is sorted by `(window_start, ticker)` in memory and
 appended to its month's writer in date order. Consecutive trading days are
@@ -211,7 +199,7 @@ rows) converts in about 5 minutes.
 Verify before pointing the engine at the result:
 
 ```bash
-cargo run --release -p backtester --example check_sorted -- <output>/minute
+BACKTEST_DATA_DIR=/path/to/data cargo run --release -p backtester --example check_sorted
 ```
 
 ## Committed test fixture
@@ -219,20 +207,23 @@ cargo run --release -p backtester --example check_sorted -- <output>/minute
 A tiny slice — AAPL, January 2023, 5,000 bars (~126 KB) — is committed so the
 whole suite runs with **no external data**:
 
-```
-backtester/tests/fixtures/   # used by cargo test -p backtester
-data-viz/tests/fixtures/     # used by cargo test -p data-viz
+```text
+test-data/
+  encoded_tickers.json
+  year=2023/month=1/part-0.parquet
+  metadata/insider_transactions.json
 ```
 
-Both the backtester and data-viz test suites default to these; override with
-`DATA_PATH` to test against the full dataset.
+Both the backtester and data-viz integration suites use this single fixture.
+Parser-only real-world SEC samples remain under
+`backtester/tests/fixtures/insider_sample/`.
 
 Regenerate the fixture from the full dataset with:
 
 ```bash
-STONKS_DATA_ROOT=/path/to/data/output/minute \
+BACKTEST_DATA_DIR=/path/to/data \
   cargo run -p data-viz --example make_test_fixture
-# (writes into data-viz/tests/fixtures; copy into backtester/tests/fixtures if refreshed)
+# writes the shared test-data fixture
 ```
 
 ## Helper examples
@@ -242,7 +233,7 @@ STONKS_DATA_ROOT=/path/to/data/output/minute \
 | `ema_cross` | backtester | The reference strategy ([backtesting.md](./backtesting.md)) |
 | `print_schema` | backtester | Dump a Parquet file's Arrow schema |
 | `check_sorted` | backtester | Verify every file is time-sorted (the engine's hard requirement); flags unreadable files |
-| `data_invariants_check` | backtester | Sweep a month of real data asserting OHLC/volume invariants |
+| `data_invariants_check` | backtester | Sweep the canonical dataset asserting OHLC/volume invariants |
 | `no_op_baseline` | backtester | Time a full-universe no-op backtest — the engine's floor cost in bars/s |
 | `make_test_fixture` | data-viz | Regenerate the committed fixture |
 | `read_and_filter` | data-viz | DataFusion query against the partitioned dataset |
@@ -250,12 +241,12 @@ STONKS_DATA_ROOT=/path/to/data/output/minute \
 | `rename_to_hive` | data-viz | Migrate bare `year/month` dirs to `year=/month=` |
 
 Run any of them with `cargo run -p <crate> --example <name>` (set
-`STONKS_DATA_ROOT` first for the ones that need data).
+`BACKTEST_DATA_DIR` first for the ones that need data).
 
 ## File ordering
 
-`sorted_parquet_files` orders files by `(year, month)`, parsed from the parent
-directory names. It understands both bare (`year/month`, e.g. `2023/6`) and
-Hive (`year=2023/month=6`) layouts — `dir_number` takes the part after any `=`
-— so multi-month runs stream in chronological order. Files whose parents don't
-parse sort first, then by path.
+`sorted_parquet_files` discovers only direct
+`<root>/year=YYYY/month=M/*.parquet` files and orders them by `(year, month,
+path)`. Bare `YYYY/M`, nested `minute/`, recursive, and malformed partitions
+are ignored. This strict discovery keeps multi-month runs chronological and
+prevents an accidental legacy tree from being mixed into the canonical data.

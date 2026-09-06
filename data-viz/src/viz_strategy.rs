@@ -7,11 +7,11 @@
 //! close hands it. Same reader, same consolidation, no second implementation to
 //! keep in step.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, path::Path, rc::Rc};
 
 use backtester::{
     bar::{Bar, MarketSession},
-    run_backtest, Algorithm, Context, LogConfig, Slice, Symbol,
+    run_backtest_with_data_dir, Algorithm, Context, LogConfig, Slice, Symbol,
 };
 use chrono::{Datelike, NaiveDate};
 use chrono_tz::US::Eastern;
@@ -91,7 +91,7 @@ fn to_ohlc(bar: &Bar, tf: Timeframe) -> OhlcBar {
 /// Synchronous and thread-spawning (it drives the engine), so callers on an
 /// async runtime should wrap it in `spawn_blocking`.
 pub(crate) fn run_viz(
-    data_path: &str,
+    data_dir: &Path,
     ticker: &str,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
@@ -100,7 +100,7 @@ pub(crate) fn run_viz(
     let out: Collected = Rc::new(RefCell::new(Vec::new()));
     let strat =
         VizStrategy { ticker: ticker.to_string(), tf, start, end, symbol: None, out: out.clone() };
-    run_backtest(strat, data_path).map_err(|e| e.to_string())?;
+    run_backtest_with_data_dir(strat, data_dir).map_err(|e| e.to_string())?;
     // The engine has dropped the strategy and its consolidator by now, so this
     // is the sole owner; clone the collected bars out of the cell.
     let bars = out.borrow().clone();

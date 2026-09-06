@@ -19,7 +19,6 @@ use parquet::arrow::{
     ProjectionMask,
 };
 use rustc_hash::FxHashMap;
-use walkdir::WalkDir;
 
 use crate::{bar::Bar, error::BacktestError, symbol::Symbol};
 
@@ -41,15 +40,15 @@ pub const COLUMNS: [&str; 7] = ["ticker", "volume", "open", "high", "low", "clos
 /// day was `CHANNEL_DEPTH`, not batch size — see `tick_stream.rs`.
 const READ_BATCH_SIZE: usize = 131_072;
 
-/// Metadata files the loaders expect inside the data root, next to the
-/// Parquet tree. Only `TICKER_MAP_FILE` is required; the rest are optional.
+/// Files in the canonical dataset layout. Only `TICKER_MAP_FILE` is required;
+/// the metadata files are optional.
 pub const TICKER_MAP_FILE: &str = "encoded_tickers.json";
-pub const SPLITS_FILE: &str = "get_splits.json";
-pub const DIVIDENDS_FILE: &str = "get_dividends.json";
-pub const RENAMES_FILE: &str = "ticker_renames.json";
+pub const SPLITS_FILE: &str = "metadata/get_splits.json";
+pub const DIVIDENDS_FILE: &str = "metadata/get_dividends.json";
+pub const RENAMES_FILE: &str = "metadata/ticker_renames.json";
 
-pub fn load_ticker_map(data_root: &str) -> Result<HashMap<u16, String>, BacktestError> {
-    load_ticker_map_from(&PathBuf::from(format!("{data_root}/{TICKER_MAP_FILE}")))
+pub fn load_ticker_map(data_root: impl AsRef<Path>) -> Result<HashMap<u16, String>, BacktestError> {
+    load_ticker_map_from(&data_root.as_ref().join(TICKER_MAP_FILE))
 }
 
 /// The dataset's ticker naming, both ways: a [`Symbol`] (an encoded ticker id)
@@ -134,14 +133,14 @@ pub fn load_ticker_map_from(path: &Path) -> Result<HashMap<u16, String>, Backtes
 
 /// Stock splits per symbol: execution date → ratio (`split_to / split_from`,
 /// so 3.0 for a 1→3 forward split, 0.1 for a 10→1 reverse split). Reads the
-/// Polygon-format `get_splits.json` next to `encoded_tickers.json`; returns an
+/// Polygon-format `metadata/get_splits.json` under the data root; returns an
 /// empty map when the file doesn't exist (e.g. the test fixture). Only splits
 /// for `symbols` are kept.
 pub fn load_splits(
-    data_root: &str,
+    data_root: impl AsRef<Path>,
     symbols: &std::collections::HashSet<String>,
 ) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
-    load_splits_from(&PathBuf::from(format!("{data_root}/{SPLITS_FILE}")), symbols, false)
+    load_splits_from(&data_root.as_ref().join(SPLITS_FILE), symbols, false)
 }
 
 /// Like [`load_splits`], but from an explicit file path. With `required`,
@@ -191,7 +190,7 @@ pub fn load_splits_from<S: BuildHasher>(
 }
 
 /// Cash dividends per symbol: ex-dividend date → cash amount per share. Reads
-/// the Polygon-format `get_dividends.json` next to `encoded_tickers.json`;
+/// the Polygon-format `metadata/get_dividends.json` under the data root;
 /// returns an empty map when the file doesn't exist (e.g. the test fixture).
 /// Only dividends for `symbols` are kept.
 ///
@@ -199,10 +198,10 @@ pub fn load_splits_from<S: BuildHasher>(
 /// so this streams the JSON array one record at a time and keeps only the
 /// matches, rather than deserializing the entire file into a `Vec` first.
 pub fn load_dividends(
-    data_root: &str,
+    data_root: impl AsRef<Path>,
     symbols: &std::collections::HashSet<String>,
 ) -> Result<HashMap<String, std::collections::BTreeMap<chrono::NaiveDate, f64>>, BacktestError> {
-    load_dividends_from(&PathBuf::from(format!("{data_root}/{DIVIDENDS_FILE}")), symbols, false)
+    load_dividends_from(&data_root.as_ref().join(DIVIDENDS_FILE), symbols, false)
 }
 
 /// Like [`load_dividends`], but from an explicit file path. With `required`,
@@ -270,15 +269,15 @@ pub fn load_dividends_from<S: BuildHasher>(
 }
 
 /// Ticker renames keyed by effective date → list of `(old, new)` symbol pairs.
-/// Reads `ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
+/// Reads `metadata/ticker_renames.json` under the data root — a JSON array of
 /// `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` records; returns an
 /// empty map when the file doesn't exist. Only renames whose `old` symbol is
 /// subscribed are kept.
 pub fn load_renames(
-    data_root: &str,
+    data_root: impl AsRef<Path>,
     symbols: &std::collections::HashSet<String>,
 ) -> Result<std::collections::BTreeMap<chrono::NaiveDate, Vec<(String, String)>>, BacktestError> {
-    load_renames_from(&PathBuf::from(format!("{data_root}/{RENAMES_FILE}")), symbols, false)
+    load_renames_from(&data_root.as_ref().join(RENAMES_FILE), symbols, false)
 }
 
 /// Like [`load_renames`], but from an explicit file path. With `required`,
@@ -322,29 +321,47 @@ pub fn load_renames_from<S: BuildHasher>(
     Ok(renames)
 }
 
-/// Parse a directory name that is either a bare number (`2023`) or a Hive
-/// partition (`year=2023`), returning the numeric part.
-fn dir_number(component: &std::ffi::OsStr) -> Option<u32> {
+/// Parse an exact Hive partition component such as `year=2023`.
+fn partition_number(component: &std::ffi::OsStr, key: &str) -> Option<u32> {
     let s = component.to_string_lossy();
-    let value = s.rsplit('=').next().unwrap_or(&s);
-    value.parse().ok()
+    s.strip_prefix(key)?.parse().ok()
 }
 
 /// The (year, month) a data file belongs to, derived from its
-/// `year=YYYY/month=M` (or bare `YYYY/M`) parent directories.
+/// `year=YYYY/month=M` parent directories.
 pub fn file_year_month(path: &std::path::Path) -> Option<(u32, u32)> {
     let month_dir = path.parent()?;
     let year_dir = month_dir.parent()?;
-    Some((dir_number(year_dir.file_name()?)?, dir_number(month_dir.file_name()?)?))
+    let year = partition_number(year_dir.file_name()?, "year=")?;
+    let month = partition_number(month_dir.file_name()?, "month=")?;
+    (1..=12).contains(&month).then_some((year, month))
 }
 
-pub fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = WalkDir::new(data_root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
-        .map(|e| e.path().to_path_buf())
-        .collect();
+/// Discover only direct canonical Hive partitions:
+/// `<root>/year=YYYY/month=M/*.parquet`.
+pub fn sorted_parquet_files(data_root: impl AsRef<Path>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let Ok(year_entries) = std::fs::read_dir(data_root.as_ref()) else { return files };
+    for year_entry in year_entries.filter_map(Result::ok) {
+        let year_path = year_entry.path();
+        if !year_path.is_dir() || partition_number(&year_entry.file_name(), "year=").is_none() {
+            continue;
+        }
+        let Ok(month_entries) = std::fs::read_dir(&year_path) else { continue };
+        for month_entry in month_entries.filter_map(Result::ok) {
+            let month_path = month_entry.path();
+            let Some(month) = partition_number(&month_entry.file_name(), "month=") else {
+                continue;
+            };
+            if !month_path.is_dir() || !(1..=12).contains(&month) {
+                continue;
+            }
+            let Ok(part_entries) = std::fs::read_dir(month_path) else { continue };
+            files.extend(part_entries.filter_map(Result::ok).map(|entry| entry.path()).filter(
+                |path| path.is_file() && path.extension().is_some_and(|ext| ext == "parquet"),
+            ));
+        }
+    }
 
     // Path as tiebreaker so multiple part files inside one month keep a
     // deterministic order.
@@ -359,7 +376,7 @@ pub fn sorted_parquet_files(data_root: &str) -> Vec<PathBuf> {
 }
 
 pub fn iter_bars(
-    data_root: &str,
+    data_root: impl AsRef<Path>,
     ticker_map: &HashMap<u16, String>,
     mut cb: impl FnMut(String, Bar),
 ) -> Result<(), BacktestError> {

@@ -104,7 +104,7 @@ fn main() {
         fast: Ema::new(10).unwrap(),
         slow: Ema::new(30).unwrap(),
     };
-    run(algo, "backtester/tests/fixtures");   // data_path, see below
+    run(algo).unwrap(); // reads BACKTEST_DATA_DIR
 }
 ```
 
@@ -121,6 +121,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `try_add_equity(ticker)` / `add_all_equities()` | Subscribe optimistically / subscribe the whole dataset |
 | `dataset_symbols()` / `add_symbol(symbol)` | List the dataset's symbols without subscribing / subscribe one you already hold |
 | `symbol(ticker)` / `symbol_name(symbol)` | Look a ticker up / resolve a symbol back to its ticker |
+| `data_dir()` | Canonical dataset root selected for this run |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |
@@ -139,9 +140,9 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_risk_free_rate(annual)` | Annual rate the Sharpe ratio is computed in excess of (default `0.0`) |
 | `set_track_intraday_equity(b)` | Record a per-bar equity mark into `intraday_equity` (default off) |
 | `set_output_dir(dir)` | Where `run` writes the result JSON (default CWD; beats `$BACKTEST_OUTPUT_DIR`) |
-| `set_splits_file(path)` | Splits JSON location (default `get_splits.json`; explicit path must exist) |
-| `set_dividends_file(path)` | Dividends JSON location (default `get_dividends.json`; explicit path must exist) |
-| `set_renames_file(path)` | Renames JSON location (default `ticker_renames.json`; explicit path must exist) |
+| `set_splits_file(path)` | Splits JSON location (default `metadata/get_splits.json`; explicit path must exist) |
+| `set_dividends_file(path)` | Dividends JSON location (default `metadata/get_dividends.json`; explicit path must exist) |
+| `set_renames_file(path)` | Renames JSON location (default `metadata/ticker_renames.json`; explicit path must exist) |
 | `set_read_threads(n)` | Parquet decode threads feeding the tick loop (default `0` = auto) — see [Parallel decode](#parallel-decode) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
@@ -321,7 +322,7 @@ Total commission paid is reported in the run summary and
 
 ### Splits
 
-If a `get_splits.json` (Polygon format) sits next to `encoded_tickers.json`,
+If `metadata/get_splits.json` exists under the dataset root,
 the engine applies stock splits for subscribed symbols on their execution
 date. The dataset's prices are **raw/unadjusted** (CELH really does go from
 $158 to $52 overnight on its 1→3 split), and the engine keeps them that way —
@@ -363,8 +364,8 @@ prints at `last_price * (1 - fraction)`.
 
 ### Ticker renames
 
-A rename (FB → META) also looks like a delisting in the raw feed. Provide a
-`ticker_renames.json` next to `encoded_tickers.json` — a JSON array of
+A rename (FB → META) also looks like a delisting in the raw feed. Provide
+`metadata/ticker_renames.json` — a JSON array of
 `{"date": "YYYY-MM-DD", "old": "FB", "new": "META"}` — and the engine transfers
 the position, PnL ledger, resting orders, and last price from the old
 symbol to the new one on the effective date, with **no trade emitted** (a
@@ -374,7 +375,7 @@ symbols and indicators your strategy keys on.
 
 ### Cash dividends
 
-If a `get_dividends.json` (Polygon format) sits next to `encoded_tickers.json`,
+If `metadata/get_dividends.json` exists under the dataset root,
 the engine credits cash dividends for subscribed symbols on their
 **ex-dividend date**, using the same day-boundary timing as splits (after the
 prior day's equity mark, before the day's bars move prices):
@@ -477,7 +478,7 @@ strategies, smallest first. Run any of them against the committed fixture
 (AAPL, Jan 2023) — no external data needed:
 
 ```bash
-cargo run --example <name> -- backtester/tests/fixtures
+BACKTEST_DATA_DIR=test-data cargo run --example <name>
 ```
 
 | Example | What it shows |
@@ -501,16 +502,16 @@ hand-rolled rolling-low lookback, and the `on_split` / `on_delisted` /
 
 ```bash
 # Against the committed fixture (AAPL, Jan 2023) — no external data needed:
-cargo run --example ema_cross -- backtester/tests/fixtures
+BACKTEST_DATA_DIR=test-data cargo run --example ema_cross
 
 # Against your full dataset (a directory containing encoded_tickers.json):
-cargo run --release --example ema_cross -- /path/to/data/output
+BACKTEST_DATA_DIR=/path/to/data cargo run --release --example ema_cross
 ```
 
-The `data_path` argument must be a directory that contains
-`encoded_tickers.json` and has the Parquet files somewhere beneath it. See
-[data-setup.md](./data-setup.md) for the expected layout, and
-[results.md](./results.md) for what the run produces.
+`run` and `run_backtest` require `BACKTEST_DATA_DIR`. For callers that already
+have a path, `run_with_data_dir(algo, path)` and
+`run_backtest_with_data_dir(algo, path)` bypass the environment. Both expect
+the exact canonical layout in [data-setup.md](./data-setup.md).
 
 ## Performance
 

@@ -2,10 +2,11 @@
 //! netting, equity-curve consistency, commission accounting.
 
 use backtester::{
-    commission::PerShareCommission, run, run_backtest, Algorithm, BacktestResult, Context, Slice,
+    commission::PerShareCommission, run_backtest_with_data_dir, run_with_data_dir, Algorithm,
+    BacktestResult, Context, Slice,
 };
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data");
 
 /// Rebalances to 90% AAPL on every single bar — the pathological case that
 /// used to report thousands of tiny rebalance "trades".
@@ -66,7 +67,8 @@ fn cash_conservation_error(r: &BacktestResult) -> f64 {
 
 #[test]
 fn constant_rebalancing_nets_into_a_single_position_lifetime() {
-    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
+    let result =
+        run_backtest_with_data_dir(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
 
     // The position opens on the first bar and never returns to flat, so there
     // are no completed round trips — only one open position at the end.
@@ -80,7 +82,7 @@ fn constant_rebalancing_nets_into_a_single_position_lifetime() {
 
 #[test]
 fn single_round_trip_is_one_trade() {
-    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
+    let result = run_backtest_with_data_dir(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
 
     assert_eq!(result.trades.len(), 1);
     let t = &result.trades[0];
@@ -98,8 +100,9 @@ fn single_round_trip_is_one_trade() {
 
 #[test]
 fn commissions_are_charged_and_attributed() {
-    let with = run_backtest(RebalanceEveryBar { commission: true }, FIXTURE).unwrap();
-    let without = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
+    let with = run_backtest_with_data_dir(RebalanceEveryBar { commission: true }, FIXTURE).unwrap();
+    let without =
+        run_backtest_with_data_dir(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
 
     assert!(with.total_commission > 0.0);
     assert_eq!(without.total_commission, 0.0);
@@ -117,7 +120,7 @@ fn commissions_are_charged_and_attributed() {
 
 #[test]
 fn equity_curve_starts_at_initial_cash_and_ends_at_final_equity() {
-    let result = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
+    let result = run_backtest_with_data_dir(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
 
     let curve = &result.equity_curve;
     assert!(curve.len() >= 3, "expected multiple daily points, got {}", curve.len());
@@ -151,7 +154,7 @@ fn intraday_equity_is_opt_in_and_finer_than_the_daily_curve() {
         }
     }
 
-    let on = run_backtest(HoldWithIntraday { bought: false }, FIXTURE).unwrap();
+    let on = run_backtest_with_data_dir(HoldWithIntraday { bought: false }, FIXTURE).unwrap();
     // Per-bar marks are recorded and far outnumber the daily points.
     assert!(!on.intraday_equity.is_empty());
     assert!(on.intraday_equity.len() > on.equity_curve.len());
@@ -161,7 +164,7 @@ fn intraday_equity_is_opt_in_and_finer_than_the_daily_curve() {
     assert!((on.intraday_equity.last().unwrap().equity - on.final_equity).abs() < 1e-6);
 
     // Off by default — no per-bar marks recorded.
-    let off = run_backtest(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
+    let off = run_backtest_with_data_dir(OneRoundTrip { bars_seen: 0 }, FIXTURE).unwrap();
     assert!(off.intraday_equity.is_empty());
 }
 
@@ -184,7 +187,7 @@ fn on_end_of_day_fires_for_every_trading_day_including_the_last() {
     }
 
     let days = Arc::new(Mutex::new(0));
-    let result = run_backtest(CountEod { days: days.clone() }, FIXTURE).unwrap();
+    let result = run_backtest_with_data_dir(CountEod { days: days.clone() }, FIXTURE).unwrap();
 
     // One callback per trading day — the curve has one extra point, the
     // day-before anchor at initial cash.
@@ -193,7 +196,8 @@ fn on_end_of_day_fires_for_every_trading_day_including_the_last() {
 
 #[test]
 fn set_holdings_rounds_to_whole_shares_by_default() {
-    let result = run_backtest(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
+    let result =
+        run_backtest_with_data_dir(RebalanceEveryBar { commission: false }, FIXTURE).unwrap();
     let qty = result.open_positions[0].quantity;
     assert!((qty - qty.round()).abs() < 1e-9, "expected whole-share position, got {qty}");
 }
@@ -218,7 +222,7 @@ fn run_writes_the_result_json_into_the_configured_output_dir() {
     let dir = std::env::temp_dir().join(format!("backtester_out_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
-    run(WithOutputDir { dir: dir.clone() }, FIXTURE).unwrap();
+    run_with_data_dir(WithOutputDir { dir: dir.clone() }, FIXTURE).unwrap();
 
     let results: Vec<_> = std::fs::read_dir(&dir)
         .expect("output dir was not created")
@@ -235,7 +239,7 @@ fn run_writes_the_result_json_into_the_configured_output_dir() {
 fn missing_data_path_is_an_error_not_a_panic() {
     // A wrong data path used to panic deep in the loader; now it surfaces as a
     // returned error the caller can report.
-    let err = run_backtest(OneRoundTrip { bars_seen: 0 }, "/no/such/data/root")
+    let err = run_backtest_with_data_dir(OneRoundTrip { bars_seen: 0 }, "/no/such/data/root")
         .expect_err("expected an error for a nonexistent data path");
     assert!(
         err.to_string().contains("encoded_tickers.json"),

@@ -2,8 +2,8 @@
 //! models applied. Run it and compare the summary against `ema_cross` (no
 //! friction) to see the costs eat into PnL:
 //!
-//!   cargo run --example ema_cross     -- backtester/tests/fixtures
-//!   cargo run --example slippage_demo -- backtester/tests/fixtures
+//!   BACKTEST_DATA_DIR=test-data cargo run --example ema_cross
+//!   BACKTEST_DATA_DIR=test-data cargo run --example slippage_demo
 //!
 //! Swap the `set_slippage(..)` line below for any built-in model or your own
 //! closure.
@@ -60,12 +60,9 @@ impl Algorithm for EmaCross {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let algo = EmaCross { symbol: None, fast: Ema::new(10).unwrap(), slow: Ema::new(30).unwrap() };
 
-    run(algo, data_path).unwrap_or_else(|e| {
+    run(algo).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

@@ -1,11 +1,10 @@
 use tracing_subscriber::EnvFilter;
 
-fn data_root() -> String {
-    // CLI arg takes precedence over DATA_DIR env var
-    std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("DATA_DIR").ok())
-        .unwrap_or_else(|| "../../data/output".to_string())
+fn data_dir() -> std::path::PathBuf {
+    std::env::var_os("BACKTEST_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(Into::into)
+        .expect("BACKTEST_DATA_DIR must point to the canonical dataset root")
 }
 
 #[tokio::main]
@@ -17,8 +16,8 @@ async fn main() {
         )
         .init();
 
-    let root = data_root();
-    tracing::info!("data root: {}", root);
+    let root = data_dir();
+    tracing::info!("data root: {}", root.display());
 
     let app = data_viz::create_app(root).await;
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000);
