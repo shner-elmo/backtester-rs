@@ -10,7 +10,9 @@ use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use backtester::{run_backtest, Algorithm, BacktestResult, Context, FillTiming, Slice};
+use backtester::{
+    run_backtest_with_data_dir, Algorithm, BacktestResult, Context, FillTiming, Slice,
+};
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
 
@@ -68,7 +70,7 @@ fn write_fixture(root: &Path, bars: &[Bar]) {
     )
     .unwrap();
 
-    let dir = root.join("minute/year=2023/month=6");
+    let dir = root.join("year=2023/month=6");
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -122,7 +124,7 @@ fn current_bar_close_fills_at_the_same_bars_close() {
     three_bars(tmp.path());
 
     let algo = BuyOnceThenHold { timing: FillTiming::CurrentBarClose, bought: false };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!((pos.quantity - 100.0).abs() < 1e-9);
@@ -141,7 +143,7 @@ fn next_bar_open_fills_at_the_following_bars_open() {
     three_bars(tmp.path());
 
     let algo = BuyOnceThenHold { timing: FillTiming::NextBarOpen, bought: false };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!((pos.quantity - 100.0).abs() < 1e-9);
@@ -161,7 +163,7 @@ fn order_on_the_final_bar_never_fills_under_next_bar_open() {
     write_fixture(tmp.path(), &[bar(2023, 6, 5, 0, 10.0, 11.0)]);
 
     let algo = BuyOnceThenHold { timing: FillTiming::NextBarOpen, bought: false };
-    let result = run_backtest(algo, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(algo, tmp.path()).unwrap();
 
     assert!(result.trades.is_empty());
     assert!(result.open_positions.is_empty(), "order with no following bar must not fill");

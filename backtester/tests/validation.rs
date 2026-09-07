@@ -13,11 +13,11 @@ use arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use backtester::{run_backtest, Algorithm, BacktestError, Context, Slice};
+use backtester::{run_backtest_with_data_dir, Algorithm, BacktestError, Context, Slice};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data");
 
 /// Records the timestamp of every slice it sees; optionally configures a date
 /// range.
@@ -58,7 +58,7 @@ impl Algorithm for RecordTimes {
 #[test]
 fn inverted_date_range_is_an_error() {
     let algo = RecordTimes::new("AAPL", Some((2023, 2, 1)), Some((2023, 1, 1)));
-    let err = run_backtest(algo, FIXTURE).unwrap_err();
+    let err = run_backtest_with_data_dir(algo, FIXTURE).unwrap_err();
     assert!(
         matches!(err, BacktestError::InvalidDateRange { .. }),
         "expected InvalidDateRange, got: {err}"
@@ -71,7 +71,7 @@ fn date_range_beyond_the_data_warns_but_still_runs() {
     // sides must not fail — the backtest runs over the overlap.
     let algo = RecordTimes::new("AAPL", Some((2022, 6, 1)), Some((2023, 12, 31)));
     let times = algo.times.clone();
-    run_backtest(algo, FIXTURE).unwrap();
+    run_backtest_with_data_dir(algo, FIXTURE).unwrap();
     assert!(!times.lock().unwrap().is_empty(), "no bars processed over the overlap");
 }
 
@@ -113,7 +113,7 @@ fn write_part(root: &Path, year: i32, month: u32, part: &str, rows: &[(NaiveDate
     )
     .unwrap();
 
-    let dir = root.join(format!("minute/year={year}/month={month}"));
+    let dir = root.join(format!("year={year}/month={month}"));
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join(part)).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -145,7 +145,7 @@ fn out_of_order_bars_across_files_are_an_error() {
     write_part(root, 2023, 7, "part-1.parquet", &[(jun1, 1, 99.0)]);
 
     let algo = RecordTimes::new("XYZ", None, None);
-    let err = run_backtest(algo, root.to_str().unwrap()).unwrap_err();
+    let err = run_backtest_with_data_dir(algo, root).unwrap_err();
     assert!(
         matches!(err, BacktestError::OutOfOrderData { .. }),
         "expected OutOfOrderData, got: {err}"
@@ -174,7 +174,7 @@ fn in_order_bars_across_files_run_clean() {
 
     let algo = RecordTimes::new("XYZ", None, None);
     let times = algo.times.clone();
-    run_backtest(algo, root.to_str().unwrap()).unwrap();
+    run_backtest_with_data_dir(algo, root).unwrap();
 
     let times = times.lock().unwrap();
     assert_eq!(times.len(), 4, "expected every bar to reach on_data: {times:?}");
@@ -199,7 +199,7 @@ fn unsorted_bars_within_a_file_are_an_error() {
     );
 
     let algo = RecordTimes::new("XYZ", None, None);
-    let err = run_backtest(algo, root.to_str().unwrap()).unwrap_err();
+    let err = run_backtest_with_data_dir(algo, root).unwrap_err();
     assert!(
         matches!(err, BacktestError::OutOfOrderData { .. }),
         "expected OutOfOrderData, got: {err}"
@@ -212,7 +212,7 @@ fn subscribing_a_ticker_the_dataset_lacks_fails_loudly() {
     // can never print a bar. Catching it at subscribe time beats discovering
     // it after a whole run produced nothing.
     let algo = RecordTimes::new("NOPE", None, None);
-    let err = std::panic::catch_unwind(|| run_backtest(algo, FIXTURE)).unwrap_err();
+    let err = std::panic::catch_unwind(|| run_backtest_with_data_dir(algo, FIXTURE)).unwrap_err();
     let message = err
         .downcast_ref::<String>()
         .map(String::as_str)
@@ -233,6 +233,6 @@ fn a_ticker_the_dataset_lacks_can_be_subscribed_optimistically() {
         fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
     }
 
-    let result = run_backtest(Optimistic, FIXTURE).unwrap();
+    let result = run_backtest_with_data_dir(Optimistic, FIXTURE).unwrap();
     assert!(!result.equity_curve.is_empty(), "AAPL should still have streamed");
 }

@@ -11,7 +11,7 @@ use arrow::{
 };
 use backtester::{
     margin::{MarginContext, MaxLeverage},
-    run_backtest, Algorithm, BacktestResult, Context, Slice,
+    run_backtest_with_data_dir, Algorithm, BacktestResult, Context, Slice,
 };
 use chrono::{NaiveDate, TimeZone, Utc};
 use parquet::arrow::ArrowWriter;
@@ -66,7 +66,7 @@ fn write_fixture(root: &Path, rows: &[Row]) {
     )
     .unwrap();
 
-    let dir = root.join("minute/year=2023/month=6");
+    let dir = root.join("year=2023/month=6");
     fs::create_dir_all(&dir).unwrap();
     let file = fs::File::create(dir.join("part-0.parquet")).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -105,7 +105,7 @@ fn cash_account_trims_a_buy_to_buying_power() {
         }
     }
 
-    let result = run_backtest(BigBuy { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(BigBuy { placed: false }, tmp.path()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 333.0).abs() < 1e-9,
@@ -141,7 +141,7 @@ fn set_holdings_is_clamped_to_the_leverage_cap() {
         }
     }
 
-    let result = run_backtest(DoubleUp { placed: false }, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(DoubleUp { placed: false }, tmp.path()).unwrap();
     let pos = result.open_positions.iter().find(|p| p.symbol == "SYM").unwrap();
     assert!(
         (pos.quantity - 1_500.0).abs() < 1e-9,
@@ -183,7 +183,7 @@ fn over_levered_book_can_liquidate_but_not_buy() {
         }
     }
 
-    let result = run_backtest(LeveredLong { bars_seen: 0 }, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(LeveredLong { bars_seen: 0 }, tmp.path()).unwrap();
 
     assert!(result.open_positions.is_empty());
     assert_eq!(result.trades.len(), 1);
@@ -231,8 +231,7 @@ fn a_closure_works_as_a_margin_model() {
         }
     }
 
-    let result =
-        run_backtest(ShortThenLong { bars_seen: 0 }, tmp.path().to_str().unwrap()).unwrap();
+    let result = run_backtest_with_data_dir(ShortThenLong { bars_seen: 0 }, tmp.path()).unwrap();
 
     assert!(result.open_positions.is_empty());
     assert_eq!(result.trades.len(), 1, "the rejected short must not create a trade");

@@ -2,12 +2,13 @@
 //! Convert minute-bar CSV.gz files to Hive-partitioned Parquet using Arrow/Parquet directly.
 //!
 //! Requires: cargo install rust-script
-//! Run: rust-script scripts/ingest_arrow.rs <input_dir> <output_dir> <encoded_tickers.json>
+//! Run:
+//!   export BACKTEST_DATA_DIR=/path/to/dataset
+//!   rust-script scripts/ingest_arrow.rs --input <raw-minute-dir>
 //!
-//! If <encoded_tickers.json> does not exist it is bootstrapped first: all input
-//! files are scanned for distinct tickers, which are sorted and assigned
-//! sequential u16 ids, and the map is written to that path. Pass an existing
-//! map to keep ids consistent with previously written parquet.
+//! The script creates `encoded_tickers.json` by scanning all input files for
+//! distinct tickers, sorting them, and assigning sequential u16 ids. The map is
+//! written through a temporary file and atomic rename.
 //!
 //! Input layout:  <input>/<YYYY>/<MM>/<YYYY-MM-DD>.csv.gz  (one file per trading day,
 //!                all tickers, rows grouped by ticker — NOT globally time-sorted)
@@ -40,7 +41,7 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     io::BufReader,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
 };
@@ -94,16 +95,55 @@ impl DayColumns {
     }
 }
 
+fn usage() -> &'static str {
+    "Usage:\n    export BACKTEST_DATA_DIR=/path/to/dataset\n    ingest_arrow --input \
+     <raw-minute-dir>"
+}
+
+struct Args {
+    input: PathBuf,
+    output: PathBuf,
+}
+
+fn parse_args_from(
+    args: impl IntoIterator<Item = String>,
+    output: Option<PathBuf>,
+) -> Result<Option<Args>, String> {
+    let mut input = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--input" => {
+                input = Some(PathBuf::from(args.next().ok_or("--input needs a value")?));
+            }
+            "--help" | "-h" => return Ok(None),
+            other => return Err(format!("unknown argument {other:?}")),
+        }
+    }
+    let input = input.ok_or("--input is required")?;
+    let output = output.ok_or("BACKTEST_DATA_DIR must point to the canonical dataset root")?;
+    Ok(Some(Args { input, output }))
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 4 {
-        eprintln!("Usage: ingest_arrow <input_dir> <output_dir> <encoded_tickers.json>");
+    let output = env::var_os("BACKTEST_DATA_DIR").filter(|value| !value.is_empty()).map(Into::into);
+    let result = match parse_args_from(env::args().skip(1), output) {
+        Ok(Some(args)) => ingest(&args.input, &args.output),
+        Ok(None) => {
+            println!("{}", usage());
+            return;
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        eprintln!("error: {error}");
+        eprintln!("{}", usage());
         std::process::exit(1);
     }
-    let input = PathBuf::from(&args[1]);
-    let output = PathBuf::from(&args[2]);
+}
 
-    fs::create_dir_all(&output).expect("create output dir");
+fn ingest(input: &Path, output: &Path) -> Result<(), String> {
+    fs::create_dir_all(output).map_err(|e| format!("create {}: {e}", output.display()))?;
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("ticker", DataType::UInt16, false),
@@ -125,11 +165,71 @@ fn main() {
 
     let total = Instant::now();
 
-    // (year, month, day files sorted by name = by date)
-    let mut months: Vec<(i32, i32, Vec<PathBuf>)> = Vec::new();
+    let months = discover_months(input)?;
+    if months.is_empty() {
+        return Err(format!("no .csv.gz files found under {}", input.display()));
+    }
 
-    let mut year_dirs: Vec<_> = fs::read_dir(&input)
-        .expect("read input dir")
+    let tickers_path = output.join("encoded_tickers.json");
+    let input_tickers = scan_tickers(&months)?;
+    let id_to_sym = build_ticker_map(input_tickers)?;
+    publish_ticker_map(&tickers_path, &id_to_sym)?;
+    let sym_to_id: HashMap<String, u16> =
+        id_to_sym.into_iter().map(|(id, symbol)| (symbol, id)).collect();
+
+    let results: Vec<Result<usize, String>> = months
+        .par_iter()
+        .map(|(year, month, day_files)| {
+            let t = Instant::now();
+            let out_dir = output.join(format!("year={year}")).join(format!("month={month}"));
+            fs::create_dir_all(&out_dir)
+                .map_err(|e| format!("create {}: {e}", out_dir.display()))?;
+            let tmp = out_dir.join("part-0.parquet.tmp");
+            let dst = out_dir.join("part-0.parquet");
+
+            match write_month(&tmp, &schema, props.clone(), &sym_to_id, day_files) {
+                Ok(rows) => {
+                    fs::rename(&tmp, &dst)
+                        .map_err(|e| format!("publish {}: {e}", dst.display()))?;
+                    eprintln!(
+                        "{year}-{month:02}: {} day(s), {rows} rows  ({:.1}s)",
+                        day_files.len(),
+                        t.elapsed().as_secs_f32()
+                    );
+                    Ok(rows)
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&tmp);
+                    Err(format!("{year}-{month:02}: {error}"))
+                }
+            }
+        })
+        .collect();
+
+    let mut rows = 0usize;
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok(count) => rows += count,
+            Err(error) => errors.push(error),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    eprintln!(
+        "\n{} month(s), {rows} rows  total: {:.1}s",
+        months.len(),
+        total.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Discover raw `<YYYY>/<MM>/*.csv.gz` input months.
+fn discover_months(input: &Path) -> Result<Vec<(i32, i32, Vec<PathBuf>)>, String> {
+    let mut months = Vec::new();
+    let mut year_dirs: Vec<_> = fs::read_dir(input)
+        .map_err(|e| format!("read {}: {e}", input.display()))?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir()) // follows symlinks, unlike DirEntry::file_type()
         .filter(|e| e.file_name().to_string_lossy().parse::<i32>().is_ok())
@@ -140,7 +240,7 @@ fn main() {
         let year: i32 = year_entry.file_name().to_string_lossy().parse().unwrap();
 
         let mut month_dirs: Vec<_> = fs::read_dir(year_entry.path())
-            .expect("read year dir")
+            .map_err(|e| format!("read {}: {e}", year_entry.path().display()))?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir()) // follows symlinks, unlike DirEntry::file_type()
             .filter(|e| e.file_name().to_string_lossy().parse::<i32>().is_ok())
@@ -149,9 +249,12 @@ fn main() {
 
         for month_entry in month_dirs {
             let month: i32 = month_entry.file_name().to_string_lossy().parse().unwrap();
+            if !(1..=12).contains(&month) {
+                return Err(format!("invalid month directory {}", month_entry.path().display()));
+            }
 
             let mut day_files: Vec<PathBuf> = fs::read_dir(month_entry.path())
-                .expect("read month dir")
+                .map_err(|e| format!("read {}: {e}", month_entry.path().display()))?
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| p.to_string_lossy().ends_with(".csv.gz"))
@@ -164,131 +267,79 @@ fn main() {
         }
     }
 
-    let tickers_path = PathBuf::from(&args[3]);
-    if !tickers_path.exists() {
-        eprintln!("{} not found — scanning input for distinct tickers...", tickers_path.display());
-        let t = Instant::now();
-        bootstrap_ticker_map(&tickers_path, &months);
-        eprintln!("  → wrote {}  ({:.1}s)", tickers_path.display(), t.elapsed().as_secs_f32());
-    }
-
-    // encoded_tickers.json is {"0": "AAPL", "1": "MSFT", ...} — reverse to sym → id
-    let json = fs::read_to_string(&tickers_path).expect("read encoded_tickers.json");
-    let id_to_sym: HashMap<String, String> = serde_json::from_str(&json).unwrap();
-    let sym_to_id: HashMap<String, u16> =
-        id_to_sym.into_iter().map(|(id, sym)| (sym, id.parse::<u16>().unwrap())).collect();
-
-    let results: Vec<(usize, usize)> = months
-        .par_iter()
-        .map(|(year, month, day_files)| {
-            let t = Instant::now();
-            let out_dir = output.join(format!("year={year}")).join(format!("month={month}"));
-            fs::create_dir_all(&out_dir).expect("create partition dir");
-            let tmp = out_dir.join("part-0.parquet.tmp");
-            let dst = out_dir.join("part-0.parquet");
-
-            match write_month(&tmp, &schema, props.clone(), &sym_to_id, day_files) {
-                Ok((rows, day_errors)) => {
-                    fs::rename(&tmp, &dst).expect("rename tmp parquet into place");
-                    eprintln!(
-                        "{year}-{month:02}: {} day(s), {rows} rows, {day_errors} error(s)  ({:.1}s)",
-                        day_files.len(),
-                        t.elapsed().as_secs_f32()
-                    );
-                    (rows, day_errors)
-                }
-                Err(e) => {
-                    let _ = fs::remove_file(&tmp);
-                    eprintln!("{year}-{month:02}: FAILED — {e}");
-                    (0, 1)
-                }
-            }
-        })
-        .collect();
-
-    let rows: usize = results.iter().map(|r| r.0).sum();
-    let errors: usize = results.iter().map(|r| r.1).sum();
-    let ok_months = results.iter().filter(|r| r.0 > 0).count();
-    eprintln!(
-        "\n{ok_months}/{} month(s), {rows} rows, {errors} error(s)  total: {:.1}s",
-        months.len(),
-        total.elapsed().as_secs_f32()
-    );
-    if errors > 0 {
-        std::process::exit(1);
-    }
+    Ok(months)
 }
 
-/// Scan every input file for distinct tickers, assign sequential ids in sorted
-/// ticker order, and write the {"id": "SYM"} map (same shape and id assignment
-/// as the retired DuckDB ingest, which used ROW_NUMBER() OVER (ORDER BY ticker)).
-fn bootstrap_ticker_map(tickers_path: &PathBuf, months: &[(i32, i32, Vec<PathBuf>)]) {
+fn scan_tickers(months: &[(i32, i32, Vec<PathBuf>)]) -> Result<HashSet<String>, String> {
     let all_days: Vec<&PathBuf> = months.iter().flat_map(|(_, _, days)| days).collect();
-    let distinct: HashSet<String> = all_days
+    all_days
         .par_iter()
-        .map(|src| {
-            let gz = GzDecoder::new(BufReader::new(fs::File::open(src).expect("open csv")));
+        .try_fold(HashSet::new, |mut distinct, src| {
+            let file = fs::File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
+            let gz = GzDecoder::new(BufReader::new(file));
             let mut rdr = csv::Reader::from_reader(gz);
             let ticker_idx = rdr
                 .headers()
-                .expect("csv headers")
+                .map_err(|e| format!("{}: {e}", src.display()))?
                 .iter()
                 .position(|h| h == "ticker")
-                .expect("ticker column");
-            let mut set = HashSet::new();
+                .ok_or_else(|| format!("{}: missing ticker column", src.display()))?;
             let mut last = String::new();
             let mut rec = csv::StringRecord::new();
             // Rows are grouped by ticker, so skipping consecutive repeats keeps
             // this to one set insert per ticker instead of one per row.
-            while rdr.read_record(&mut rec).expect("csv record") {
+            while rdr.read_record(&mut rec).map_err(|e| format!("{}: {e}", src.display()))? {
                 let t = &rec[ticker_idx];
                 if t != last {
                     last = t.to_string();
-                    set.insert(last.clone());
+                    distinct.insert(last.clone());
                 }
             }
-            set
+            Ok(distinct)
         })
-        .reduce(HashSet::new, |mut a, b| {
-            a.extend(b);
-            a
-        });
+        .try_reduce(HashSet::new, |mut distinct, set| {
+            distinct.extend(set);
+            Ok(distinct)
+        })
+}
 
-    let mut sorted: Vec<String> = distinct.into_iter().collect();
-    sorted.sort_unstable();
-    assert!(sorted.len() <= u16::MAX as usize + 1, "too many tickers for u16 ids");
+fn build_ticker_map(input_tickers: HashSet<String>) -> Result<HashMap<u16, String>, String> {
+    let mut symbols: Vec<String> = input_tickers.into_iter().collect();
+    symbols.sort_unstable();
+    if symbols.len() > u16::MAX as usize + 1 {
+        return Err("too many tickers for u16 ids".into());
+    }
+    Ok(symbols.into_iter().enumerate().map(|(id, symbol)| (id as u16, symbol)).collect())
+}
 
-    let map: HashMap<String, String> =
-        sorted.into_iter().enumerate().map(|(id, sym)| (id.to_string(), sym)).collect();
-    fs::write(tickers_path, serde_json::to_string(&map).unwrap())
-        .expect("write encoded_tickers.json");
-    eprintln!("  {} distinct ticker(s)", map.len());
+fn publish_ticker_map(path: &Path, map: &HashMap<u16, String>) -> Result<(), String> {
+    let tmp = path.with_file_name("encoded_tickers.json.tmp");
+    let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())? + "\n";
+    fs::write(&tmp, json).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("publish {}: {e}", path.display()))
 }
 
 /// Write one month: each day file is read, sorted by (window_start, ticker), and
-/// appended in date order. Returns (rows written, per-day read errors).
+/// appended in date order. Any input error aborts the month; rows are never
+/// silently dropped or published from a partially read day.
 fn write_month(
     tmp: &PathBuf,
     schema: &Arc<Schema>,
     props: WriterProperties,
     sym_to_id: &HashMap<String, u16>,
     day_files: &[PathBuf],
-) -> Result<(usize, usize), Box<dyn std::error::Error>> {
-    let out_file = fs::File::create(tmp)?;
-    let mut writer = ArrowWriter::try_new(out_file, schema.clone(), Some(props))?;
+) -> Result<usize, String> {
+    let out_file = fs::File::create(tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
+    let mut writer = ArrowWriter::try_new(out_file, schema.clone(), Some(props))
+        .map_err(|e| format!("open {}: {e}", tmp.display()))?;
 
     let mut cols = DayColumns::default();
     let mut rows = 0usize;
-    let mut day_errors = 0usize;
     let mut prev_day_last_ts = i64::MIN;
 
     for src in day_files {
         cols.clear();
-        if let Err(e) = read_csv_into(src, sym_to_id, &mut cols) {
-            // Keep whatever parsed before the error — it still sorts within the day.
-            eprintln!("  ERROR reading {}: {e}", src.display());
-            day_errors += 1;
-        }
+        read_csv_into(src, sym_to_id, &mut cols)?;
         if cols.tickers.is_empty() {
             continue;
         }
@@ -303,29 +354,35 @@ fn write_month(
                 "day boundary violated at {}: first ts {first} < previous day's last ts \
                  {prev_day_last_ts}",
                 src.display()
-            )
-            .into());
+            ));
         }
         prev_day_last_ts = ts.value(ts.len() - 1);
 
-        writer.write(&batch)?;
+        writer.write(&batch).map_err(|e| format!("write {}: {e}", tmp.display()))?;
         rows += batch.num_rows();
     }
 
-    writer.close()?;
-    Ok((rows, day_errors))
+    writer.close().map_err(|e| format!("close {}: {e}", tmp.display()))?;
+    Ok(rows)
 }
 
 fn read_csv_into(
     src: &PathBuf,
     sym_to_id: &HashMap<String, u16>,
     cols: &mut DayColumns,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let gz = GzDecoder::new(BufReader::new(fs::File::open(src)?));
+) -> Result<(), String> {
+    let file = fs::File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
+    let gz = GzDecoder::new(BufReader::new(file));
     let mut rdr = csv::Reader::from_reader(gz);
     for result in rdr.deserialize() {
-        let row: CsvRow = result?;
-        let Some(&id) = sym_to_id.get(&row.ticker) else { continue };
+        let row: CsvRow = result.map_err(|e| format!("{}: {e}", src.display()))?;
+        let &id = sym_to_id.get(&row.ticker).ok_or_else(|| {
+            format!(
+                "{}: ticker {:?} is missing from encoded_tickers.json",
+                src.display(),
+                row.ticker
+            )
+        })?;
         cols.tickers.push(id);
         cols.timestamps.push(row.window_start);
         cols.opens.push(row.open);

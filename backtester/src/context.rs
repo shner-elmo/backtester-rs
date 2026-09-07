@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
@@ -68,6 +68,8 @@ pub(crate) struct ScheduledTimeEntry {
 
 pub struct Context {
     pub portfolio: Portfolio,
+    /// Canonical root of the dataset selected for this run.
+    pub(crate) data_dir: PathBuf,
     /// The dataset's ticker naming, loaded before `initialize` runs so
     /// `add_equity` can hand back the ticker id the data itself uses. Read
     /// when subscribing, when matching corporate actions, and when reporting
@@ -123,6 +125,7 @@ impl Default for Context {
     fn default() -> Self {
         Self {
             portfolio: Portfolio::default(),
+            data_dir: PathBuf::new(),
             tickers: TickerMap::default(),
             consolidators: Vec::new(),
             consolidators_by_symbol: SymbolMap::default(),
@@ -159,8 +162,8 @@ impl Context {
     /// A context for a run over the dataset `tickers` describes. The engine
     /// builds this before calling `initialize`, so `add_equity` can resolve a
     /// ticker to the id the data encodes it as.
-    pub(crate) fn with_tickers(tickers: TickerMap) -> Self {
-        Self { tickers, ..Self::default() }
+    pub(crate) fn with_tickers(data_dir: PathBuf, tickers: TickerMap) -> Self {
+        Self { data_dir, tickers, ..Self::default() }
     }
 
     pub fn set_start_date(&mut self, y: i32, m: u32, d: u32) {
@@ -281,6 +284,11 @@ impl Context {
         &self.tickers
     }
 
+    /// The canonical dataset root selected for this run.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     /// Set the slippage model applied to every fill (built-in, trait impl, or
     /// closure — see [`slippage`](crate::slippage)). Defaults to none.
     pub fn set_slippage(&mut self, model: impl SlippageModel + 'static) {
@@ -346,9 +354,9 @@ impl Context {
     }
 
     /// Path of the Polygon-format stock-splits JSON (default
-    /// `get_splits.json` in the data root). A relative path is resolved
-    /// against the data root passed to `run`/`run_backtest`; an absolute path
-    /// is used as-is. When left at the default a missing file simply means
+    /// `metadata/get_splits.json` in the data root). A relative path is resolved
+    /// against the selected data root; an absolute path is used as-is. When
+    /// left at the default a missing file simply means
     /// "no splits"; a path set here must exist, so a typo fails the run
     /// instead of silently skipping every split.
     pub fn set_splits_file(&mut self, path: impl Into<PathBuf>) {
@@ -356,15 +364,15 @@ impl Context {
     }
 
     /// Path of the Polygon-format cash-dividends JSON (default
-    /// `get_dividends.json` in the data root). Same resolution and
+    /// `metadata/get_dividends.json` in the data root). Same resolution and
     /// missing-file rules as [`set_splits_file`](Self::set_splits_file).
     pub fn set_dividends_file(&mut self, path: impl Into<PathBuf>) {
         self.dividends_file = Some(path.into());
     }
 
-    /// Path of the ticker-renames JSON (default `ticker_renames.json` in the
-    /// data root). Same resolution and missing-file rules as
-    /// [`set_splits_file`](Self::set_splits_file).
+    /// Path of the ticker-renames JSON (default
+    /// `metadata/ticker_renames.json` in the data root). Same resolution and
+    /// missing-file rules as [`set_splits_file`](Self::set_splits_file).
     pub fn set_renames_file(&mut self, path: impl Into<PathBuf>) {
         self.renames_file = Some(path.into());
     }
