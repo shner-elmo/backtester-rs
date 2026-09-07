@@ -180,13 +180,10 @@ rust-script scripts/ingest_arrow.rs \
   --input <raw-minute-dir>
 ```
 
-If `encoded_tickers.json` does not exist, the script bootstraps it by scanning
-the input, sorting distinct tickers, and assigning sequential `u16` ids. On a
-rerun, existing ids remain stable. An input ticker missing from an existing
-map fails before any partition is written; pass `--extend-tickers` to append
-all new tickers in sorted order. Both initial creation and extension publish
-the map through a temporary file and atomic rename. CSV parse errors fail the
-month instead of silently dropping rows.
+The script creates `encoded_tickers.json` as part of the dataset by scanning
+the input, sorting distinct tickers, and assigning sequential `u16` ids. It
+publishes the map through a temporary file and atomic rename. CSV parse errors
+fail the month instead of silently dropping rows.
 
 Design: each daily file is sorted by `(window_start, ticker)` in memory and
 appended to its month's writer in date order. Consecutive trading days are
