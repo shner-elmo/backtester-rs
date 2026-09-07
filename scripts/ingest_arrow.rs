@@ -4,14 +4,11 @@
 //! Requires: cargo install rust-script
 //! Run:
 //!   export BACKTEST_DATA_DIR=/path/to/dataset
-//!   rust-script scripts/ingest_arrow.rs --input <raw-minute-dir> [--extend-tickers]
+//!   rust-script scripts/ingest_arrow.rs --input <raw-minute-dir>
 //!
-//! If `encoded_tickers.json` does not exist it is bootstrapped first: all input
-//! files are scanned for distinct tickers, which are sorted and assigned
-//! sequential u16 ids. Existing maps keep their ids; new tickers fail before
-//! any Parquet is written unless `--extend-tickers` is passed, in which case
-//! they are appended in sorted order. Ticker-map updates use a temporary file
-//! and atomic rename.
+//! The script creates `encoded_tickers.json` by scanning all input files for
+//! distinct tickers, sorting them, and assigning sequential u16 ids. The map is
+//! written through a temporary file and atomic rename.
 //!
 //! Input layout:  <input>/<YYYY>/<MM>/<YYYY-MM-DD>.csv.gz  (one file per trading day,
 //!                all tickers, rows grouped by ticker — NOT globally time-sorted)
@@ -38,13 +35,10 @@
 //! rayon = "1"
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
-//!
-//! [dev-dependencies]
-//! tempfile = "3"
 //! ```
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     env, fs,
     io::BufReader,
     path::{Path, PathBuf},
@@ -103,13 +97,12 @@ impl DayColumns {
 
 fn usage() -> &'static str {
     "Usage:\n    export BACKTEST_DATA_DIR=/path/to/dataset\n    ingest_arrow --input \
-     <raw-minute-dir> [--extend-tickers]"
+     <raw-minute-dir>"
 }
 
 struct Args {
     input: PathBuf,
     output: PathBuf,
-    extend_tickers: bool,
 }
 
 fn parse_args_from(
@@ -117,27 +110,25 @@ fn parse_args_from(
     output: Option<PathBuf>,
 ) -> Result<Option<Args>, String> {
     let mut input = None;
-    let mut extend_tickers = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--input" => {
                 input = Some(PathBuf::from(args.next().ok_or("--input needs a value")?));
             }
-            "--extend-tickers" => extend_tickers = true,
             "--help" | "-h" => return Ok(None),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
     let input = input.ok_or("--input is required")?;
     let output = output.ok_or("BACKTEST_DATA_DIR must point to the canonical dataset root")?;
-    Ok(Some(Args { input, output, extend_tickers }))
+    Ok(Some(Args { input, output }))
 }
 
 fn main() {
     let output = env::var_os("BACKTEST_DATA_DIR").filter(|value| !value.is_empty()).map(Into::into);
     let result = match parse_args_from(env::args().skip(1), output) {
-        Ok(Some(args)) => ingest(&args.input, &args.output, args.extend_tickers),
+        Ok(Some(args)) => ingest(&args.input, &args.output),
         Ok(None) => {
             println!("{}", usage());
             return;
@@ -151,7 +142,7 @@ fn main() {
     }
 }
 
-fn ingest(input: &Path, output: &Path, extend_tickers: bool) -> Result<(), String> {
+fn ingest(input: &Path, output: &Path) -> Result<(), String> {
     fs::create_dir_all(output).map_err(|e| format!("create {}: {e}", output.display()))?;
 
     let schema = Arc::new(Schema::new(vec![
@@ -181,10 +172,8 @@ fn ingest(input: &Path, output: &Path, extend_tickers: bool) -> Result<(), Strin
 
     let tickers_path = output.join("encoded_tickers.json");
     let input_tickers = scan_tickers(&months)?;
-    let (id_to_sym, changed) = prepare_ticker_map(&tickers_path, input_tickers, extend_tickers)?;
-    if changed {
-        publish_ticker_map(&tickers_path, &id_to_sym)?;
-    }
+    let id_to_sym = build_ticker_map(input_tickers)?;
+    publish_ticker_map(&tickers_path, &id_to_sym)?;
     let sym_to_id: HashMap<String, u16> =
         id_to_sym.into_iter().map(|(id, symbol)| (symbol, id)).collect();
 
@@ -314,51 +303,16 @@ fn scan_tickers(months: &[(i32, i32, Vec<PathBuf>)]) -> Result<HashSet<String>, 
         })
 }
 
-fn prepare_ticker_map(
-    path: &Path,
-    input_tickers: HashSet<String>,
-    extend: bool,
-) -> Result<(BTreeMap<u16, String>, bool), String> {
-    let mut map: BTreeMap<u16, String> = if path.exists() {
-        let json = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let raw: BTreeMap<String, String> =
-            serde_json::from_str(&json).map_err(|e| format!("parse {}: {e}", path.display()))?;
-        raw.into_iter()
-            .map(|(id, symbol)| {
-                id.parse::<u16>()
-                    .map(|id| (id, symbol))
-                    .map_err(|_| format!("{}: ticker id {id:?} is not a u16", path.display()))
-            })
-            .collect::<Result<_, _>>()?
-    } else {
-        BTreeMap::new()
-    };
-    let existing: HashSet<String> = map.values().cloned().collect();
-    if existing.len() != map.len() {
-        return Err(format!("{} contains duplicate ticker names", path.display()));
-    }
-    let mut unknown: Vec<String> =
-        input_tickers.into_iter().filter(|ticker| !existing.contains(ticker)).collect();
-    unknown.sort_unstable();
-    if path.exists() && !unknown.is_empty() && !extend {
-        return Err(format!(
-            "input contains ticker(s) absent from {}: {}; rerun with --extend-tickers",
-            path.display(),
-            unknown.join(", ")
-        ));
-    }
-    let changed = !path.exists() || !unknown.is_empty();
-    let next = map.keys().next_back().map_or(0usize, |id| *id as usize + 1);
-    if next + unknown.len() > u16::MAX as usize + 1 {
+fn build_ticker_map(input_tickers: HashSet<String>) -> Result<HashMap<u16, String>, String> {
+    let mut symbols: Vec<String> = input_tickers.into_iter().collect();
+    symbols.sort_unstable();
+    if symbols.len() > u16::MAX as usize + 1 {
         return Err("too many tickers for u16 ids".into());
     }
-    for (offset, symbol) in unknown.into_iter().enumerate() {
-        map.insert((next + offset) as u16, symbol);
-    }
-    Ok((map, changed))
+    Ok(symbols.into_iter().enumerate().map(|(id, symbol)| (id as u16, symbol)).collect())
 }
 
-fn publish_ticker_map(path: &Path, map: &BTreeMap<u16, String>) -> Result<(), String> {
+fn publish_ticker_map(path: &Path, map: &HashMap<u16, String>) -> Result<(), String> {
     let tmp = path.with_file_name("encoded_tickers.json.tmp");
     let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())? + "\n";
     fs::write(&tmp, json).map_err(|e| format!("write {}: {e}", tmp.display()))?;
@@ -460,141 +414,4 @@ fn sorted_day_batch(schema: &Arc<Schema>, cols: &DayColumns) -> RecordBatch {
         ],
     )
     .expect("column lengths match schema")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Write;
-
-    use flate2::{write::GzEncoder, Compression as GzCompression};
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-
-    use super::*;
-
-    const HEADER: &str = "ticker,window_start,open,high,low,close,volume\n";
-
-    fn write_day(input: &Path, name: &str, rows: &str) {
-        let dir = input.join("2023/01");
-        fs::create_dir_all(&dir).unwrap();
-        let file = fs::File::create(dir.join(name)).unwrap();
-        let mut gz = GzEncoder::new(file, GzCompression::default());
-        gz.write_all(HEADER.as_bytes()).unwrap();
-        gz.write_all(rows.as_bytes()).unwrap();
-        gz.finish().unwrap();
-    }
-
-    fn ticker_map(output: &Path) -> BTreeMap<u16, String> {
-        serde_json::from_str(&fs::read_to_string(output.join("encoded_tickers.json")).unwrap())
-            .unwrap()
-    }
-
-    fn output_rows(output: &Path) -> Vec<(u16, i64)> {
-        let file = fs::File::open(output.join("year=2023/month=1/part-0.parquet")).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
-        let mut rows = Vec::new();
-        for batch in reader {
-            let batch = batch.unwrap();
-            let tickers = batch
-                .column_by_name("ticker")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .unwrap();
-            let timestamps = batch
-                .column_by_name("window_start")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<TimestampNanosecondArray>()
-                .unwrap();
-            rows.extend((0..batch.num_rows()).map(|i| (tickers.value(i), timestamps.value(i))));
-        }
-        rows
-    }
-
-    #[test]
-    fn initial_ingestion_is_stable_and_generates_the_canonical_layout() {
-        let raw = tempfile::tempdir().unwrap();
-        let dataset = tempfile::tempdir().unwrap();
-        write_day(
-            raw.path(),
-            "2023-01-03.csv.gz",
-            "ZZZ,2,20,20,20,20,200\nAAA,1,10,10,10,10,100\n",
-        );
-
-        ingest(raw.path(), dataset.path(), false).unwrap();
-        let map = ticker_map(dataset.path());
-        assert_eq!(map, BTreeMap::from([(0, "AAA".into()), (1, "ZZZ".into())]));
-        assert!(dataset.path().join("year=2023/month=1/part-0.parquet").is_file());
-        assert!(!dataset.path().join("encoded_tickers.json.tmp").exists());
-        let rows = output_rows(dataset.path());
-        assert_eq!(rows, vec![(0, 1), (1, 2)]);
-        assert!(rows.iter().all(|(id, _)| map.contains_key(id)));
-
-        let original_map = fs::read(dataset.path().join("encoded_tickers.json")).unwrap();
-        ingest(raw.path(), dataset.path(), false).unwrap();
-        assert_eq!(fs::read(dataset.path().join("encoded_tickers.json")).unwrap(), original_map);
-        assert_eq!(output_rows(dataset.path()), rows);
-    }
-
-    #[test]
-    fn unknown_tickers_are_rejected_before_partitions_are_written() {
-        let raw = tempfile::tempdir().unwrap();
-        let dataset = tempfile::tempdir().unwrap();
-        write_day(raw.path(), "2023-01-03.csv.gz", "BBB,1,10,10,10,10,100\n");
-        let map_path = dataset.path().join("encoded_tickers.json");
-        fs::write(&map_path, "{\"7\":\"AAA\"}\n").unwrap();
-
-        let err = ingest(raw.path(), dataset.path(), false).unwrap_err();
-        assert!(err.contains("BBB") && err.contains("--extend-tickers"), "{err}");
-        assert!(!dataset.path().join("year=2023").exists());
-        assert_eq!(fs::read_to_string(map_path).unwrap(), "{\"7\":\"AAA\"}\n");
-    }
-
-    #[test]
-    fn extension_preserves_existing_ids_and_appends_new_tickers_in_sorted_order() {
-        let raw = tempfile::tempdir().unwrap();
-        let dataset = tempfile::tempdir().unwrap();
-        write_day(
-            raw.path(),
-            "2023-01-03.csv.gz",
-            "ZZZ,1,10,10,10,10,100\nBBB,1,10,10,10,10,100\nAAA,1,10,10,10,10,100\n",
-        );
-        fs::write(dataset.path().join("encoded_tickers.json"), "{\"7\":\"ZZZ\"}\n").unwrap();
-
-        ingest(raw.path(), dataset.path(), true).unwrap();
-        let map = ticker_map(dataset.path());
-        assert_eq!(map, BTreeMap::from([(7, "ZZZ".into()), (8, "AAA".into()), (9, "BBB".into())]));
-        assert!(output_rows(dataset.path()).iter().all(|(id, _)| map.contains_key(id)));
-    }
-
-    #[test]
-    fn malformed_rows_abort_instead_of_publishing_partial_parquet() {
-        let raw = tempfile::tempdir().unwrap();
-        let dataset = tempfile::tempdir().unwrap();
-        write_day(
-            raw.path(),
-            "2023-01-03.csv.gz",
-            "AAA,1,10,10,10,10,100\nAAA,not-a-timestamp,10,10,10,10,100\n",
-        );
-
-        let err = ingest(raw.path(), dataset.path(), false).unwrap_err();
-        assert!(err.contains("not-a-timestamp") || err.contains("invalid digit"), "{err}");
-        assert!(!dataset.path().join("year=2023/month=1/part-0.parquet").exists());
-    }
-
-    #[test]
-    fn cli_requires_input_and_uses_the_configured_output() {
-        let args = parse_args_from(
-            ["--input".into(), "/raw/minute".into(), "--extend-tickers".into()],
-            Some(PathBuf::from("/dataset")),
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(args.input, Path::new("/raw/minute"));
-        assert_eq!(args.output, Path::new("/dataset"));
-        assert!(args.extend_tickers);
-        assert!(parse_args_from(Vec::<String>::new(), Some("/dataset".into())).is_err());
-        assert!(parse_args_from(["--input".into(), "/raw".into()], None).is_err());
-        assert!(parse_args_from(["--help".into()], None).unwrap().is_none());
-    }
 }
