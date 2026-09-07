@@ -181,8 +181,8 @@ follow the [fill-timing](#fill-timing) model, two order types rest across bars
 and fill **intrabar** off the bar's range, independent of `set_fill_timing`:
 
 ```rust
-ctx.limit_order("AAPL", 100.0, 180.0);  // buy 100 at 180 or better
-ctx.stop_order("AAPL", -100.0, 170.0);  // stop-loss: sell 100 if it trades down to 170
+ctx.limit_order(symbol, 100.0, 180.0);  // buy 100 at 180 or better
+ctx.stop_order(symbol, -100.0, 170.0);  // stop-loss: sell 100 if it trades down to 170
 ```
 
 - **Limit** — a buy (`qty > 0`) fills only when `bar.low <= price`, a sell when
@@ -462,7 +462,7 @@ Aggregate minute bars into larger timeframes:
 ```rust
 use backtester::consolidator::ConsolidatorPeriod;
 
-ctx.consolidate("AAPL", ConsolidatorPeriod::Hours(1), |bar| {
+ctx.consolidate(symbol, ConsolidatorPeriod::Hours(1), |bar| {
     println!("hourly close: {} (volume {})", bar.close, bar.volume);
 });
 // Also: ConsolidatorPeriod::Minutes(5), ConsolidatorPeriod::Daily
