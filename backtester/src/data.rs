@@ -19,6 +19,7 @@ use parquet::arrow::{
     ProjectionMask,
 };
 use rustc_hash::FxHashMap;
+use walkdir::WalkDir;
 
 use crate::{bar::Bar, error::BacktestError, symbol::Symbol};
 
@@ -321,58 +322,37 @@ pub fn load_renames_from<S: BuildHasher>(
     Ok(renames)
 }
 
-/// Parse an exact Hive partition component such as `year=2023`.
-fn partition_number(component: &std::ffi::OsStr, key: &str) -> Option<u32> {
-    let s = component.to_string_lossy();
-    s.strip_prefix(key)?.parse().ok()
-}
-
 /// The (year, month) a data file belongs to, derived from its
 /// `year=YYYY/month=M` parent directories.
 pub fn file_year_month(path: &std::path::Path) -> Option<(u32, u32)> {
     let month_dir = path.parent()?;
     let year_dir = month_dir.parent()?;
-    let year = partition_number(year_dir.file_name()?, "year=")?;
-    let month = partition_number(month_dir.file_name()?, "month=")?;
+    let year = year_dir.file_name()?.to_str()?.strip_prefix("year=")?.parse().ok()?;
+    let month = month_dir.file_name()?.to_str()?.strip_prefix("month=")?.parse().ok()?;
     (1..=12).contains(&month).then_some((year, month))
 }
 
-/// Discover only direct canonical Hive partitions:
-/// `<root>/year=YYYY/month=M/*.parquet`.
+/// Recursively discover Parquet files and order them by their Hive partition.
+/// Every file must end in `year=YYYY/month=M/*.parquet`.
 pub fn sorted_parquet_files(data_root: impl AsRef<Path>) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(year_entries) = std::fs::read_dir(data_root.as_ref()) else { return files };
-    for year_entry in year_entries.filter_map(Result::ok) {
-        let year_path = year_entry.path();
-        if !year_path.is_dir() || partition_number(&year_entry.file_name(), "year=").is_none() {
-            continue;
-        }
-        let Ok(month_entries) = std::fs::read_dir(&year_path) else { continue };
-        for month_entry in month_entries.filter_map(Result::ok) {
-            let month_path = month_entry.path();
-            let Some(month) = partition_number(&month_entry.file_name(), "month=") else {
-                continue;
-            };
-            if !month_path.is_dir() || !(1..=12).contains(&month) {
-                continue;
-            }
-            let Ok(part_entries) = std::fs::read_dir(month_path) else { continue };
-            files.extend(part_entries.filter_map(Result::ok).map(|entry| entry.path()).filter(
-                |path| path.is_file() && path.extension().is_some_and(|ext| ext == "parquet"),
-            ));
-        }
-    }
+    let mut files: Vec<_> = WalkDir::new(data_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry.path().extension().is_some_and(|ext| ext == "parquet")
+        })
+        .map(|entry| {
+            let path = entry.into_path();
+            let partition = file_year_month(&path).unwrap_or_else(|| {
+                panic!("could not parse year/month Hive partitions from {}", path.display())
+            });
+            (partition, path)
+        })
+        .collect();
 
-    // Path as tiebreaker so multiple part files inside one month keep a
-    // deterministic order.
-    files.sort_by(|a, b| {
-        file_year_month(a)
-            .unwrap_or((0, 0))
-            .cmp(&file_year_month(b).unwrap_or((0, 0)))
-            .then_with(|| a.cmp(b))
-    });
-
-    files
+    files.sort();
+    files.into_iter().map(|(_, path)| path).collect()
 }
 
 pub fn iter_bars(

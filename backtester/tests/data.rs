@@ -56,7 +56,7 @@ fn file_year_month_only_parses_hive_partition_dirs() {
 }
 
 #[test]
-fn discovery_is_direct_hive_only_and_chronological() {
+fn discovery_is_recursive_and_chronological() {
     use std::fs;
 
     use backtester::data::sorted_parquet_files;
@@ -67,10 +67,7 @@ fn discovery_is_direct_hive_only_and_chronological() {
         "year=2024/month=2/part-b.parquet",
         "year=2023/month=12/part-a.parquet",
         "year=2024/month=2/part-a.parquet",
-        "2022/1/legacy.parquet",
-        "minute/year=2021/month=1/legacy.parquet",
-        "year=2024/month=13/invalid.parquet",
-        "year=2024/month=1/nested/too-deep.parquet",
+        "nested/year=2022/month=1/part-a.parquet",
     ] {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -84,12 +81,27 @@ fn discovery_is_direct_hive_only_and_chronological() {
     assert_eq!(
         relative,
         [
+            "nested/year=2022/month=1/part-a.parquet",
             "year=2023/month=12/part-a.parquet",
             "year=2024/month=2/part-a.parquet",
             "year=2024/month=2/part-b.parquet",
         ]
         .map(Path::new)
     );
+}
+
+#[test]
+#[should_panic(expected = "could not parse year/month Hive partitions")]
+fn discovery_rejects_parquet_outside_a_hive_partition() {
+    use std::fs;
+
+    use backtester::data::sorted_parquet_files;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("not-partitioned.parquet");
+    fs::write(path, []).unwrap();
+
+    sorted_parquet_files(tmp.path());
 }
 
 #[test]

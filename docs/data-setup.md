@@ -248,8 +248,7 @@ Run any of them with `cargo run -p <crate> --example <name>` (set
 
 ## File ordering
 
-`sorted_parquet_files` discovers only direct
-`<root>/year=YYYY/month=M/*.parquet` files and orders them by `(year, month,
-path)`. Bare `YYYY/M`, nested `minute/`, recursive, and malformed partitions
-are ignored. This strict discovery keeps multi-month runs chronological and
-prevents an accidental legacy tree from being mixed into the canonical data.
+`sorted_parquet_files` recursively discovers Parquet files below the data root
+and orders them by `(year, month, path)`. Every discovered file must end in
+`year=YYYY/month=M/*.parquet`; a malformed partition path fails immediately
+instead of being silently ordered ahead of the dataset.
