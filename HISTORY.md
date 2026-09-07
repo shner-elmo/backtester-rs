@@ -1,6 +1,10 @@
-# TODO
+# Project History
 
-## Project snapshot
+This is an archive of the roadmap completed or evaluated in July 2026. It is
+not an active task list; see [`NEXT_STEPS.md`](NEXT_STEPS.md) for the remaining
+engine-performance work and `docs/` for the current behavior.
+
+## Project snapshot at roadmap completion
 
 **What the project is:** an event-driven Rust backtesting engine (QuantConnect-
 style ergonomics). Cargo workspace: `backtester` (core lib), `data-viz`
@@ -27,12 +31,11 @@ skipping, volume in `Bar`, Hive dir sorting, ET trading dates, EOD-timing fix,
 FnMut consolidator callbacks, lot rounding. All prior "Bugs" and "Missing
 Features" sections are resolved.
 
-## Roadmap (all shipped or evaluated)
+## Completed roadmap
 
-Every item below is checked off — either implemented and tested, or explicitly
-evaluated and decided against with a recorded rationale. Nothing here is
-outstanding; new ideas go under a fresh heading.
-
+Every item below was either implemented and tested or explicitly evaluated and
+declined with a recorded rationale. Nothing in this roadmap was outstanding
+when it was archived.
 
 - [x] **Splits & delistings** — done 2026-07-05: splits from `get_splits.json`
   adjust position/basis/history on execution date (bar prices stay raw);
