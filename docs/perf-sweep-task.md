@@ -103,8 +103,8 @@ unit). Watch RSS alongside time — raising `CHANNEL_DEPTH` spends
 
 ## Baseline
 
-`backtester/benches/baseline.bencher.txt` doesn't need refreshing for this
-change — the CI bench gate only fails on >2× *slowdowns*, and this is faster.
-Refresh it from a **CI** run (not local hardware) if you want the recorded
-numbers to reflect the speedup:
+`backtester/benches/baseline.bencher.txt` was refreshed on 2026-09-07 from
+GitHub Actions run 34124240332, job 101749036935. The CI bench gate fails on
+>2× *slowdowns* relative to those runner-generated numbers. Future refreshes
+must likewise come from CI rather than local hardware:
 `cargo bench -p backtester --bench engine -- --output-format bencher`.

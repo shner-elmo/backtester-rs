@@ -3,5 +3,6 @@
 # Refresh after an intended perf change (numbers should come from a CI run, not
 # local hardware):
 #   cargo bench -p backtester --bench engine -- --output-format bencher
-test engine/read_all_bars ... bench:    14517150 ns/iter (+/- 0)
-test engine/ema_cross_backtest ... bench:    130343141 ns/iter (+/- 0)
+# Refreshed from GitHub Actions run 34124240332, job 101749036935 (2026-09-07).
+test engine/read_all_bars ... bench:    10157090 ns/iter (+/- 90083)
+test engine/ema_cross_backtest ... bench:    28812980 ns/iter (+/- 667670)

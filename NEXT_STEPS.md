@@ -1,8 +1,8 @@
 # Engine performance follow-ups
 
 Handoff notes for the remaining engine-throughput work. Last updated after the
-read-path sweep on 2026-08-16. Archive or delete this file after the dense
-`Slice` work and CI benchmark refresh are complete.
+CI benchmark refresh on 2026-09-07. Archive or delete this file after the dense
+`Slice` work is complete.
 
 ## Baseline history
 
@@ -71,10 +71,10 @@ other API break rather than spending that churn alone.
   ~2% of the peak, headroom for slower-decode machines. Real win was
   `CHANNEL_DEPTH`, above.
 
-## Outstanding maintenance
+## Completed maintenance
 
-- `benches/baseline.bencher.txt` still holds pre-interning CI numbers and is now
-  far off. Per CLAUDE.md, refresh only from a CI run.
+- `backtester/benches/baseline.bencher.txt` was refreshed on 2026-09-07 from
+  GitHub Actions run 34124240332, job 101749036935.
 
 ## Verification
 
