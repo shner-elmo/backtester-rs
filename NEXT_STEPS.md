@@ -1,9 +1,13 @@
-# Next: the engine path
+# Engine performance follow-ups
 
-Handoff notes for the remaining engine-throughput work. Safe to delete once done.
-State as of the `perf/read-path` branch (2026-08-01).
+Handoff notes for the remaining engine-throughput work. Last updated after the
+read-path sweep on 2026-08-16. Archive or delete this file after the dense
+`Slice` work and CI benchmark refresh are complete.
 
-## Where things stand
+## Baseline history
+
+The following table records the `perf/read-path` branch as of 2026-08-01,
+before the later channel-depth sweep:
 
 Full-dataset no-op scan (`examples/no_op_baseline`, 1.835B bars, 29 GiB, cold
 I/O, release, 16-core machine):
@@ -16,9 +20,12 @@ I/O, release, 16-core machine):
 | \+ history off (now the default) | **187s** | 355 MB |
 
 Bar counts are identical across all of them (1,835,105,812), which is the
-equivalence check that matters at this scale. The 187s row is what a default
-run does today: history became opt-in, so the last line is the baseline rather
-than a tuning.
+equivalence check that matters at this scale. At that point, history had become
+opt-in, making the 187s row the default rather than an optional tuning. The
+later `CHANNEL_DEPTH` change reduced the same cold SATA scan to 142.3s; moving
+the dataset to NVMe reduced it further to 78.7–82.8s. See
+[`docs/perf-sweep-task.md`](docs/perf-sweep-task.md) for the current baseline
+and test conditions.
 
 The read path is no longer the bottleneck for a wide universe. On one warm
 month, full universe with `enable_history()`, the decode pool saturates at
@@ -31,7 +38,7 @@ Phase split of the *old* 496s run, for reference (temporary timers around each
 phase of `Engine::process_tick`, since reverted): read 67%, slice-map build 16%,
 `record_history` 13%, marks + last-seen-day 4%, everything else <0.1%.
 
-## The task: a dense `Slice`
+## Remaining task: a dense `Slice`
 
 `Slice.bars` is a `SymbolMap<Bar>` rebuilt every tick — 1.8B hash inserts across
 the dataset, and 16% of that old profile. It should be a tick-stamped dense
@@ -52,7 +59,7 @@ uses `data.bars.get(&sym)` / `.contains_key()` / iteration. It has to become an
 opaque `Slice` with `get` / `contains` / `len` / `iter`, so batch it with any
 other API break rather than spending that churn alone.
 
-## Smaller follow-ups
+## Completed sweeps
 
 - ~~`READ_BATCH_SIZE` re-sweep~~ **done 2026-08-15.** Under the parallel consumer
   512k was a wash-to-slightly-slower; 128k stands. The read-path win was
@@ -63,6 +70,9 @@ other API break rather than spending that churn alone.
   warm sweep peaks around 4 threads and degrades past ~12. 8 left as-is — within
   ~2% of the peak, headroom for slower-decode machines. Real win was
   `CHANNEL_DEPTH`, above.
+
+## Outstanding maintenance
+
 - `benches/baseline.bencher.txt` still holds pre-interning CI numbers and is now
   far off. Per CLAUDE.md, refresh only from a CI run.
 
@@ -74,4 +84,6 @@ other API break rather than spending that churn alone.
   group and exercises none of the ordering machinery) and asserts the stream
   matches a sequential `TickReader` sweep at 1/2/3/8/32 threads.
 - The real proof is `examples/no_op_baseline` against the full dataset; compare
-  to the table above, and check the bar count is unchanged.
+  against the storage-specific baseline in
+  [`docs/perf-sweep-task.md`](docs/perf-sweep-task.md), and check the bar count
+  is unchanged.
