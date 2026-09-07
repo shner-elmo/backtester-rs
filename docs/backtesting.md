@@ -527,10 +527,12 @@ the exact canonical layout in [data-setup.md](./data-setup.md).
 
 ## Performance
 
-A full scan of a 1.835B-bar dataset with a no-op strategy runs in ~190s, down
-from ~500s, on a 16-core machine with the data on a SATA SSD. Most of that came
-from decoding Parquet in parallel with the tick loop; the rest is subscription
-pushdown.
+A cold full scan of the 1.835B-bar reference dataset with a no-op strategy runs
+in about 142s from SATA storage and 79–83s from NVMe on the reference Ryzen 7
+5700U. The NVMe result is close to the warm decode ceiling of ~23M bars/s. These
+figures include the parallel decode and channel read-ahead improvements; see the
+[performance sweep](perf-sweep-task.md) for the test conditions and older
+baselines.
 
 ### Parallel decode
 

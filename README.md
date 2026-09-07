@@ -126,9 +126,11 @@ Read the [modeling guide](docs/backtesting.md) before relying on a result.
 
 ## Performance
 
-The reference no-op scan processes about 1.835 billion bars in 80 seconds
-(~23 million bars/s) on an 8-core Ryzen 7 5700U with NVMe storage. Strategy
-logic and hardware determine real-world throughput.
+After the read-ahead tuning recorded in the
+[performance sweep](docs/perf-sweep-task.md), the reference no-op scan processes
+1.835 billion bars in roughly 79–83 seconds (~22–23 million bars/s) on an
+8-core Ryzen 7 5700U with NVMe storage. The same cold-disk scan takes about 142
+seconds on SATA. Strategy logic and hardware determine real-world throughput.
 
 ## Development
 
