@@ -10,6 +10,8 @@ The workspace contains:
 - `ui` — a results dashboard on port 3001
 - `data-viz` — an OHLCV and indicator explorer on port 3000
 
+![data-viz showing AAPL minute candles, volume, and technical indicators](docs/images/data-viz.png)
+
 ## Quick start
 
 Run the EMA crossover example against the included AAPL fixture, then open the
