@@ -12,4 +12,5 @@ Guidance for Codex and other coding agents working in this repository.
 ## Project Notes
 
 - Read `CLAUDE.md` and the docs under `docs/` before broad source exploration. They are the current project reference.
+- The canonical dataset root comes from `BACKTEST_DATA_DIR` and contains `encoded_tickers.json`, direct `year=YYYY/month=M/*.parquet` partitions, and optional files under `metadata/`. Do not add legacy-layout or environment-variable fallbacks.
 - For data-viz unknown ticker handling, the frontend route intentionally prechecks the ticker map and returns an empty chart for missing symbols.

@@ -3,13 +3,13 @@ use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 use data_viz::{OhlcBar, Timeframe};
 use http::{Request, StatusCode};
 use serde_json::Value;
+use std::path::PathBuf;
 use tower::ServiceExt;
 
-// Defaults to the small committed fixture (AAPL, Jan 2023). Regenerate with:
+// Shared small committed fixture (AAPL, Jan 2023). Regenerate with:
 //   cargo run -p data-viz --example make_test_fixture
-// Override with DATA_DIR to run against the full dataset.
-fn data_path() -> String {
-    std::env::var("DATA_DIR").unwrap_or_else(|_| "tests/fixtures".to_string())
+fn data_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-data")
 }
 
 async fn app() -> axum::Router {
@@ -34,10 +34,10 @@ async fn get_json(uri: &str) -> (StatusCode, Value) {
 }
 
 async fn load(tf: Timeframe) -> Vec<OhlcBar> {
-    let bars = data_viz::load_bars(&data_path(), "AAPL", None, None, tf)
+    let bars = data_viz::load_bars(data_path(), "AAPL", None, None, tf)
         .await
         .expect("query should succeed");
-    assert!(!bars.is_empty(), "no data — check tests/fixtures or set DATA_DIR");
+    assert!(!bars.is_empty(), "shared test-data fixture produced no bars");
     bars
 }
 
@@ -67,7 +67,7 @@ async fn bars_response_shape() {
     assert_eq!(json["indicators"], Value::Object(Default::default()));
 
     let bars = json["bars"].as_array().expect("expected \"bars\" array");
-    assert!(!bars.is_empty(), "no data — check tests/fixtures or set DATA_DIR");
+    assert!(!bars.is_empty(), "shared test-data fixture produced no bars");
     for field in ["time", "open", "high", "low", "close", "volume"] {
         assert!(bars[0][field].is_number(), "{field} should be a number");
     }
@@ -85,10 +85,10 @@ async fn bars_matches_load_bars() {
 #[tokio::test]
 async fn bars_date_range_filters_to_eastern_days() {
     let day = NaiveDate::from_ymd_opt(2023, 1, 4).unwrap();
-    let bars = data_viz::load_bars(&data_path(), "AAPL", Some(day), Some(day), Timeframe::Min1)
+    let bars = data_viz::load_bars(data_path(), "AAPL", Some(day), Some(day), Timeframe::Min1)
         .await
         .unwrap();
-    assert!(!bars.is_empty(), "no data for 2023-01-04 — check tests/fixtures");
+    assert!(!bars.is_empty(), "no data for 2023-01-04 in test-data");
     // An inclusive single-day range must not bleed into the neighbouring ET days, which
     // a UTC-midnight filter would do (16:00–20:00 ET is 21:00–01:00 UTC).
     for bar in &bars {
@@ -101,6 +101,14 @@ async fn bars_unknown_symbol_returns_empty() {
     let (status, json) = get_json("/api/bars?symbol=DOESNOTEXIST").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["bars"], Value::Array(vec![]));
+}
+
+#[tokio::test]
+async fn load_bars_unknown_symbol_returns_empty() {
+    let bars = data_viz::load_bars(data_path(), "DOESNOTEXIST", None, None, Timeframe::Min1)
+        .await
+        .unwrap();
+    assert!(bars.is_empty());
 }
 
 #[tokio::test]
@@ -187,7 +195,7 @@ async fn indicators_are_index_aligned_and_keyed_by_spec() {
         get_json("/api/bars?symbol=AAPL&tf=daily&ind=ema:20,ema:50,macd:12:26:9").await;
     assert_eq!(status, StatusCode::OK);
     let n = json["bars"].as_array().unwrap().len();
-    assert!(n > 0, "no data — check tests/fixtures or set DATA_DIR");
+    assert!(n > 0, "shared test-data fixture produced no bars");
 
     let ind = &json["indicators"];
     // Same indicator, different periods: distinct keys with distinct values.

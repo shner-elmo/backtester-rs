@@ -10,11 +10,12 @@ data-setup).
 
 **Data & how to run:**
 - Full dataset (44 GB) lives outside the repo as a data root:
-  `minute/year=YYYY/month=M/part-0.parquet` + `encoded_tickers.json`
+  `year=YYYY/month=M/part-0.parquet` + `encoded_tickers.json`
   (see `docs/data-setup.md`).
 - No external data needed for tests/dev: committed fixtures at
-  `backtester/tests/fixtures` (AAPL, Jan 2023). Demo flow:
-  `cargo run --example ema_cross -- backtester/tests/fixtures` then
+  `test-data` (AAPL, Jan 2023). Demo flow:
+  `export BACKTEST_DATA_DIR=test-data`, then
+  `cargo run --example ema_cross`, then
   `cargo run -p ui` → http://localhost:3001.
 - `cargo test --workspace` green; `cargo clippy` clean.
 

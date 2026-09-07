@@ -1,14 +1,15 @@
 //! Locks in the Parquet → `Bar` column mapping against a small committed
-//! fixture (AAPL, Jan 2023). Regenerate the fixture with:
+//! shared fixture (AAPL, Jan 2023). Regenerate the fixture with:
 //!   cargo run -p data-viz --example make_test_fixture
-//! then copy tests/fixtures from data-viz into backtester.
+
+use std::path::Path;
 
 use backtester::{
     bar::{Bar, MarketSession},
     data::{iter_bars, load_ticker_map},
 };
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data");
 
 fn load() -> Vec<(String, Bar)> {
     let ticker_map = load_ticker_map(FIXTURE).unwrap();
@@ -44,16 +45,63 @@ fn volume_is_loaded() {
 }
 
 #[test]
-fn file_year_month_parses_hive_partition_dirs() {
-    use std::path::Path;
-
+fn file_year_month_only_parses_hive_partition_dirs() {
     use backtester::data::file_year_month;
 
-    let hive = Path::new("/data/minute/year=2023/month=7/part-0.parquet");
+    let hive = Path::new("/data/year=2023/month=7/part-0.parquet");
     assert_eq!(file_year_month(hive), Some((2023, 7)));
 
     let bare = Path::new("/data/minute/2023/7/part-0.parquet");
-    assert_eq!(file_year_month(bare), Some((2023, 7)));
+    assert_eq!(file_year_month(bare), None);
+}
+
+#[test]
+fn discovery_is_recursive_and_chronological() {
+    use std::fs;
+
+    use backtester::data::sorted_parquet_files;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for relative in [
+        "year=2024/month=2/part-b.parquet",
+        "year=2023/month=12/part-a.parquet",
+        "year=2024/month=2/part-a.parquet",
+        "nested/year=2022/month=1/part-a.parquet",
+    ] {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, []).unwrap();
+    }
+
+    let relative: Vec<_> = sorted_parquet_files(root)
+        .into_iter()
+        .map(|path| path.strip_prefix(root).unwrap().to_path_buf())
+        .collect();
+    assert_eq!(
+        relative,
+        [
+            "nested/year=2022/month=1/part-a.parquet",
+            "year=2023/month=12/part-a.parquet",
+            "year=2024/month=2/part-a.parquet",
+            "year=2024/month=2/part-b.parquet",
+        ]
+        .map(Path::new)
+    );
+}
+
+#[test]
+#[should_panic(expected = "could not parse year/month Hive partitions")]
+fn discovery_rejects_parquet_outside_a_hive_partition() {
+    use std::fs;
+
+    use backtester::data::sorted_parquet_files;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("not-partitioned.parquet");
+    fs::write(path, []).unwrap();
+
+    sorted_parquet_files(tmp.path());
 }
 
 #[test]

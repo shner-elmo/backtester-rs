@@ -17,8 +17,9 @@
 //! `SEC_USER_AGENT`.
 //!
 //! Requires: cargo install rust-script
-//! Run: rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4 \
-//!          --out <data-root>/insider_transactions.json
+//! Run:
+//!   export BACKTEST_DATA_DIR=/path/to/data
+//!   rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4
 //! Tests: rust-script --test scripts/insider_fetch.rs
 //!
 //! ```cargo
@@ -51,7 +52,8 @@ fn usage() -> String {
     let exe = "rust-script scripts/insider_fetch.rs";
     format!(
         "Usage:
-    {exe} --start 2023q1 --end 2023q4 --out /path/to/data-root/insider_transactions.json
+    export BACKTEST_DATA_DIR=/path/to/data-root
+    {exe} --start 2023q1 --end 2023q4
         [--cache-dir ~/.cache/sec-form345]     downloaded zips kept here; re-runs skip download
         [--tickers AAPL,MSFT]                  optional filter; default = all issuers
         [--user-agent \"Your Name you@example.com\"]  falls back to $SEC_USER_AGENT
@@ -149,6 +151,10 @@ fn current_quarter() -> (i32, u32) {
     use chrono::Datelike;
     let today = chrono::Utc::now().date_naive();
     (today.year(), (today.month() - 1) / 3 + 1)
+}
+
+fn insider_output(data_dir: &Path) -> PathBuf {
+    data_dir.join("metadata/insider_transactions.json")
 }
 
 /// Fetch one quarterly zip into the cache (or reuse it) and return its path.
@@ -385,7 +391,6 @@ fn extract_records(
 fn parse_args() -> Result<Option<Args>, String> {
     let mut start = None;
     let mut end = None;
-    let mut out = None;
     let mut cache_dir = None;
     let mut tickers = None;
     let mut user_agent = std::env::var("SEC_USER_AGENT").ok();
@@ -397,7 +402,6 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--help" | "-h" => return Ok(None),
             "--start" => start = Some(value("--start")?),
             "--end" => end = Some(value("--end")?),
-            "--out" => out = Some(PathBuf::from(value("--out")?)),
             "--cache-dir" => cache_dir = Some(PathBuf::from(value("--cache-dir")?)),
             "--tickers" => tickers = Some(value("--tickers")?),
             "--user-agent" => user_agent = Some(value("--user-agent")?),
@@ -405,9 +409,14 @@ fn parse_args() -> Result<Option<Args>, String> {
         }
     }
 
-    let (Some(start), Some(end), Some(out)) = (start, end, out) else {
-        return Err("--start, --end and --out are required".into());
+    let (Some(start), Some(end)) = (start, end) else {
+        return Err("--start and --end are required".into());
     };
+    let data_dir = std::env::var_os("BACKTEST_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or("BACKTEST_DATA_DIR must point to the canonical dataset root")?;
+    let out = insider_output(&data_dir);
     let Some(user_agent) = user_agent.filter(|ua| !ua.is_empty()) else {
         return Err("the SEC requires a contact User-Agent; \
              pass --user-agent \"Your Name you@example.com\" or set SEC_USER_AGENT"
@@ -544,6 +553,14 @@ mod tests {
         assert_eq!(parse_sec_date("2023-06-30").as_deref(), Some("2023-06-30"));
         assert_eq!(parse_sec_date("31-JUN-2023"), None, "June has 30 days");
         assert_eq!(parse_sec_date("garbage"), None);
+    }
+
+    #[test]
+    fn output_is_under_dataset_metadata() {
+        assert_eq!(
+            insider_output(Path::new("/data")),
+            Path::new("/data/metadata/insider_transactions.json")
+        );
     }
 
     /// Build a minimal quarterly zip covering the join and every drop rule.

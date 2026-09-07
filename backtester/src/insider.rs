@@ -14,11 +14,7 @@
 //! reseeded every process — a stable iteration order, so a strategy that
 //! allocates capital in signal order produces the same run twice.
 
-use std::{
-    collections::BTreeMap,
-    fmt,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fmt, path::Path};
 
 use chrono::NaiveDate;
 use serde::de::{Deserializer, SeqAccess, Visitor};
@@ -29,8 +25,8 @@ use crate::{
     symbol::{Symbol, SymbolMap, SymbolSet},
 };
 
-/// Default file name inside the data root, next to `encoded_tickers.json`.
-pub const INSIDER_FILE: &str = "insider_transactions.json";
+/// Default file name inside the data root.
+pub const INSIDER_FILE: &str = "metadata/insider_transactions.json";
 
 /// Open-market transaction side from Form 4's transaction code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +92,7 @@ struct RawRecord {
 }
 
 /// Insider transactions per symbol: filing date → transactions filed that
-/// day. Reads `insider_transactions.json` next to `encoded_tickers.json`;
+/// day. Reads `metadata/insider_transactions.json` under the data root;
 /// returns an empty map when the file doesn't exist (e.g. a data root without
 /// insider data).
 ///
@@ -113,16 +109,11 @@ struct RawRecord {
 /// freed on return, so the cost is transient peak memory during
 /// `initialize`, before the engine has allocated anything per-bar.
 pub fn load_insider_transactions(
-    data_root: &str,
+    data_root: impl AsRef<Path>,
     tickers: &TickerMap,
     symbols: Option<&SymbolSet>,
 ) -> Result<InsiderMap, BacktestError> {
-    load_insider_transactions_from(
-        &PathBuf::from(format!("{data_root}/{INSIDER_FILE}")),
-        tickers,
-        symbols,
-        false,
-    )
+    load_insider_transactions_from(&data_root.as_ref().join(INSIDER_FILE), tickers, symbols, false)
 }
 
 /// Like [`load_insider_transactions`], but from an explicit file path. With
@@ -208,7 +199,7 @@ pub fn load_insider_transactions_from(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, path::PathBuf};
 
     use super::*;
 
@@ -227,6 +218,7 @@ mod tests {
     fn write_temp(content: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(INSIDER_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, content).unwrap();
         (dir, path)
     }

@@ -4,7 +4,9 @@
 //! grouping, slice assembly, day boundaries) with no strategy work on top —
 //! the floor any real backtest pays.
 //!
-//! Usage: cargo run --release --example no_op_baseline -- /path/to/data/root [start] [end]
+//! Usage:
+//!   export BACKTEST_DATA_DIR=/path/to/data/root
+//!   cargo run --release --example no_op_baseline -- [start] [end]
 //!
 //! `start` / `end` are optional YYYY-MM-DD bounds; omit both to run the whole
 //! dataset.
@@ -64,18 +66,16 @@ impl Algorithm for Noop {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let date = |i: usize| {
         args.get(i).map(|s| s.parse::<NaiveDate>().unwrap_or_else(|e| panic!("bad date {s}: {e}")))
     };
 
     let ticks = Rc::new(Cell::new(0u64));
     let bars = Rc::new(Cell::new(0u64));
-    let algo = Noop { start: date(2), end: date(3), ticks: ticks.clone(), bars: bars.clone() };
+    let algo = Noop { start: date(1), end: date(2), ticks: ticks.clone(), bars: bars.clone() };
 
     let start = Instant::now();
-    let result = run_backtest(algo, data_path).unwrap_or_else(|e| {
+    let result = run_backtest(algo).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

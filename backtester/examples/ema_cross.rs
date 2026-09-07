@@ -39,12 +39,9 @@ impl Algorithm for EmaCross {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let algo = EmaCross { symbol: None, fast: Ema::new(10).unwrap(), slow: Ema::new(30).unwrap() };
 
-    run(algo, data_path).unwrap_or_else(|e| {
+    run(algo).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

@@ -11,26 +11,24 @@ They bind different ports, so both can run at once.
 
 ## data-viz — the Parquet chart explorer
 
-A [DataFusion](https://datafusion.apache.org/)-backed server that reads the
-minute Parquet dataset and serves candles plus computed indicators to a
+A server that reads the canonical minute Parquet dataset through the
+backtesting engine and serves candles plus computed indicators to a
 [TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts)
 frontend.
 
 ### Run it
 
 ```bash
-# CLI arg takes precedence over DATA_DIR env var (default: ../../data/output):
-cargo run -p data-viz -- /path/to/data/output
-# or:
-DATA_DIR=/path/to/data/output cargo run -p data-viz
+export BACKTEST_DATA_DIR=/path/to/data
+cargo run -p data-viz
 # open http://localhost:3000   (override the port with PORT=8080)
 ```
 
 The server expects the data root to contain:
 
 ```
-<data_root>/minute/encoded_tickers.json
-<data_root>/minute/year=YYYY/month=M/part-0.parquet
+<data_root>/encoded_tickers.json
+<data_root>/year=YYYY/month=M/part-0.parquet
 ```
 
 (See [data-setup.md](./data-setup.md) for details.)
@@ -145,8 +143,8 @@ cargo test -p data-viz
 ([`src/lib.rs`](../data-viz/src/lib.rs)) if you want the data without the HTTP
 layer:
 
-- `create_app(data_root) -> Router` — the axum app.
-- `load_bars(data_root, symbol, start, end, Timeframe) -> Result<Vec<OhlcBar>, String>`
+- `create_app(data_dir: impl AsRef<Path>) -> Router` — the axum app.
+- `load_bars(data_dir: impl AsRef<Path>, symbol, start, end, Timeframe) -> Result<Vec<OhlcBar>, String>`
   — bars straight from Parquet via DataFusion. An unknown symbol is `Ok(vec![])`;
   a query failure is `Err`.
 
@@ -164,7 +162,8 @@ in the directory without restarting the server.
 
 ```bash
 # 1. Produce a result file:
-cargo run --example ema_cross -- backtester/tests/fixtures
+export BACKTEST_DATA_DIR=test-data
+cargo run --example ema_cross
 
 # 2. Serve every backtest_result_*.json in the current dir (newest selected):
 cargo run -p ui

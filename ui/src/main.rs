@@ -106,7 +106,8 @@ async fn main() {
     if explicit.is_none() && result_files().is_empty() {
         eprintln!(
             "No backtest result found. Run a backtest first (e.g. \
-             `cargo run --example ema_cross -- backtester/tests/fixtures`) \
+             `export BACKTEST_DATA_DIR=test-data`, then \
+             `cargo run --example ema_cross`) \
              or pass a path: `cargo run -p ui -- result.json`"
         );
         std::process::exit(1);

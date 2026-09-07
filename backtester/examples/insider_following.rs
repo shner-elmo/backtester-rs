@@ -1,6 +1,6 @@
 //! Copy-trade corporate insiders ("CEO Stockwatcher" style).
 //!
-//! Reads `insider_transactions.json` from the data root (produced by the
+//! Reads `metadata/insider_transactions.json` from the data root (produced by the
 //! `scripts/insider_fetch.rs` script from SEC Form 4 filings) and:
 //!
 //! - **buys** a stock the trading day after officers/directors disclose
@@ -17,7 +17,8 @@
 //! Run against the committed fixture (one synthetic AAPL round trip):
 //!
 //! ```sh
-//! cargo run --example insider_following -- backtester/tests/fixtures
+//! export BACKTEST_DATA_DIR=test-data
+//! cargo run --example insider_following
 //! ```
 
 use std::collections::BTreeMap;
@@ -45,7 +46,6 @@ const HOLD_DAYS: usize = 20;
 const MAX_SIGNAL_AGE_DAYS: i64 = 5;
 
 struct InsiderFollowing {
-    data_root: String,
     /// filing date → symbols whose insider buys crossed the threshold.
     buy_signals: BTreeMap<NaiveDate, Vec<Symbol>>,
     /// filing date → symbols whose insider sales crossed the threshold.
@@ -56,9 +56,8 @@ struct InsiderFollowing {
 }
 
 impl InsiderFollowing {
-    fn new(data_root: &str) -> Self {
+    fn new() -> Self {
         Self {
-            data_root: data_root.to_string(),
             buy_signals: BTreeMap::new(),
             sell_signals: BTreeMap::new(),
             held: SymbolMap::default(),
@@ -119,7 +118,7 @@ impl Algorithm for InsiderFollowing {
         // Universe = every symbol the dataset carries; insider records for
         // anything else can't be traded and are dropped at load time, which
         // is also where the filings' tickers become dataset ids.
-        let transactions = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)
+        let transactions = load_insider_transactions(ctx.data_dir(), ctx.ticker_map(), None)
             .expect("insider_transactions.json failed to load");
 
         let mut buy_signals: BTreeMap<NaiveDate, Vec<Symbol>> = BTreeMap::new();
@@ -176,10 +175,7 @@ impl Algorithm for InsiderFollowing {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
-    run(InsiderFollowing::new(data_path), data_path).unwrap_or_else(|e| {
+    run(InsiderFollowing::new()).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

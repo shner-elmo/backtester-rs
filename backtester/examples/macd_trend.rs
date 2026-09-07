@@ -2,7 +2,8 @@
 //! MACD line is above its signal line (positive histogram) and flatten when it
 //! crosses back below.
 //!
-//!   cargo run --example macd_trend -- backtester/tests/fixtures
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example macd_trend
 
 use backtester::{
     indicators::{Macd, Next},
@@ -44,9 +45,6 @@ impl Algorithm for MacdTrend {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let (fast, slow, signal) = (12, 26, 9);
     let algo = MacdTrend {
         symbol: None,
@@ -55,7 +53,7 @@ fn main() {
         bars_seen: 0,
     };
 
-    run(algo, data_path).unwrap_or_else(|e| {
+    run(algo).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

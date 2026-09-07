@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use axum::{
     extract::{Query, Request, State},
@@ -73,31 +78,31 @@ pub struct OhlcBar {
 // ── App state ─────────────────────────────────────────────────────────────────
 
 struct AppState {
-    /// The backtester data root — the `minute/` tree that holds the Parquet and
-    /// `encoded_tickers.json`. Every request runs a strategy over it.
-    data_path: String,
+    /// Canonical dataset root. Every request runs a strategy over it.
+    data_dir: PathBuf,
     /// The dataset's ticker names, so an unknown symbol is answered with an
     /// empty chart instead of paying for a whole scan that matches nothing.
     tickers: FxHashSet<String>,
 }
 
 /// The ticker names the dataset carries, upper-cased to match request symbols.
-fn load_ticker_names(data_path: &str) -> FxHashSet<String> {
-    load_ticker_map(data_path)
-        .unwrap_or_else(|e| panic!("failed to load ticker map from {data_path}: {e}"))
+fn load_ticker_names(data_dir: &Path) -> Result<FxHashSet<String>, String> {
+    let names = load_ticker_map(data_dir)
+        .map_err(|e| format!("failed to load ticker map from {}: {e}", data_dir.display()))?
         .into_values()
         .map(|name| name.to_uppercase())
-        .collect()
+        .collect();
+    Ok(names)
 }
 
-pub async fn create_app(data_root: String) -> Router {
-    let data_path = format!("{data_root}/minute");
-    let tickers = load_ticker_names(&data_path);
-    tracing::info!("Loaded {} tickers from {data_path}", tickers.len());
+pub async fn create_app(data_dir: impl AsRef<Path>) -> Router {
+    let data_dir = data_dir.as_ref().to_path_buf();
+    let tickers = load_ticker_names(&data_dir).unwrap_or_else(|e| panic!("{e}"));
+    tracing::info!("Loaded {} tickers from {}", tickers.len(), data_dir.display());
     Router::new()
         .route("/", get(index))
         .route("/api/bars", get(bars))
-        .with_state(Arc::new(AppState { data_path, tickers }))
+        .with_state(Arc::new(AppState { data_dir, tickers }))
         .layer(middleware::from_fn(log_requests))
 }
 
@@ -116,17 +121,20 @@ async fn log_requests(req: Request, next: middleware::Next) -> Response {
 /// Bars straight from the engine, without the HTTP layer. Used by tests and the
 /// examples.
 pub async fn load_bars(
-    data_root: &str,
+    data_dir: impl AsRef<Path>,
     symbol: &str,
     start: Option<NaiveDate>,
     end: Option<NaiveDate>,
     tf: Timeframe,
 ) -> Result<Vec<OhlcBar>, String> {
-    let data_path = format!("{data_root}/minute");
+    let data_dir = data_dir.as_ref().to_path_buf();
     let symbol = symbol.trim().to_uppercase();
+    if !load_ticker_names(&data_dir)?.contains(&symbol) {
+        return Ok(Vec::new());
+    }
     // The engine run is blocking and spawns decode threads, so keep it off the
     // async worker.
-    tokio::task::spawn_blocking(move || run_viz(&data_path, &symbol, start, end, tf))
+    tokio::task::spawn_blocking(move || run_viz(&data_dir, &symbol, start, end, tf))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -230,9 +238,9 @@ async fn bars(Query(p): Query<BarsParams>, State(state): State<Arc<AppState>>) -
     let symbol = symbol.trim().to_uppercase();
 
     let bars: Vec<OhlcBar> = if state.tickers.contains(&symbol) {
-        let (data_path, sym, tf) = (state.data_path.clone(), symbol.clone(), p.tf);
+        let (data_dir, sym, tf) = (state.data_dir.clone(), symbol.clone(), p.tf);
         let (start, end) = (p.start, p.end);
-        match tokio::task::spawn_blocking(move || run_viz(&data_path, &sym, start, end, tf)).await {
+        match tokio::task::spawn_blocking(move || run_viz(&data_dir, &sym, start, end, tf)).await {
             Ok(Ok(bars)) => bars,
             Ok(Err(e)) => {
                 tracing::error!("chart run failed: {e}");

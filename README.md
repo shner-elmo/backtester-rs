@@ -16,7 +16,8 @@ Run the EMA crossover example against the included AAPL fixture, then open the
 generated result:
 
 ```bash
-cargo run --example ema_cross -- backtester/tests/fixtures
+export BACKTEST_DATA_DIR=test-data
+cargo run --example ema_cross
 cargo run -p ui
 ```
 
@@ -25,7 +26,8 @@ Visit <http://localhost:3001>. No external data is required.
 To run against a full dataset:
 
 ```bash
-cargo run --release --example ema_cross -- /path/to/dataset/minute
+export BACKTEST_DATA_DIR=/path/to/dataset
+cargo run --release --example ema_cross
 ```
 
 ## Write a strategy
@@ -60,9 +62,13 @@ impl Algorithm for BuyAndHold {
 
 fn main() {
     let strategy = BuyAndHold { symbol: None, invested: false };
-    run(strategy, "backtester/tests/fixtures").unwrap();
+    run(strategy).unwrap();
 }
 ```
+
+`run` and `run_backtest` read the canonical dataset root from
+`BACKTEST_DATA_DIR`. Library callers that already have a path can use
+`run_with_data_dir(strategy, path)` or `run_backtest_with_data_dir(strategy, path)`.
 
 See [Running a Backtest](docs/backtesting.md) for the complete API, including
 indicators, consolidators, order types, fill models, and corporate actions.
@@ -74,15 +80,21 @@ ticker map:
 
 ```text
 <dataset>/
-  minute/
-    encoded_tickers.json
-    year=2023/month=1/part-0.parquet
+  encoded_tickers.json
+  year=2023/month=1/part-0.parquet
+  metadata/
+    get_splits.json
+    get_dividends.json
+    ticker_renames.json
+    insider_transactions.json
 ```
 
-Pass `<dataset>/minute` to a backtest. Pass `<dataset>` to the chart explorer:
+The metadata files are optional. Both the backtester and chart explorer read
+the same `BACKTEST_DATA_DIR`:
 
 ```bash
-cargo run -p data-viz -- /path/to/dataset
+export BACKTEST_DATA_DIR=/path/to/dataset
+cargo run -p data-viz
 ```
 
 See [Data Setup](docs/data-setup.md) for the schema, metadata files, ingestion

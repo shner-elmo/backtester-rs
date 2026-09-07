@@ -18,7 +18,8 @@
 //! Run against the committed fixture (three synthetic insiders buying AAPL):
 //!
 //! ```sh
-//! cargo run --example insider_cluster -- backtester/tests/fixtures
+//! export BACKTEST_DATA_DIR=test-data
+//! cargo run --example insider_cluster
 //! ```
 
 use std::collections::{BTreeMap, HashSet};
@@ -45,7 +46,6 @@ const HOLD_DAYS: usize = 60;
 const MAX_SIGNAL_AGE_DAYS: i64 = 5;
 
 struct InsiderCluster {
-    data_root: String,
     /// filing date on which a cluster completed → symbols.
     buy_signals: BTreeMap<NaiveDate, Vec<Symbol>>,
     /// symbol → trading days held so far.
@@ -54,13 +54,8 @@ struct InsiderCluster {
 }
 
 impl InsiderCluster {
-    fn new(data_root: &str) -> Self {
-        Self {
-            data_root: data_root.to_string(),
-            buy_signals: BTreeMap::new(),
-            held: SymbolMap::default(),
-            last_date: None,
-        }
+    fn new() -> Self {
+        Self { buy_signals: BTreeMap::new(), held: SymbolMap::default(), last_date: None }
     }
 
     fn on_day_open(&mut self, ctx: &mut Context, today: NaiveDate) {
@@ -102,7 +97,7 @@ impl Algorithm for InsiderCluster {
 
         // Tickers resolve to dataset ids as the file streams in, so the
         // signal map below is keyed by `Symbol` from the start.
-        let transactions = load_insider_transactions(&self.data_root, ctx.ticker_map(), None)
+        let transactions = load_insider_transactions(ctx.data_dir(), ctx.ticker_map(), None)
             .expect("insider_transactions.json failed to load");
 
         // Cluster detection: slide a WINDOW_DAYS window over each symbol's
@@ -166,10 +161,7 @@ impl Algorithm for InsiderCluster {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
-    run(InsiderCluster::new(data_path), data_path).unwrap_or_else(|e| {
+    run(InsiderCluster::new()).unwrap_or_else(|e| {
         eprintln!("backtest failed: {e}");
         std::process::exit(1);
     });

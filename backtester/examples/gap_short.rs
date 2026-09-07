@@ -5,7 +5,8 @@
 //! across that day's names, then cover everything at 15:55 — always flat
 //! overnight.
 //!
-//!   cargo run --example gap_short -- backtester/tests/fixtures
+//!   export BACKTEST_DATA_DIR=test-data
+//!   cargo run --example gap_short
 //!
 //! `ctx.add_all_equities()` subscribes every symbol in the dataset, so
 //! `on_data` slices carry them all. Per-symbol state is keyed by `Symbol` —
@@ -125,9 +126,6 @@ impl Algorithm for GapShort {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let data_path = args.get(1).map(String::as_str).unwrap_or("data/output/minute");
-
     let algo = GapShort {
         last_close: SymbolMap::default(),
         prev_close: SymbolMap::default(),
@@ -135,5 +133,5 @@ fn main() {
         shorted_today: Rc::new(RefCell::new(Vec::new())),
     };
 
-    run(algo, data_path).unwrap();
+    run(algo).unwrap();
 }

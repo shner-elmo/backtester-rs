@@ -4,17 +4,21 @@
 //! full-dataset sweep is quick. Also checks the boundary between consecutive
 //! files (the stream must be globally non-decreasing).
 //!
-//! Usage: cargo run --release --example check_sorted -- /path/to/data/root
+//! Usage:
+//!   export BACKTEST_DATA_DIR=/path/to/data/root
+//!   cargo run --release --example check_sorted
 
 use arrow::array::TimestampNanosecondArray;
 use backtester::data::sorted_parquet_files;
 use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
 
 fn main() {
-    let root = std::env::args().nth(1).expect("arg 1: data root to sweep");
+    let root = std::env::var_os("BACKTEST_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("BACKTEST_DATA_DIR must point to the canonical dataset root");
 
     let files = sorted_parquet_files(&root);
-    assert!(!files.is_empty(), "no parquet files under {root}");
+    assert!(!files.is_empty(), "no parquet files under {}", root.display());
 
     let mut rows = 0;
     let mut prev = 0;
