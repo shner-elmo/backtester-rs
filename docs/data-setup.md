@@ -216,8 +216,9 @@ rust-script scripts/resample_daily.rs --output /path/to/data/daily
 
 Then point `BACKTEST_DATA_DIR` at the daily root and run any strategy
 unchanged; `on_data` fires once per day. The full 2021–2025 dataset (1.8 B
-minute rows, 32 GB) resamples in about 9 minutes (peak RSS ~1.9 GB) to 12.2 M
-rows (217 MB), and a full-universe no-op scan drops from ~80 s to ~3.5 s.
+minute rows, 32 GB) resamples in about 3 minutes (one engine run per month, 8
+in parallel; peak RSS ~1.5 GB) to 12.2 M rows (217 MB), and a full-universe
+no-op scan drops from ~80 s to ~3.5 s.
 
 **Keep the two roots side by side, never nested.** The engine discovers Parquet
 recursively, so a daily dataset inside the minute root (or vice versa) would

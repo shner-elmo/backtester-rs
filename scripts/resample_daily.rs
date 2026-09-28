@@ -14,11 +14,12 @@
 //! must not sit inside the input root (or vice versa): the engine discovers Parquet files
 //! recursively, so the two datasets would interleave.
 //!
-//! The resampling *is* a backtest: every symbol gets a `ConsolidatorPeriod::Daily`
-//! consolidator, so reading, ordering checks and aggregation are the engine's own, and the
-//! bars are exactly what a strategy consolidating the minute data would see (stamped at US
-//! Eastern midnight, pre- and after-market included). Volume is written as UInt32 (the
-//! engine's column type); a daily sum above `u32::MAX` saturates and is counted in the summary.
+//! The resampling *is* a backtest, one per month run in parallel: every symbol gets a
+//! `ConsolidatorPeriod::Daily` consolidator, so reading, ordering checks and aggregation are the
+//! engine's own, and the bars are exactly what a strategy consolidating the minute data would
+//! see (stamped at US Eastern midnight, pre- and after-market included). Volume is written as
+//! UInt32 (the engine's column type); a daily sum above `u32::MAX` saturates and is counted in
+//! the summary.
 //!
 //! ```cargo
 //! [dependencies]
@@ -26,6 +27,7 @@
 //! arrow = "56"
 //! parquet = { version = "56", features = ["arrow", "zstd"] }
 //! chrono = "0.4"
+//! rayon = "1"
 //! ```
 
 use std::{
@@ -43,26 +45,37 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use backtester::{
-    bar::Bar, consolidator::ConsolidatorPeriod, data::TICKER_MAP_FILE, run_backtest_with_data_dir,
-    Algorithm, Context, LogConfig, Slice, Symbol,
+    bar::Bar,
+    consolidator::ConsolidatorPeriod,
+    data::{file_year_month, sorted_parquet_files, TICKER_MAP_FILE},
+    run_backtest_with_data_dir, Algorithm, Context, LogConfig, Slice, Symbol,
 };
-use chrono::Datelike;
+use chrono::{Datelike, Days, Months, NaiveDate};
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, ZstdLevel},
     file::properties::WriterProperties,
 };
+use rayon::prelude::*;
+
+const MAX_THREADS: usize = 8;
 
 type Collected = Rc<RefCell<Vec<(Symbol, Bar)>>>;
 
-/// Subscribes every symbol and collects its daily consolidated bars; never trades.
+/// Subscribes every symbol over one month and collects its daily consolidated bars; never trades.
 struct DailyCollector {
+    first: NaiveDate,
+    last: NaiveDate,
     out: Collected,
 }
 
 impl Algorithm for DailyCollector {
     fn initialize(&mut self, ctx: &mut Context) {
         ctx.set_log_config(LogConfig::none());
+        // Months already run in parallel; more decode threads per run would only oversubscribe.
+        ctx.set_read_threads(1);
+        ctx.set_start_date(self.first.year(), self.first.month(), self.first.day());
+        ctx.set_end_date(self.last.year(), self.last.month(), self.last.day());
         for symbol in ctx.dataset_symbols() {
             ctx.add_symbol(symbol);
             let out = self.out.clone();
@@ -130,30 +143,68 @@ fn resample(input: &Path, output: &Path) -> Result<(), String> {
     }
 
     let total = Instant::now();
-    let out: Collected = Rc::default();
-    run_backtest_with_data_dir(DailyCollector { out: out.clone() }, &input)
-        .map_err(|e| format!("reading {}: {e}", input.display()))?;
-    let mut bars = out.take();
-    // Consolidators fire per symbol as each one's next day starts, so restore time order.
-    bars.sort_unstable_by_key(|(symbol, bar)| (bar.time, *symbol));
-    eprintln!("resampled {} daily bars  ({:.1}s)", bars.len(), total.elapsed().as_secs_f32());
-
     publish_copy(&input.join(TICKER_MAP_FILE), &output.join(TICKER_MAP_FILE))?;
     link_metadata(&input, &output)?;
 
-    // ET midnight is 04:00 or 05:00 UTC, so the UTC date of a daily bar is its trading date.
-    let month_of = |bar: &Bar| (bar.time.year(), bar.time.month());
-    let mut saturated = 0;
-    for month in bars.chunk_by(|(_, a), (_, b)| month_of(a) == month_of(b)) {
-        let (year, month_num) = month_of(&month[0].1);
-        let dir = output.join(format!("year={year}")).join(format!("month={month_num}"));
-        saturated += write_month(&dir, month)?;
-        eprintln!("{year}-{month_num:02}: {} daily rows", month.len());
-    }
+    let mut months: Vec<(u32, u32)> =
+        sorted_parquet_files(&input).iter().filter_map(|path| file_year_month(path)).collect();
+    months.dedup();
 
+    // A daily bucket never spans two months, so each month is an independent backtest: its
+    // consolidators flush at the month's end exactly as they would at the next month's first bar.
+    // Past 8 concurrent months the runs only contend (measured on an 8-core laptop: 16 threads
+    // gave the same wall time at twice the memory), so the pool is capped there.
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_THREADS);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|e| format!("thread pool: {e}"))?;
+    let results: Vec<Result<(usize, usize), String>> = pool.install(|| {
+        months
+            .par_iter()
+            .map(|&(year, month)| {
+                let t = Instant::now();
+                let first =
+                    NaiveDate::from_ymd_opt(year as i32, month, 1).expect("valid partition");
+                let last = first + Months::new(1) - Days::new(1);
+                let out: Collected = Rc::default();
+                run_backtest_with_data_dir(
+                    DailyCollector { first, last, out: out.clone() },
+                    &input,
+                )
+                .map_err(|e| format!("{year}-{month:02}: {e}"))?;
+                let mut bars = out.take();
+                // Each symbol's day closes when its own next bar arrives (or at the month's end),
+                // so symbols emit out of step with each other: restore time order.
+                bars.sort_unstable_by_key(|(symbol, bar)| (bar.time, *symbol));
+                let dir = output.join(format!("year={year}")).join(format!("month={month}"));
+                let saturated =
+                    write_month(&dir, &bars).map_err(|e| format!("{year}-{month:02}: {e}"))?;
+                eprintln!(
+                    "{year}-{month:02}: {} daily rows  ({:.1}s)",
+                    bars.len(),
+                    t.elapsed().as_secs_f32()
+                );
+                Ok((bars.len(), saturated))
+            })
+            .collect()
+    });
+
+    let (mut rows, mut saturated) = (0, 0);
+    let mut errors = Vec::new();
+    for result in results {
+        match result {
+            Ok((r, s)) => (rows, saturated) = (rows + r, saturated + s),
+            Err(error) => errors.push(error),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
     eprintln!(
-        "\n{} daily rows, {saturated} volume(s) saturated at u32::MAX  total: {:.1}s",
-        bars.len(),
+        "\n{} month(s), {rows} daily rows, {saturated} volume(s) saturated at u32::MAX  total: \
+         {:.1}s",
+        months.len(),
         total.elapsed().as_secs_f32()
     );
     Ok(())
