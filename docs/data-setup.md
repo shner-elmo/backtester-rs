@@ -202,6 +202,48 @@ export BACKTEST_DATA_DIR=/path/to/data
 cargo run --release -p backtester --example check_sorted
 ```
 
+## Daily dataset
+
+Strategies that only need daily resolution can run on a resampled copy of the
+minute dataset: same layout, same schema, same ticker ids, one row per ticker
+per trading day. [`scripts/resample_daily.rs`](../scripts/resample_daily.rs)
+builds it:
+
+```bash
+export BACKTEST_DATA_DIR=/path/to/data/minute   # the source minute dataset
+rust-script scripts/resample_daily.rs --output /path/to/data/daily
+```
+
+Then point `BACKTEST_DATA_DIR` at the daily root and run any strategy
+unchanged; `on_data` fires once per day. The full 2021–2025 dataset (1.8 B
+minute rows, 32 GB) resamples in under two minutes to 12.2 M rows (217 MB), and
+a full-universe no-op scan drops from ~80 s to ~3.5 s.
+
+**Keep the two roots side by side, never nested.** The engine discovers Parquet
+recursively, so a daily dataset inside the minute root (or vice versa) would
+interleave the two; the script refuses nested paths. It copies
+`encoded_tickers.json` and symlinks `metadata/` to the minute root's (relative
+when the roots are siblings), so splits, dividends, renames and insider data
+are shared rather than duplicated.
+
+Bar semantics:
+
+- A daily bar is one ticker's minute bars within one US Eastern calendar day:
+  first open, max high, min low, last close, summed volume. It is stamped at
+  **US Eastern midnight**, the same bucket and timestamp
+  `ConsolidatorPeriod::Daily` produces, so the bars match what a strategy would
+  consolidate from the minute data itself.
+- `--session all` (default) includes pre- and after-market bars, like the
+  consolidator. `--session regular` keeps only 9:30–16:00 ET
+  (`MarketSession::Main`), so open and close are the regular-session prints.
+- Because of the midnight stamp, `bar.session()` reports `PreMarket` for every
+  daily bar and `Context::on_time` callbacks don't line up with real market
+  hours; drop session filters when moving a strategy to daily data. The
+  [fill timing](backtesting.md#fill-timing) rules are unchanged: the default
+  fills at the day's close, `FillTiming::NextBarOpen` at the next day's open.
+- Volume stays `UInt32`; a daily sum above `u32::MAX` saturates (one bar in
+  the 2021–2025 dataset) and the script reports the count.
+
 ## Committed test fixture
 
 A tiny slice — AAPL, January 2023, 5,000 bars (~126 KB) — is committed so the
