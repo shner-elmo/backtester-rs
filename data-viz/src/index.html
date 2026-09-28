@@ -153,15 +153,18 @@ function dropUnusedExtras(live) {
 const TIMEFRAMES = [['min1', '1m'], ['min5', '5m'], ['daily', '1D'], ['weekly', '1W']];
 let timeframe = 'min1';
 
+function setTimeframe(key) {
+  if (!TIMEFRAMES.some(([candidate]) => candidate === key)) return;
+  timeframe = key;
+  document.querySelectorAll('.tf').forEach(x => x.classList.toggle('on', x.dataset.tf === key));
+}
+
 for (const [key, label] of TIMEFRAMES) {
   const b = document.createElement('button');
   b.className = 'tf ghost' + (key === timeframe ? ' on' : '');
   b.textContent = label;
   b.dataset.tf = key;
-  b.onclick = () => {
-    timeframe = key;
-    document.querySelectorAll('.tf').forEach(x => x.classList.toggle('on', x.dataset.tf === key));
-  };
+  b.onclick = () => setTimeframe(key);
   document.getElementById('tfs').appendChild(b);
 }
 
@@ -268,6 +271,43 @@ function renderChips() {
   }
 }
 
+function chipFromSpec(spec) {
+  const [rawType, ...values] = spec.split(':');
+  const type = rawType.toLowerCase();
+  const params = IND_PARAMS[type];
+  if (!params) return null;
+
+  const chip = { type };
+  params.forEach(([name, , def], i) => {
+    const value = Number(values[i]);
+    const valid = Number.isFinite(value) &&
+      (name === 'mult' ? value >= 0.1 : Number.isInteger(value) && value >= 2);
+    chip[name] = valid ? value : def;
+  });
+  return chip;
+}
+
+function applyUrlState() {
+  const q = new URLSearchParams(window.location.search);
+  const symbol = q.get('symbol');
+  if (symbol) document.getElementById('symbol').value = symbol.toUpperCase();
+
+  for (const id of ['start', 'end']) {
+    const value = q.get(id);
+    if (!value) continue;
+    const input = document.getElementById(id);
+    const previous = input.value;
+    input.value = value;
+    if (!input.value) input.value = previous;
+  }
+
+  setTimeframe(q.get('tf') || timeframe);
+  if (q.has('ind')) {
+    chips = q.get('ind').split(',').map(spec => chipFromSpec(spec.trim())).filter(Boolean);
+  }
+  renderChips();
+}
+
 // ── Load ──────────────────────────────────────────────────────────────────────
 
 let inFlight = null;
@@ -281,14 +321,17 @@ async function load() {
   const ctl = new AbortController();
   inFlight = ctl;
 
-  const q = new URLSearchParams({
-    symbol,
-    tf: timeframe,
-    start: document.getElementById('start').value,
-    end: document.getElementById('end').value,
-  });
+  const q = new URLSearchParams({ symbol, tf: timeframe });
+  for (const id of ['start', 'end']) {
+    const value = document.getElementById(id).value;
+    if (value) q.set(id, value);
+  }
   const specs = chips.map(specOf);
   if (specs.length) q.set('ind', specs.join(','));
+
+  // Keep the visible page URL as the complete, bookmarkable description of the
+  // chart. Loading that URL restores the controls and runs the same request.
+  window.history.replaceState(null, '', window.location.pathname + '?' + q);
 
   document.getElementById('load').disabled = true;
   setStatus('Loading…');
@@ -394,7 +437,7 @@ function draw({ bars, indicators }) {
   setStatus(bars.length ? bars.length.toLocaleString() + ' bars' : 'No data for this range');
 }
 
-renderChips();
+applyUrlState();
 load();
 </script>
 </body>

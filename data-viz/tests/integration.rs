@@ -56,6 +56,18 @@ async fn index_returns_200_html() {
     assert!(String::from_utf8(body).unwrap().contains("<title>data-viz</title>"));
 }
 
+#[tokio::test]
+async fn index_with_chart_query_returns_page_that_bootstraps_from_url() {
+    let (status, body) =
+        get("/?symbol=MSFT&start=2023-01-03&end=2023-01-05&tf=daily&ind=ema:20,rsi:14").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let html = String::from_utf8(body).unwrap();
+    assert!(html.contains("function applyUrlState()"));
+    assert!(html.contains("applyUrlState();\nload();"));
+    assert!(html.contains("window.history.replaceState"));
+}
+
 // ── /api/bars ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]

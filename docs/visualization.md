@@ -24,6 +24,16 @@ cargo run -p data-viz
 # open http://localhost:3000   (override the port with PORT=8080)
 ```
 
+The chart state is part of the page URL, so a chart can be opened directly or
+bookmarked with its symbol, date range, timeframe, and indicators:
+
+```text
+http://localhost:3000/?symbol=AAPL&start=2023-01-01&end=2023-01-05&tf=min1&ind=ema:20,rsi:14
+```
+
+Loading from the toolbar updates the browser URL to match the current controls.
+The accepted page parameters are the same as the `/api/bars` parameters below.
+
 The server expects the data root to contain:
 
 ```
@@ -81,6 +91,8 @@ match a vendor's regular-session daily bars.
   chip UI, each with its own colour. Overlays (EMA, SMA, BBands) go on the price
   chart; oscillators (RSI, MACD) open a pane below.
 - **Calendar navigation**: ◀/▶ buttons shift start/end dates by ±1 month.
+- **Shareable URLs**: page query parameters initialize the controls and load the
+  chart immediately; each toolbar load updates the URL for copying or bookmarking.
 - **Partition pruning**: only the Hive-partitioned month-files covering the
   requested date range are opened, and Parquet filter pushdown is enabled so
   OHLCV pages for other tickers are never decoded.
