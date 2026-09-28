@@ -216,8 +216,8 @@ rust-script scripts/resample_daily.rs --output /path/to/data/daily
 
 Then point `BACKTEST_DATA_DIR` at the daily root and run any strategy
 unchanged; `on_data` fires once per day. The full 2021–2025 dataset (1.8 B
-minute rows, 32 GB) resamples in under two minutes to 12.2 M rows (217 MB), and
-a full-universe no-op scan drops from ~80 s to ~3.5 s.
+minute rows, 32 GB) resamples in about 9 minutes (peak RSS ~1.9 GB) to 12.2 M
+rows (217 MB), and a full-universe no-op scan drops from ~80 s to ~3.5 s.
 
 **Keep the two roots side by side, never nested.** The engine discovers Parquet
 recursively, so a daily dataset inside the minute root (or vice versa) would
@@ -228,14 +228,12 @@ are shared rather than duplicated.
 
 Bar semantics:
 
-- A daily bar is one ticker's minute bars within one US Eastern calendar day:
-  first open, max high, min low, last close, summed volume. It is stamped at
-  **US Eastern midnight**, the same bucket and timestamp
-  `ConsolidatorPeriod::Daily` produces, so the bars match what a strategy would
-  consolidate from the minute data itself.
-- `--session all` (default) includes pre- and after-market bars, like the
-  consolidator. `--session regular` keeps only 9:30–16:00 ET
-  (`MarketSession::Main`), so open and close are the regular-session prints.
+- The resampling is itself a backtest: every symbol gets a
+  `ConsolidatorPeriod::Daily` consolidator, so the bars are exactly what a
+  strategy consolidating the minute data would see. A daily bar is one
+  ticker's minute bars within one US Eastern calendar day, pre- and
+  after-market included: first open, max high, min low, last close, summed
+  volume, stamped at **US Eastern midnight**.
 - Because of the midnight stamp, `bar.session()` reports `PreMarket` for every
   daily bar and `Context::on_time` callbacks don't line up with real market
   hours; drop session filters when moving a strategy to daily data. The
