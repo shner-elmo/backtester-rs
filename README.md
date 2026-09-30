@@ -71,6 +71,8 @@ fn main() {
 `run` and `run_backtest` read the canonical dataset root from
 `BACKTEST_DATA_DIR`. Library callers that already have a path can use
 `run_with_data_dir(strategy, path)` or `run_backtest_with_data_dir(strategy, path)`.
+Strategies can use `Context::set_bar_data_dir` to stream a compatible
+pre-resampled daily copy while retaining the primary root's symbols and metadata.
 
 See [Running a Backtest](docs/backtesting.md) for the complete API, including
 indicators, consolidators, order types, fill models, and corporate actions.

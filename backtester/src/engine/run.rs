@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
 
-use super::{ledger::OpenLifetime, load_pending_actions, BacktestResult};
+use super::{ledger::OpenLifetime, load_pending_actions, validate_bar_data_dir, BacktestResult};
 use crate::{
     algorithm::Algorithm,
     bar::Bar,
@@ -345,13 +345,16 @@ pub(super) fn run_prepared<A: Algorithm>(
         }
     }
 
+    validate_bar_data_dir(&ctx)?;
+
     // The last place ticker strings are read: the metadata files resolve to
     // symbols here, against the ticker map the context was built from.
     let (subscribed, pending) = load_pending_actions(&mut ctx)?;
 
-    let files = sorted_parquet_files(ctx.data_dir());
+    let bar_data_dir = ctx.bar_data_dir().to_path_buf();
+    let files = sorted_parquet_files(&bar_data_dir);
     if files.is_empty() {
-        return Err(BacktestError::NoData { path: ctx.data_dir().to_path_buf() });
+        return Err(BacktestError::NoData { path: bar_data_dir });
     }
 
     let mut eng = Engine::new(ctx, pending);

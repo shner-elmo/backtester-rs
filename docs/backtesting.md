@@ -122,6 +122,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `dataset_symbols()` / `add_symbol(symbol)` | List the dataset's symbols without subscribing / subscribe one you already hold |
 | `symbol(ticker)` / `symbol_name(symbol)` | Look a ticker up / resolve a symbol back to its ticker |
 | `data_dir()` | Canonical dataset root selected for this run |
+| `set_bar_data_dir(dir)` / `bar_data_dir()` | Optionally stream a compatible resampled dataset while keeping symbols and metadata on `data_dir()` |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |

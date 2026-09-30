@@ -1,5 +1,4 @@
-//! An event-driven backtesting engine for minute-bar equity data stored as
-//! Parquet.
+//! An event-driven backtesting engine for equity bar data stored as Parquet.
 //!
 //! Implement [`Algorithm`], configure the [`Context`] in `initialize`
 //! (symbols, dates, cash), trade in `on_data`, and hand it to [`run`] or

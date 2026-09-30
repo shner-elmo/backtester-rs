@@ -58,7 +58,7 @@ pub fn load_ticker_map(data_root: impl AsRef<Path>) -> Result<HashMap<u16, Strin
 /// This is the *only* place the engine relates integers to tickers. It is read
 /// when a strategy subscribes, when the corporate-action files are matched by
 /// ticker, and when results and log lines are written — never per bar.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct TickerMap {
     /// Ticker id → name, `None` for ids the map doesn't list.
     names: Vec<Option<Box<str>>>,

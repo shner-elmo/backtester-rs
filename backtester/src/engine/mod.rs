@@ -8,10 +8,11 @@ mod ledger;
 mod orders;
 mod run;
 
+use std::path::{Path, PathBuf};
+
 use run::{run_prepared, PendingActions};
 use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 
 use crate::{
     algorithm::Algorithm,
@@ -84,6 +85,26 @@ fn prepare_context(data_dir: &Path) -> Result<Context, BacktestError> {
         message: format!("failed to load {}: {error}", TICKER_MAP_FILE),
     })?;
     Ok(Context::with_tickers(data_dir, tickers))
+}
+
+fn validate_bar_data_dir(ctx: &Context) -> Result<(), BacktestError> {
+    let bar_data_dir = ctx.bar_data_dir();
+    if bar_data_dir == ctx.data_dir() {
+        return Ok(());
+    }
+
+    let ticker_map = bar_data_dir.join(TICKER_MAP_FILE);
+    let tickers = TickerMap::load(&ticker_map).map_err(|error| BacktestError::InvalidDataset {
+        path: bar_data_dir.to_path_buf(),
+        message: format!("failed to load {}: {error}", TICKER_MAP_FILE),
+    })?;
+    if tickers != ctx.tickers {
+        return Err(BacktestError::InvalidDataset {
+            path: bar_data_dir.to_path_buf(),
+            message: format!("{} does not match the primary dataset", TICKER_MAP_FILE),
+        });
+    }
+    Ok(())
 }
 
 /// Run a backtest, print a summary, and write the full result JSON

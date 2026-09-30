@@ -5,8 +5,8 @@ use std::{
 };
 
 use backtester::{
-    run_backtest, run_backtest_with_data_dir, run_with_data_dir, Algorithm, BacktestError, Context,
-    Slice,
+    consolidator::ConsolidatorPeriod, run_backtest, run_backtest_with_data_dir, run_with_data_dir,
+    Algorithm, BacktestError, Context, Slice,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data");
@@ -98,6 +98,70 @@ struct Idle;
 impl Algorithm for Idle {
     fn initialize(&mut self, _ctx: &mut Context) {}
     fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+}
+
+struct AlternateBars {
+    dir: PathBuf,
+    consolidated: Arc<Mutex<usize>>,
+}
+
+impl Algorithm for AlternateBars {
+    fn initialize(&mut self, ctx: &mut Context) {
+        ctx.set_bar_data_dir(&self.dir);
+        let symbol = ctx.add_equity("AAPL");
+        let consolidated = self.consolidated.clone();
+        ctx.consolidate(symbol, ConsolidatorPeriod::Daily, move |_| {
+            *consolidated.lock().unwrap() += 1;
+        });
+    }
+
+    fn on_data(&mut self, _ctx: &mut Context, _data: &Slice) {}
+}
+
+fn copy_fixture_data(root: &std::path::Path) {
+    std::fs::copy(
+        PathBuf::from(FIXTURE).join("encoded_tickers.json"),
+        root.join("encoded_tickers.json"),
+    )
+    .unwrap();
+    let month = root.join("year=2023/month=1");
+    std::fs::create_dir_all(&month).unwrap();
+    std::fs::copy(
+        PathBuf::from(FIXTURE).join("year=2023/month=1/part-0.parquet"),
+        month.join("part-0.parquet"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn alternate_bar_dataset_still_feeds_consolidators() {
+    let daily = tempfile::tempdir().unwrap();
+    copy_fixture_data(daily.path());
+    let consolidated = Arc::new(Mutex::new(0));
+
+    run_backtest_with_data_dir(
+        AlternateBars { dir: daily.path().to_path_buf(), consolidated: consolidated.clone() },
+        FIXTURE,
+    )
+    .unwrap();
+
+    assert!(*consolidated.lock().unwrap() > 0);
+}
+
+#[test]
+fn alternate_bar_dataset_must_use_the_primary_ticker_ids() {
+    let daily = tempfile::tempdir().unwrap();
+    copy_fixture_data(daily.path());
+    std::fs::write(daily.path().join("encoded_tickers.json"), r#"{"47":"MSFT"}"#).unwrap();
+
+    let err = run_backtest_with_data_dir(
+        AlternateBars { dir: daily.path().to_path_buf(), consolidated: Arc::new(Mutex::new(0)) },
+        FIXTURE,
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, BacktestError::InvalidDataset { .. }));
+    assert!(err.to_string().contains("does not match the primary dataset"));
 }
 
 #[test]
