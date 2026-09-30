@@ -26,6 +26,7 @@ cargo run --example ema_cross    # Run against the committed fixture
 cargo run -p ui                 # Results dashboard at :3001 (newest backtest_result_*.json in CWD)
 export BACKTEST_DATA_DIR=/path/to/data
 rust-script scripts/insider_fetch.rs --start 2023q1 --end 2023q4  # SEC Form 4 downloader (needs --user-agent or $SEC_USER_AGENT)
+rust-script scripts/resample_daily.rs --output /path/to/daily  # Daily-bar copy of $BACKTEST_DATA_DIR (docs/data-setup.md)
 cargo bench -p backtester --bench engine  # Throughput benchmarks (loader + a full backtest)
 cargo bench -p backtester --bench consolidators  # Consolidator dispatch across a wide (100/500-symbol) universe
 ```
