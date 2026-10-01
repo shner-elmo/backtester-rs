@@ -128,8 +128,9 @@ fn parallel(
     files: &[PathBuf],
     mask: &SubscriptionMask,
     threads: usize,
+    channel_depth: usize,
 ) -> Vec<(i64, Vec<(Symbol, Bar)>)> {
-    let mut stream = TickStream::new(files, mask, threads).unwrap();
+    let mut stream = TickStream::with_channel_depth(files, mask, threads, channel_depth).unwrap();
     let mut out = Vec::new();
     while let Some(tick) = stream.next_tick().unwrap() {
         out.push(tick);
@@ -151,13 +152,26 @@ fn parallel_decode_matches_a_sequential_sweep() {
 
     // Thread counts on both sides of the unit count, so the rotation is
     // exercised with workers that get several units, one unit, and none.
-    for threads in [1, 2, 3, 8, 32] {
-        let got = parallel(&files, &mask, threads);
-        assert_eq!(got.len(), expected.len(), "tick count with {threads} thread(s)");
-        for (i, ((want_ts, want_bars), (got_ts, got_bars))) in expected.iter().zip(&got).enumerate()
-        {
-            assert_eq!(want_ts, got_ts, "tick {i} timestamp with {threads} thread(s)");
-            assert_eq!(want_bars, got_bars, "tick {i} bars with {threads} thread(s)");
+    for depth in [1, 2, 8] {
+        for threads in [1, 2, 3, 8, 32] {
+            let got = parallel(&files, &mask, threads, depth);
+            assert_eq!(
+                got.len(),
+                expected.len(),
+                "tick count with {threads} thread(s), depth {depth}"
+            );
+            for (i, ((want_ts, want_bars), (got_ts, got_bars))) in
+                expected.iter().zip(&got).enumerate()
+            {
+                assert_eq!(
+                    want_ts, got_ts,
+                    "tick {i} timestamp with {threads} thread(s), depth {depth}"
+                );
+                assert_eq!(
+                    want_bars, got_bars,
+                    "tick {i} bars with {threads} thread(s), depth {depth}"
+                );
+            }
         }
     }
 }
@@ -177,8 +191,14 @@ fn a_selective_subscription_still_matches() {
 
     let expected = sequential(&files, &mask);
     assert!(expected.iter().all(|(_, bars)| bars.len() == 2));
-    for threads in [1, 4] {
-        assert_eq!(parallel(&files, &mask, threads), expected, "{threads} thread(s)");
+    for depth in [1, 2, 8] {
+        for threads in [1, 4] {
+            assert_eq!(
+                parallel(&files, &mask, threads, depth),
+                expected,
+                "{threads} thread(s), depth {depth}"
+            );
+        }
     }
 }
 
@@ -193,13 +213,21 @@ fn ticks_that_straddle_a_file_boundary_arrive_whole() {
 
     let files = sorted_parquet_files(dir.path().to_str().unwrap());
     let mask = all_symbols(4);
-    let ticks = parallel(&files, &mask, 4);
+    for depth in [1, 2, 8] {
+        for threads in [1, 4] {
+            let ticks = parallel(&files, &mask, threads, depth);
 
-    assert_eq!(ticks.len(), 3, "one tick per distinct timestamp");
-    assert_eq!(ticks[1].0, shared);
-    let mut ids: Vec<u16> = ticks[1].1.iter().map(|(s, _)| s.ticker_id()).collect();
-    ids.sort_unstable();
-    assert_eq!(ids, vec![0, 1, 2], "bars from both files land in one tick");
+            assert_eq!(ticks.len(), 3, "one tick per distinct timestamp");
+            assert_eq!(ticks[1].0, shared);
+            let mut ids: Vec<u16> = ticks[1].1.iter().map(|(s, _)| s.ticker_id()).collect();
+            ids.sort_unstable();
+            assert_eq!(
+                ids,
+                vec![0, 1, 2],
+                "bars from both files land in one tick with {threads} thread(s), depth {depth}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -216,24 +244,40 @@ fn unsorted_data_fails_the_stream_at_the_first_bad_row() {
 
     let files = sorted_parquet_files(dir.path().to_str().unwrap());
     let mask = all_symbols(1);
-    for threads in [1, 2, 8] {
-        let mut stream = TickStream::new(&files, &mask, threads).unwrap();
-        let err = loop {
-            match stream.next_tick() {
-                Ok(Some(_)) => continue,
-                Ok(None) => panic!("unsorted data was accepted with {threads} thread(s)"),
-                Err(e) => break e,
+    for depth in [1, 2, 8] {
+        for threads in [1, 2, 8] {
+            let mut stream = TickStream::with_channel_depth(&files, &mask, threads, depth).unwrap();
+            let err = loop {
+                match stream.next_tick() {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => {
+                        panic!("unsorted data was accepted with {threads} thread(s), depth {depth}")
+                    }
+                    Err(e) => break e,
+                }
+            };
+            // The *earlier* regression must surface, whichever worker decoded
+            // which row group and whichever noticed first.
+            match err {
+                backtester::BacktestError::OutOfOrderData { at, .. } => assert_eq!(
+                    at.timestamp_nanos_opt().unwrap(),
+                    base - 60_000_000_000,
+                    "with {threads} thread(s), depth {depth}, the first regression in file order must win"
+                ),
+                other => panic!(
+                    "expected OutOfOrderData with {threads} thread(s), depth {depth}, got {other}"
+                ),
             }
-        };
-        // The *earlier* regression must surface, whichever worker decoded
-        // which row group and whichever noticed first.
-        match err {
-            backtester::BacktestError::OutOfOrderData { at, .. } => assert_eq!(
-                at.timestamp_nanos_opt().unwrap(),
-                base - 60_000_000_000,
-                "with {threads} thread(s), the first regression in file order must win"
-            ),
-            other => panic!("expected OutOfOrderData with {threads} thread(s), got {other}"),
         }
     }
+}
+
+#[test]
+#[should_panic(expected = "read channel depth must be greater than zero")]
+fn zero_channel_depth_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    dataset(&dir, 1, 1, 1);
+    let files = sorted_parquet_files(dir.path().to_str().unwrap());
+    let mask = all_symbols(1);
+    let _ = TickStream::with_channel_depth(&files, &mask, 1, 0);
 }

@@ -103,6 +103,8 @@ pub struct Context {
     /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
     /// from the machine's parallelism.
     pub(crate) read_threads: usize,
+    /// Decoded chunks each reader thread may queue ahead of the tick loop.
+    pub(crate) read_channel_depth: usize,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) margin: Box<dyn MarginModel>,
@@ -138,6 +140,7 @@ impl Default for Context {
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
             read_threads: 0,
+            read_channel_depth: crate::tick_stream::DEFAULT_READ_CHANNEL_DEPTH,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             margin: Box::new(NoMargin),
@@ -394,10 +397,19 @@ impl Context {
     /// (the read still overlaps the tick loop, just without the fan-out).
     ///
     /// Results do not depend on this — the tick stream is identical either
-    /// way — so it is purely a throughput/memory trade: each thread keeps a
-    /// couple of decoded batches resident.
+    /// way — so it is purely a throughput/memory trade: each thread may keep
+    /// decoded batches resident up to the configured read-channel depth.
     pub fn set_read_threads(&mut self, threads: usize) {
         self.read_threads = threads;
+    }
+
+    /// Set how many decoded chunks each reader thread may queue ahead of the
+    /// event loop. A deeper channel can overlap more I/O and decode with a
+    /// fast strategy, at the cost of keeping more decoded data resident.
+    /// Defaults to 8 and must be non-zero.
+    pub fn set_read_channel_depth(&mut self, depth: usize) {
+        assert!(depth > 0, "read channel depth must be greater than zero");
+        self.read_channel_depth = depth;
     }
 
     /// Record a mark-to-market equity point on **every bar** (into
@@ -555,6 +567,17 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+
+    #[test]
+    fn read_channel_depth_defaults_to_eight() {
+        assert_eq!(Context::default().read_channel_depth, 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "read channel depth must be greater than zero")]
+    fn read_channel_depth_rejects_zero() {
+        Context::default().set_read_channel_depth(0);
+    }
 
     fn et(y: i32, mo: u32, d: u32, h: u32, m: u32) -> DateTime<Utc> {
         Eastern.with_ymd_and_hms(y, mo, d, h, m, 0).unwrap().with_timezone(&Utc)

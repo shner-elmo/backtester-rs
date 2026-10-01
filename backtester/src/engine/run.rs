@@ -381,7 +381,12 @@ pub(super) fn run_prepared<A: Algorithm>(
     // month partitions, fails the run). Only a single tick of subscribed bars
     // is ever handed to the engine, and dropping the stream at the end date
     // stops the decode threads mid-file.
-    let mut ticks = TickStream::new(&files, &subscribed, eng.ctx.read_threads)?;
+    let mut ticks = TickStream::with_channel_depth(
+        &files,
+        &subscribed,
+        eng.ctx.read_threads,
+        eng.ctx.read_channel_depth,
+    )?;
     while let Some((_ts_ns, bars)) = ticks.next_tick()? {
         // Every bar in the tick already carries this timestamp (decoded once
         // in `tick_stream`); the raw key only drives the ordering there, so

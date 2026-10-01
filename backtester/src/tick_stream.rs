@@ -54,17 +54,18 @@ use crate::{
 /// Measured on the full minute dataset (swap off): raising this from 2 to 8
 /// cut a warm decode-bound scan by ~35% (17.0M → 22.9M bars/s) and a full
 /// cold-disk scan by ~28% (197.7s → 142.3s), read-ahead overlapping disk I/O
-/// with decode. Flat past 8; the cost is `CHANNEL_DEPTH × threads` resident
-/// chunks (~7 MB each on a wide universe, so a few hundred MB at the default
-/// thread count).
-const CHANNEL_DEPTH: usize = 8;
+/// with decode. Flat past 8; the cost is `depth × threads` resident chunks
+/// (~7 MB each on a wide universe, so a few hundred MB at the default thread
+/// count).
+pub(crate) const DEFAULT_READ_CHANNEL_DEPTH: usize = 8;
 
 /// Cap on auto-selected decode threads. The path is consumer-bound: a warm
 /// full-universe sweep peaks around 4 threads (the single tick loop saturates
 /// there) and *degrades* past ~12 as the extra threads only add contention and
 /// resident batches. 8 is a safe ceiling — within ~2% of the peak while leaving
 /// headroom for machines with slower per-thread decode. Measured 2026-08-15;
-/// see `CHANNEL_DEPTH` above, which was the real read-path bottleneck.
+/// see `DEFAULT_READ_CHANNEL_DEPTH` above, which was the real read-path
+/// bottleneck.
 const MAX_AUTO_THREADS: usize = 8;
 
 /// How many decode threads to use when the caller asks for the default.
@@ -120,6 +121,19 @@ impl TickStream {
         subscribed: &SubscriptionMask,
         threads: usize,
     ) -> Result<Self, BacktestError> {
+        Self::with_channel_depth(files, subscribed, threads, DEFAULT_READ_CHANNEL_DEPTH)
+    }
+
+    /// [`TickStream::new`] with an explicit number of decoded chunks each
+    /// worker may queue. `channel_depth` must be non-zero.
+    pub fn with_channel_depth(
+        files: &[PathBuf],
+        subscribed: &SubscriptionMask,
+        threads: usize,
+        channel_depth: usize,
+    ) -> Result<Self, BacktestError> {
+        assert!(channel_depth > 0, "read channel depth must be greater than zero");
+
         let mut units = Vec::new();
         for path in files {
             let path = Arc::new(path.clone());
@@ -142,7 +156,7 @@ impl TickStream {
         let mut inboxes = Vec::with_capacity(threads);
         let mut handles = Vec::with_capacity(threads);
         for queue in queues {
-            let (tx, rx) = sync_channel(CHANNEL_DEPTH);
+            let (tx, rx) = sync_channel(channel_depth);
             let subscribed = Arc::clone(&subscribed);
             handles.push(thread::spawn(move || run_worker(queue, &subscribed, &tx)));
             inboxes.push(rx);
