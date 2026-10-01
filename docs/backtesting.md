@@ -122,6 +122,8 @@ Configure the run and interact with the portfolio through `ctx`:
 | `dataset_symbols()` / `add_symbol(symbol)` | List the dataset's symbols without subscribing / subscribe one you already hold |
 | `symbol(ticker)` / `symbol_name(symbol)` | Look a ticker up / resolve a symbol back to its ticker |
 | `data_dir()` | Canonical dataset root selected for this run |
+| `set_bar_data_dir(dir)` / `bar_data_dir()` | Optionally stream a compatible resampled dataset while keeping symbols and metadata on `data_dir()` |
+| `set_extended_market_hours(include)` | Include pre/after-market bars (default `true`) or admit only the NYSE regular session |
 | `market_order(symbol, qty)` | Trade a fixed quantity (negative = sell) |
 | `set_holdings(symbol, pct)` | Target a portfolio weight (`1.0` = 100% long), rounded to the lot size |
 | `liquidate(symbol)` | Close the entire position |
@@ -153,6 +155,17 @@ adjusted by the [slippage model](#slippage) and charged the
 [commission model](#commission) (both default to zero friction). By default the
 fill price is the **close of the same bar**; see [Fill timing](#fill-timing) to
 fill at the next bar's open instead.
+
+## Market sessions
+
+Minute data includes extended hours by default. Call
+`ctx.set_extended_market_hours(false)` to filter the entire engine pipeline to
+NYSE regular hours. Sessions are half-open (`09:30 <= time < close`) and honor
+the standard 13:00 early closes. Closed days need no special handling because
+they have no market-data rows.
+
+Precomputed daily bars are stamped at Eastern midnight, so leave the default
+enabled when reading them; they were already filtered during resampling.
 
 ## Fill timing
 
@@ -394,11 +407,13 @@ filtered to the subscribed symbols as it parses, rather than loaded whole.
 
 ## Bars, slices, and sessions
 
-- A `Slice` (`data`) exposes `data.bars: SymbolMap<Bar>`, keyed by [`Symbol`](#symbols);
+- A `Slice` (`data`) exposes `data.bars: SymbolMap<Bar>`, keyed by [`Symbol`](#symbols),
+  plus `data.session: MarketSession`, computed once for the entire tick;
   use `data.bars.get(&symbol)`.
 - A [`Bar`](../backtester/src/bar.rs) has `time` (`DateTime<Utc>`), `open`,
   `high`, `low`, `close`, and `volume`; `bar.session()` derives the session
-  (`PreMarket` / `Main` / `AfterMarket`) from the US Eastern time-of-day.
+  (`PreMarket` / `Main` / `AfterMarket`) when a bar is used outside a slice;
+  `Main` is the regular-hours session.
 
 ## Lookbacks
 
@@ -470,6 +485,8 @@ ctx.consolidate(symbol, ConsolidatorPeriod::Hours(1), |bar| {
 
 Consolidated bars aggregate high/low/volume across the period. The callback is
 an `FnMut`, so it can own and mutate captured state (e.g. an indicator).
+Consolidators do not apply market-session rules: use
+`set_extended_market_hours(false)` to filter their input at the engine level.
 
 ## Example strategies
 

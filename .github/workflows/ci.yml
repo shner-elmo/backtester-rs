@@ -71,12 +71,14 @@ jobs:
       - name: Format
         run: rustfmt --check --edition 2021 scripts/*.rs
       # --test compiles the script and runs whatever tests it has:
-      # insider_fetch has 6, ingest_arrow has none, so that one is a
-      # compile-and-link check.
+      # insider_fetch has tests; ingest_arrow and resample_daily have none, so
+      # those two are compile-and-link checks.
       - name: Test scripts/insider_fetch.rs
         run: rust-script --test scripts/insider_fetch.rs
       - name: Check scripts/ingest_arrow.rs
         run: rust-script --test scripts/ingest_arrow.rs
+      - name: Check scripts/resample_daily.rs
+        run: rust-script --test scripts/resample_daily.rs
 
   bench:
     runs-on: ubuntu-latest

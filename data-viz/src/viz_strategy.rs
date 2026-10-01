@@ -41,6 +41,9 @@ impl Algorithm for VizStrategy {
         if let Some(e) = self.end {
             ctx.set_end_date(e.year(), e.month(), e.day());
         }
+        // Intraday charts retain pre/after-market bars. Daily and weekly
+        // charts aggregate only the exchange's regular session.
+        ctx.set_extended_market_hours(self.tf.has_extended_hours());
 
         // The API layer already checked this ticker against the dataset map,
         // so this unwrap only panics if that validation boundary is broken.
@@ -51,8 +54,12 @@ impl Algorithm for VizStrategy {
         // and turns each closed period into a chart bar; raw minutes have no
         // period and are collected in `on_data`.
         if let Some(period) = self.tf.to_period() {
-            let (out, tf) = (self.out.clone(), self.tf);
-            ctx.consolidate(symbol, period, move |bar| out.borrow_mut().push(to_ohlc(bar, tf)));
+            let out = self.out.clone();
+            let has_extended = self.tf.has_extended_hours();
+            ctx.consolidate(symbol, period, move |bar| {
+                let extended = has_extended && bar.session() != MarketSession::Main;
+                out.borrow_mut().push(to_ohlc(bar, extended));
+            });
         }
     }
 
@@ -64,7 +71,7 @@ impl Algorithm for VizStrategy {
         }
         let Some(symbol) = self.symbol else { return };
         if let Some(bar) = slice.bars.get(&symbol) {
-            self.out.borrow_mut().push(to_ohlc(bar, self.tf));
+            self.out.borrow_mut().push(to_ohlc(bar, slice.session != MarketSession::Main));
         }
     }
 }
@@ -72,7 +79,7 @@ impl Algorithm for VizStrategy {
 /// A backtester [`Bar`] as a chart bar: OHLCV plus the US/Eastern wall-clock
 /// time and session flag the frontend expects. `time` is the ET local time
 /// reinterpreted as a Unix timestamp (see [`OhlcBar::time`]).
-fn to_ohlc(bar: &Bar, tf: Timeframe) -> OhlcBar {
+fn to_ohlc(bar: &Bar, is_extended: bool) -> OhlcBar {
     let et = bar.time.with_timezone(&Eastern);
     OhlcBar {
         time: et.naive_local().and_utc().timestamp(),
@@ -81,9 +88,7 @@ fn to_ohlc(bar: &Bar, tf: Timeframe) -> OhlcBar {
         low: bar.low,
         close: bar.close,
         volume: bar.volume as f64,
-        // Daily/weekly bars span whole days, so the flag only means anything
-        // for the intraday timeframes.
-        is_extended: tf.has_extended_hours() && bar.session() != MarketSession::Main,
+        is_extended,
     }
 }
 

@@ -7,10 +7,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use chrono_tz::US::Eastern;
 
-use super::{ledger::OpenLifetime, load_pending_actions, BacktestResult};
+use super::{ledger::OpenLifetime, load_pending_actions, validate_bar_data_dir, BacktestResult};
 use crate::{
     algorithm::Algorithm,
-    bar::Bar,
+    bar::{eastern_time, regular_session, Bar, MarketSession},
     broker::PriceTable,
     context::{Context, Order, RestingOrder},
     data::{file_year_month, sorted_parquet_files},
@@ -30,6 +30,20 @@ pub(super) struct PendingActions {
     pub(super) splits: BTreeMap<NaiveDate, Vec<(Symbol, f64)>>,
     pub(super) dividends: BTreeMap<NaiveDate, Vec<(Symbol, f64)>>,
     pub(super) renames: BTreeMap<NaiveDate, Vec<(Symbol, Symbol)>>,
+}
+
+struct MarketDay {
+    date: NaiveDate,
+    next_midnight: DateTime<Utc>,
+    regular: std::ops::Range<DateTime<Utc>>,
+}
+
+impl MarketDay {
+    fn containing(time: DateTime<Utc>) -> Self {
+        let date = time.with_timezone(&Eastern).date_naive();
+        let next_date = date.succ_opt().expect("market-data date has a successor");
+        Self { date, next_midnight: eastern_time(next_date, 0, 0), regular: regular_session(date) }
+    }
 }
 
 /// All mutable state of a running backtest. Phase methods live in
@@ -101,6 +115,7 @@ impl Engine {
         algo: &mut A,
         tick_time: DateTime<Utc>,
         tick_date: NaiveDate,
+        market_session: MarketSession,
         bars: Vec<(Symbol, Bar)>,
     ) {
         self.participation_used.clear();
@@ -159,7 +174,11 @@ impl Engine {
 
         // Reuse the previous tick's map allocation: a wide universe rebuilds
         // this every minute, and the capacity is the same every time.
-        let mut slice = Slice { time: tick_time, bars: std::mem::take(&mut self.slice_bars) };
+        let mut slice = Slice {
+            time: tick_time,
+            session: market_session,
+            bars: std::mem::take(&mut self.slice_bars),
+        };
         slice.bars.extend(bars);
         algo.on_data(&mut self.ctx, &slice);
 
@@ -345,17 +364,25 @@ pub(super) fn run_prepared<A: Algorithm>(
         }
     }
 
+    validate_bar_data_dir(&ctx)?;
+
     // The last place ticker strings are read: the metadata files resolve to
     // symbols here, against the ticker map the context was built from.
     let (subscribed, pending) = load_pending_actions(&mut ctx)?;
 
-    let files = sorted_parquet_files(ctx.data_dir());
+    let bar_data_dir = ctx.bar_data_dir().to_path_buf();
+    let files = sorted_parquet_files(&bar_data_dir);
     if files.is_empty() {
-        return Err(BacktestError::NoData { path: ctx.data_dir().to_path_buf() });
+        return Err(BacktestError::NoData { path: bar_data_dir });
     }
 
     let mut eng = Engine::new(ctx, pending);
     eng.log_startup(&files);
+    let regular_hours_only = !eng.ctx.extended_market_hours;
+    let mut start_time = eng.ctx.start_date.map(|date| eastern_time(date, 0, 0));
+    let end_time =
+        eng.ctx.end_date.and_then(|date| date.succ_opt()).map(|date| eastern_time(date, 0, 0));
+    let mut market_day: Option<MarketDay> = None;
 
     // Drop whole months outside the configured date range before opening
     // anything: a narrow window over a long dataset shouldn't pay to list or
@@ -388,23 +415,73 @@ pub(super) fn run_prepared<A: Algorithm>(
         // reuse the decoded value rather than re-converting it per tick.
         let tick_time = bars[0].1.time;
 
-        // Trading date in US Eastern, so after-market bars (which cross
-        // midnight UTC) stay on the day they belong to.
-        let tick_date = tick_time.with_timezone(&Eastern).date_naive();
-        if let Some(start) = eng.ctx.start_date {
-            if tick_date < start {
+        if let Some(start) = start_time {
+            if tick_time < start {
                 continue;
             }
+            // The stream is ordered, so no later tick can precede the start.
+            start_time = None;
         }
-        if let Some(end) = eng.ctx.end_date {
-            if tick_date > end {
-                break;
-            }
+        if end_time.is_some_and(|end| tick_time >= end) {
+            break;
         }
 
-        eng.process_tick(&mut algo, tick_time, tick_date, bars);
+        if market_day.as_ref().is_none_or(|day| tick_time >= day.next_midnight) {
+            market_day = Some(MarketDay::containing(tick_time));
+        }
+        let day = market_day.as_ref().expect("the current market day was initialized");
+        let market_session = MarketSession::at(tick_time, &day.regular);
+        if regular_hours_only && market_session != MarketSession::Main {
+            continue;
+        }
+
+        eng.process_tick(&mut algo, tick_time, day.date, market_session, bars);
     }
     drop(ticks);
 
     Ok(eng.finish(&mut algo))
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn regular_session_bounds_are_cached_as_utc_timestamps() {
+        let full_day = regular_session(date(2024, 7, 2));
+        assert_eq!(full_day.start, Utc.with_ymd_and_hms(2024, 7, 2, 13, 30, 0).unwrap());
+        assert_eq!(full_day.end, Utc.with_ymd_and_hms(2024, 7, 2, 20, 0, 0).unwrap());
+
+        let early_day = regular_session(date(2024, 11, 29));
+        assert_eq!(early_day.start, Utc.with_ymd_and_hms(2024, 11, 29, 14, 30, 0).unwrap());
+        assert_eq!(early_day.end, Utc.with_ymd_and_hms(2024, 11, 29, 18, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn market_day_classifies_an_early_close_from_cached_bounds() {
+        let day = MarketDay::containing(Utc.with_ymd_and_hms(2024, 11, 29, 14, 0, 0).unwrap());
+        let session_at = |hour, minute| {
+            MarketSession::at(
+                Utc.with_ymd_and_hms(2024, 11, 29, hour, minute, 0).unwrap(),
+                &day.regular,
+            )
+        };
+
+        assert_eq!(day.date, date(2024, 11, 29));
+        assert_eq!(session_at(14, 29), MarketSession::PreMarket);
+        assert_eq!(session_at(14, 30), MarketSession::Main);
+        assert_eq!(session_at(18, 0), MarketSession::AfterMarket);
+    }
+
+    #[test]
+    fn next_eastern_midnight_accounts_for_dst() {
+        let day = MarketDay::containing(Utc.with_ymd_and_hms(2024, 3, 10, 5, 0, 0).unwrap());
+        assert_eq!(day.date, date(2024, 3, 10));
+        assert_eq!(day.next_midnight, Utc.with_ymd_and_hms(2024, 3, 11, 4, 0, 0).unwrap());
+    }
 }

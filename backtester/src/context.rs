@@ -68,8 +68,10 @@ pub(crate) struct ScheduledTimeEntry {
 
 pub struct Context {
     pub portfolio: Portfolio,
-    /// Canonical root of the dataset selected for this run.
+    /// Primary dataset root, used for ticker naming and metadata.
     pub(crate) data_dir: PathBuf,
+    /// Optional canonical root to stream bars from instead of `data_dir`.
+    pub(crate) bar_data_dir: Option<PathBuf>,
     /// The dataset's ticker naming, loaded before `initialize` runs so
     /// `add_equity` can hand back the ticker id the data itself uses. Read
     /// when subscribing, when matching corporate actions, and when reporting
@@ -103,6 +105,8 @@ pub struct Context {
     /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
     /// from the machine's parallelism.
     pub(crate) read_threads: usize,
+    /// Whether bars outside the NYSE regular session enter the engine.
+    pub(crate) extended_market_hours: bool,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) margin: Box<dyn MarginModel>,
@@ -126,6 +130,7 @@ impl Default for Context {
         Self {
             portfolio: Portfolio::default(),
             data_dir: PathBuf::new(),
+            bar_data_dir: None,
             tickers: TickerMap::default(),
             consolidators: Vec::new(),
             consolidators_by_symbol: SymbolMap::default(),
@@ -138,6 +143,7 @@ impl Default for Context {
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
             read_threads: 0,
+            extended_market_hours: true,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             margin: Box::new(NoMargin),
@@ -284,9 +290,24 @@ impl Context {
         &self.tickers
     }
 
-    /// The canonical dataset root selected for this run.
+    /// The primary dataset root used for ticker naming and metadata.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// Stream bars from another canonical dataset root while keeping symbols
+    /// and metadata anchored at [`data_dir`](Self::data_dir). This is useful
+    /// for a pre-resampled daily copy. Its `encoded_tickers.json` must match
+    /// the primary dataset; the engine checks before reading any bars.
+    pub fn set_bar_data_dir(&mut self, dir: impl Into<PathBuf>) {
+        self.bar_data_dir = Some(dir.into());
+    }
+
+    /// The dataset root the engine will stream bars from. This is
+    /// [`data_dir`](Self::data_dir) unless overridden by
+    /// [`set_bar_data_dir`](Self::set_bar_data_dir).
+    pub fn bar_data_dir(&self) -> &Path {
+        self.bar_data_dir.as_deref().unwrap_or(&self.data_dir)
     }
 
     /// Set the slippage model applied to every fill (built-in, trait impl, or
@@ -398,6 +419,15 @@ impl Context {
     /// couple of decoded batches resident.
     pub fn set_read_threads(&mut self, threads: usize) {
         self.read_threads = threads;
+    }
+
+    /// Include or exclude bars outside the US-equity regular session.
+    ///
+    /// Defaults to `true`. Passing `false` filters the input to the NYSE
+    /// regular session, including 13:00 early closes. Leave it enabled for
+    /// precomputed daily bars stamped at Eastern midnight.
+    pub fn set_extended_market_hours(&mut self, include: bool) {
+        self.extended_market_hours = include;
     }
 
     /// Record a mark-to-market equity point on **every bar** (into

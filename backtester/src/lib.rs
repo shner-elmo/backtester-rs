@@ -1,5 +1,4 @@
-//! An event-driven backtesting engine for minute-bar equity data stored as
-//! Parquet.
+//! An event-driven backtesting engine for equity bar data stored as Parquet.
 //!
 //! Implement [`Algorithm`], configure the [`Context`] in `initialize`
 //! (symbols, dates, cash), trade in `on_data`, and hand it to [`run`] or
@@ -48,6 +47,7 @@ mod test_util;
 pub mod tick_stream;
 
 pub use algorithm::Algorithm;
+pub use bar::MarketSession;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
 pub use context::{Context, FillTiming};
 pub use engine::{
