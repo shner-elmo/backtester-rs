@@ -1,5 +1,7 @@
 # backtester-rs
 
+[![Architecture diagram of shner-elmo/backtester-rs](https://gitdiagram.com/shner-elmo/backtester-rs/diagram.png)](https://gitdiagram.com/shner-elmo/backtester-rs?utm_source=readme&utm_medium=picture)
+
 A fast, event-driven backtesting engine for US equity minute data. Write a
 strategy as a Rust trait; the engine streams Parquet data, executes orders, and
 produces performance results.
