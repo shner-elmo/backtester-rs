@@ -5,8 +5,8 @@ use std::{
 };
 
 use backtester::{
-    consolidator::ConsolidatorPeriod, run_backtest, run_backtest_with_data_dir, run_with_data_dir,
-    Algorithm, BacktestError, Context, Slice,
+    bar::MarketSession, consolidator::ConsolidatorPeriod, run_backtest, run_backtest_with_data_dir,
+    run_with_data_dir, Algorithm, BacktestError, Context, Slice,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../test-data");
@@ -131,6 +131,47 @@ fn copy_fixture_data(root: &std::path::Path) {
         month.join("part-0.parquet"),
     )
     .unwrap();
+}
+
+struct ObserveSessions {
+    regular_only: bool,
+    sessions: Arc<Mutex<Vec<MarketSession>>>,
+}
+
+impl Algorithm for ObserveSessions {
+    fn initialize(&mut self, ctx: &mut Context) {
+        if self.regular_only {
+            ctx.set_extended_market_hours(false);
+        }
+        ctx.add_equity("AAPL");
+    }
+
+    fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {
+        self.sessions.lock().unwrap().extend(data.bars.values().map(|bar| bar.session()));
+    }
+}
+
+fn observed_sessions(regular_only: bool) -> Vec<MarketSession> {
+    let sessions = Arc::new(Mutex::new(Vec::new()));
+    run_backtest_with_data_dir(
+        ObserveSessions { regular_only, sessions: sessions.clone() },
+        FIXTURE,
+    )
+    .unwrap();
+    let seen = sessions.lock().unwrap().clone();
+    seen
+}
+
+#[test]
+fn regular_session_filter_precedes_on_data() {
+    let all = observed_sessions(false);
+    let regular = observed_sessions(true);
+
+    assert!(all.contains(&MarketSession::PreMarket));
+    assert!(all.contains(&MarketSession::AfterMarket));
+    assert!(regular.contains(&MarketSession::Main));
+    assert!(regular.iter().all(|session| *session == MarketSession::Main));
+    assert!(regular.len() < all.len());
 }
 
 #[test]

@@ -152,7 +152,7 @@ async fn minute_times_are_eastern_wall_clock() {
 }
 
 #[tokio::test]
-async fn daily_buckets_are_eastern_midnights_matching_intraday() {
+async fn daily_buckets_are_eastern_midnights_matching_regular_session_minutes() {
     let daily = load(Timeframe::Daily).await;
     let minute = load(Timeframe::Min1).await;
 
@@ -161,10 +161,11 @@ async fn daily_buckets_are_eastern_midnights_matching_intraday() {
         assert!(!bar.is_extended, "daily bars have no extended flag");
     }
 
-    // The check the old UTC `DATE_TRUNC` failed: after-hours minutes (up to 01:00 UTC the
-    // next day) must stay inside their own ET day.
+    // Daily charts intentionally exclude extended hours. Rebuild the first
+    // daily bar independently from the regular-session minute response.
     let day = et(&daily[0]).date_naive();
-    let same_day: Vec<_> = minute.iter().filter(|b| et(b).date_naive() == day).collect();
+    let same_day: Vec<_> =
+        minute.iter().filter(|b| et(b).date_naive() == day && !b.is_extended).collect();
     assert!(!same_day.is_empty());
     let high = same_day.iter().map(|b| b.high).fold(f64::MIN, f64::max);
     let low = same_day.iter().map(|b| b.low).fold(f64::MAX, f64::min);
@@ -194,9 +195,16 @@ async fn weekly_buckets_are_eastern_mondays() {
 #[tokio::test]
 async fn min5_buckets_align_to_five_minute_marks() {
     let bars = load(Timeframe::Min5).await;
+    assert!(bars.iter().any(|bar| bar.is_extended), "5m chart lost extended-hours bars");
     for bar in &bars {
         assert_eq!(et(bar).minute() % 5, 0, "5m bucket off-grid: {}", et(bar));
     }
+}
+
+#[tokio::test]
+async fn minute_chart_retains_extended_hours() {
+    let bars = load(Timeframe::Min1).await;
+    assert!(bars.iter().any(|bar| bar.is_extended), "minute chart lost extended-hours bars");
 }
 
 // ── Indicators ────────────────────────────────────────────────────────────────

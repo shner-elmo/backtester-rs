@@ -229,7 +229,7 @@ whichever bars the run selected.
 
 The full 2021–2025 dataset (1.8 B
 minute rows, 32 GB) resamples in about 3 minutes (one engine run per month, 8
-in parallel; peak RSS ~1.5 GB) to 12.2 M rows (217 MB), and a full-universe
+in parallel; peak RSS ~1.5 GB) to 12.17 M rows (217 MB), and a full-universe
 no-op scan drops from ~80 s to ~3.5 s.
 
 **Keep the two roots side by side, never nested.** The engine discovers Parquet
@@ -243,17 +243,21 @@ Bar semantics:
 
 - The resampling is itself a backtest: every symbol gets a
   `ConsolidatorPeriod::Daily` consolidator, so the bars are exactly what a
-  strategy consolidating the minute data would see. A daily bar is one
-  ticker's minute bars within one US Eastern calendar day, pre- and
-  after-market included: first open, max high, min low, last close, summed
-  volume, stamped at **US Eastern midnight**.
+  strategy consolidating the minute data with extended hours disabled would
+  see. A daily bar is one ticker's NYSE regular-session minutes within one US
+  Eastern trading day: first open, max high, min low, last close, summed
+  volume, stamped at **US Eastern midnight**. Normal sessions are
+  09:30–16:00 (the 16:00 bar is excluded); official early closes, including
+  13:00 half days, are honored by the exchange calendar.
 - Because of the midnight stamp, `bar.session()` reports `PreMarket` for every
   daily bar and `Context::on_time` callbacks don't line up with real market
-  hours; drop session filters when moving a strategy to daily data. The
-  [fill timing](backtesting.md#fill-timing) rules are unchanged: the default
+  hours. Leave `Context`'s default extended-hours setting enabled when reading
+  the already-aggregated daily root, or its midnight bars will be filtered
+  out. The [fill timing](backtesting.md#fill-timing) rules are unchanged: the default
   fills at the day's close, `FillTiming::NextBarOpen` at the next day's open.
-- Volume stays `UInt32`; a daily sum above `u32::MAX` saturates (one bar in
-  the 2021–2025 dataset) and the script reports the count.
+- Volume stays `UInt32`; a daily sum above `u32::MAX` saturates and the script
+  reports the count. The verified 2021–2025 regular-session run had no
+  saturated rows.
 
 ## Committed test fixture
 

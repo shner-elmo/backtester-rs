@@ -41,6 +41,9 @@ impl Algorithm for VizStrategy {
         if let Some(e) = self.end {
             ctx.set_end_date(e.year(), e.month(), e.day());
         }
+        // Intraday charts retain pre/after-market bars. Daily and weekly
+        // charts aggregate only the exchange's regular session.
+        ctx.set_extended_market_hours(self.tf.has_extended_hours());
 
         // The API layer already checked this ticker against the dataset map,
         // so this unwrap only panics if that validation boundary is broken.

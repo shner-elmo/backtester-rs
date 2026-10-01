@@ -120,7 +120,9 @@ definitions.
   `FillTiming::NextBarOpen` to avoid same-bar look-ahead.
 - Slippage and commissions default to zero, and buying power is unlimited until
   a margin model is configured.
-- Pre-market and after-market bars are included.
+- Pre-market and after-market bars are included by default. Use
+  `Context::set_extended_market_hours(false)` for NYSE regular sessions,
+  including holidays and early closes.
 - Prices are raw and unadjusted. Optional metadata files provide splits,
   dividends, and ticker renames; stale held symbols are treated as delisted.
 

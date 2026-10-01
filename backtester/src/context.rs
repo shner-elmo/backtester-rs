@@ -105,6 +105,8 @@ pub struct Context {
     /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
     /// from the machine's parallelism.
     pub(crate) read_threads: usize,
+    /// Whether bars outside the NYSE regular session enter the engine.
+    pub(crate) extended_market_hours: bool,
     pub(crate) slippage: Box<dyn SlippageModel>,
     pub(crate) commission: Box<dyn CommissionModel>,
     pub(crate) margin: Box<dyn MarginModel>,
@@ -141,6 +143,7 @@ impl Default for Context {
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
             read_threads: 0,
+            extended_market_hours: true,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
             margin: Box::new(NoMargin),
@@ -416,6 +419,15 @@ impl Context {
     /// couple of decoded batches resident.
     pub fn set_read_threads(&mut self, threads: usize) {
         self.read_threads = threads;
+    }
+
+    /// Include or exclude bars outside the US-equity regular session.
+    ///
+    /// Defaults to `true`. Passing `false` filters the input to the NYSE
+    /// regular session, including holidays and early closes. Leave it enabled
+    /// for precomputed daily bars stamped at Eastern midnight.
+    pub fn set_extended_market_hours(&mut self, include: bool) {
+        self.extended_market_hours = include;
     }
 
     /// Record a mark-to-market equity point on **every bar** (into

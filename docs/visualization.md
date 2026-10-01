@@ -67,26 +67,23 @@ EST and EDT.
 
 To read one back, format it as UTC: `date -u -d @1609752600` → `09:30`.
 
-The same rule drives bucketing. `daily` and `weekly` truncate on a column cast to
-`America/New_York`, so a day runs 00:00–24:00 ET rather than UTC — otherwise
-after-hours minutes (16:00–20:00 ET is 21:00–01:00 UTC) land in the next day's
-bar. `start`/`end` are inclusive ET calendar dates, resolved to the UTC instants
-of ET midnight before they hit the query.
+The same rule drives bucketing. `daily` and `weekly` buckets are stamped at
+Eastern midnight. `start`/`end` are inclusive ET calendar dates.
 
-One consequence worth knowing: `daily`/`weekly` bars aggregate the **full**
-session including pre/after-market minutes, so their OHLC and volume will not
-match a vendor's regular-session daily bars.
+`min1` and `min5` retain pre-market and after-market bars. `daily` and `weekly`
+use the engine's NYSE calendar filter and aggregate only regular-session bars,
+including the actual 13:00 close on official half days.
 
 ### Features
 
-- **Timeframes**: `min1` (default), `min5`, `daily`, `weekly`. `min5` uses
-  `date_bin`; `daily`/`weekly` use `date_trunc` over an ET-cast timestamp.
-  Aggregation is pushed into DataFusion — no BTree/HashMap in application code.
+- **Timeframes**: `min1` (default), `min5`, `daily`, `weekly`. Higher
+  timeframes use the backtest engine's consolidators.
 - **One request per load**: `GET /api/bars` returns bars and indicators in a
   single JSON body, and the frontend does one `setData()` per series. There is no
   streaming.
-- **Extended hours**: always shown, in a single candlestick series with per-bar
-  colour overrides so pre/after-market candles read as dimmed but continuous.
+- **Extended hours**: shown for `min1` and `min5`, in a single candlestick
+  series with per-bar colour overrides so pre/after-market candles read as
+  dimmed but continuous. Daily and weekly bars are regular-session only.
 - **Indicators**: multiple indicators with configurable parameters, added via
   chip UI, each with its own colour. Overlays (EMA, SMA, BBands) go on the price
   chart; oscillators (RSI, MACD) open a pane below.
@@ -157,7 +154,7 @@ layer:
 
 - `create_app(data_dir: impl AsRef<Path>) -> Router` — the axum app.
 - `load_bars(data_dir: impl AsRef<Path>, symbol, start, end, Timeframe) -> Result<Vec<OhlcBar>, String>`
-  — bars straight from Parquet via DataFusion. An unknown symbol is `Ok(vec![])`;
+  — bars straight from Parquet via the backtest engine. An unknown symbol is `Ok(vec![])`;
   a query failure is `Err`.
 
 ## ui — the results dashboard
