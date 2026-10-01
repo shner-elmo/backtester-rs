@@ -407,11 +407,13 @@ filtered to the subscribed symbols as it parses, rather than loaded whole.
 
 ## Bars, slices, and sessions
 
-- A `Slice` (`data`) exposes `data.bars: SymbolMap<Bar>`, keyed by [`Symbol`](#symbols);
+- A `Slice` (`data`) exposes `data.bars: SymbolMap<Bar>`, keyed by [`Symbol`](#symbols),
+  plus `data.session: MarketSession`, computed once for the entire tick;
   use `data.bars.get(&symbol)`.
 - A [`Bar`](../backtester/src/bar.rs) has `time` (`DateTime<Utc>`), `open`,
   `high`, `low`, `close`, and `volume`; `bar.session()` derives the session
-  (`PreMarket` / `Main` / `AfterMarket`) from the US Eastern time-of-day.
+  (`PreMarket` / `Main` / `AfterMarket`) when a bar is used outside a slice;
+  `Main` is the regular-hours session.
 
 ## Lookbacks
 

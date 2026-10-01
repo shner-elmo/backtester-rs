@@ -147,7 +147,7 @@ impl Algorithm for ObserveSessions {
     }
 
     fn on_data(&mut self, _ctx: &mut Context, data: &Slice) {
-        self.sessions.lock().unwrap().extend(data.bars.values().map(|bar| bar.session()));
+        self.sessions.lock().unwrap().push(data.session);
     }
 }
 

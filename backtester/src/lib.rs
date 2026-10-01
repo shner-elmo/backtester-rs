@@ -47,6 +47,7 @@ mod test_util;
 pub mod tick_stream;
 
 pub use algorithm::Algorithm;
+pub use bar::MarketSession;
 pub use commission::{CommissionModel, NoCommission, PerShareCommission, PercentCommission};
 pub use context::{Context, FillTiming};
 pub use engine::{

@@ -137,8 +137,9 @@ script ([`scripts/ingest_arrow.rs`](../scripts/ingest_arrow.rs)) produces:
 
 Extra columns (older Polygon-derived files carried `transactions`,
 `market_session`, `day`) are ignored — there is no session column anymore; the
-session is derived from the timestamp's US Eastern time-of-day via
-`bar.session()`.
+engine derives the session once per tick from the timestamp and its cached
+US Eastern daily boundaries (`bar.session()` remains available for standalone
+bars).
 
 > Physical column order varies between dataset generations (older files put
 > `close` before `high`/`low`). Column readers must look columns up **by
@@ -249,12 +250,13 @@ Bar semantics:
   volume, stamped at **US Eastern midnight**. Normal sessions are
   09:30–16:00 (the 16:00 bar is excluded); official early closes, including
   13:00 half days, use the earlier boundary.
-- Because of the midnight stamp, `bar.session()` reports `PreMarket` for every
-  daily bar and `Context::on_time` callbacks don't line up with real market
-  hours. Leave `Context`'s default extended-hours setting enabled when reading
-  the already-aggregated daily root, or its midnight bars will be filtered
-  out. The [fill timing](backtesting.md#fill-timing) rules are unchanged: the default
-  fills at the day's close, `FillTiming::NextBarOpen` at the next day's open.
+- Because of the midnight stamp, `slice.session` and `bar.session()` report
+  `PreMarket` for every daily bar and `Context::on_time` callbacks don't line
+  up with real market hours. Leave `Context`'s default extended-hours setting
+  enabled when reading the already-aggregated daily root, or its midnight bars
+  will be filtered out. The [fill timing](backtesting.md#fill-timing) rules are
+  unchanged: the default fills at the day's close, `FillTiming::NextBarOpen`
+  at the next day's open.
 - Volume stays `UInt32`; a daily sum above `u32::MAX` saturates and the script
   reports the count. The verified 2021–2025 regular-session run had no
   saturated rows.
