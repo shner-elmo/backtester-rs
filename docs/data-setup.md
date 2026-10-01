@@ -180,6 +180,31 @@ rust-script scripts/ingest_arrow.rs \
   --input <raw-minute-dir>
 ```
 
+## Generating an early-close calendar
+
+[`scripts/generate_early_close_calendar.rs`](../scripts/generate_early_close_calendar.rs) scans
+the `window_start` column of every minute-bar Parquet file under `BACKTEST_DATA_DIR`. For each US
+Eastern date it counts market-wide bars per minute between 09:30 (inclusive) and 16:00
+(exclusive), finds a sustained activity drop from the morning baseline, and writes dates where
+the final broad-market auction minute occurs before 16:00 to a sorted JSON object. This excludes
+sparse post-close prints that can otherwise look like a later closing time.
+
+```bash
+export BACKTEST_DATA_DIR=/path/to/minute-dataset
+rust-script scripts/generate_early_close_calendar.rs \
+  --output /path/to/early_closes.json
+```
+
+The resulting shape is:
+
+```json
+{
+  "2024-07-03": "13:00",
+  "2024-11-29": "13:00",
+  "2024-12-24": "13:00"
+}
+```
+
 The script creates `encoded_tickers.json` as part of the dataset by scanning
 the input, sorting distinct tickers, and assigning sequential `u16` ids. It
 publishes the map through a temporary file and atomic rename. CSV parse errors
