@@ -1,6 +1,5 @@
 # backtester-rs
 
-[![Architecture diagram of shner-elmo/backtester-rs](https://gitdiagram.com/shner-elmo/backtester-rs/diagram.png)](https://gitdiagram.com/shner-elmo/backtester-rs?utm_source=readme&utm_medium=picture)
 
 A fast, event-driven backtesting engine for US equity minute data. Write a
 strategy as a Rust trait; the engine streams Parquet data, executes orders, and
@@ -137,6 +136,12 @@ After the read-ahead tuning recorded in the
 1.835 billion bars in roughly 79–83 seconds (~22–23 million bars/s) on an
 8-core Ryzen 7 5700U with NVMe storage. The same cold-disk scan takes about 142
 seconds on SATA. Strategy logic and hardware determine real-world throughput.
+
+
+## How it works
+
+<img width="5886" height="10742" alt="diagram" src="https://github.com/user-attachments/assets/e2c7b686-e6b3-4ee9-8636-b6e8b47f1e32" />
+
 
 ## Development
 
