@@ -183,26 +183,25 @@ rust-script scripts/ingest_arrow.rs \
 ## Generating an early-close calendar
 
 [`scripts/generate_early_close_calendar.rs`](../scripts/generate_early_close_calendar.rs) scans
-the `window_start` column of every minute-bar Parquet file under `BACKTEST_DATA_DIR`. For each US
-Eastern date it counts market-wide bars per minute between 09:30 (inclusive) and 16:00
-(exclusive), finds a sustained activity drop from the morning baseline, and writes dates where
-the final broad-market auction minute occurs before 16:00 to a sorted JSON object. This excludes
-sparse post-close prints that can otherwise look like a later closing time.
+the minute dataset through a backtester algorithm subscribed only to SPY. The algorithm records
+SPY's final extended-hours bar on every trading date. Because minute bars are start-stamped, a
+last bar in the hour ending at 17:00 US Eastern identifies a half day and one in the hour ending
+at 20:00 identifies a full day. It writes the half-day dates to
+`$BACKTEST_DATA_DIR/metadata/early_closes.json`; their regular session always closes at 13:00.
 
 ```bash
 export BACKTEST_DATA_DIR=/path/to/minute-dataset
-rust-script scripts/generate_early_close_calendar.rs \
-  --output /path/to/early_closes.json
+rust-script scripts/generate_early_close_calendar.rs
 ```
 
 The resulting shape is:
 
 ```json
-{
-  "2024-07-03": "13:00",
-  "2024-11-29": "13:00",
-  "2024-12-24": "13:00"
-}
+[
+  "2024-07-03",
+  "2024-11-29",
+  "2024-12-24"
+]
 ```
 
 The script creates `encoded_tickers.json` as part of the dataset by scanning
