@@ -71,8 +71,8 @@ The same rule drives bucketing. `daily` and `weekly` buckets are stamped at
 Eastern midnight. `start`/`end` are inclusive ET calendar dates.
 
 `min1` and `min5` retain pre-market and after-market bars. `daily` and `weekly`
-use the engine's NYSE calendar filter and aggregate only regular-session bars,
-including the actual 13:00 close on official half days.
+use the engine's session filter and aggregate only regular-session bars,
+including the 13:00 close on official half days.
 
 ### Features
 

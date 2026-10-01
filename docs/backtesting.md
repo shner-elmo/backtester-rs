@@ -161,8 +161,8 @@ fill at the next bar's open instead.
 Minute data includes extended hours by default. Call
 `ctx.set_extended_market_hours(false)` to filter the entire engine pipeline to
 NYSE regular hours. Sessions are half-open (`09:30 <= time < close`) and honor
-holidays and 13:00 early closes. Dates outside the calendar's 2020–2028 range
-return an error.
+the standard 13:00 early closes. Closed days need no special handling because
+they have no market-data rows.
 
 Precomputed daily bars are stamped at Eastern midnight, so leave the default
 enabled when reading them; they were already filtered during resampling.

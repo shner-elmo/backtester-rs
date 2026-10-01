@@ -4,9 +4,8 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
-use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Utc, Weekday};
 use chrono_tz::US::Eastern;
-use nyse_holiday_cal::HolidayCal;
 
 use super::{ledger::OpenLifetime, load_pending_actions, validate_bar_data_dir, BacktestResult};
 use crate::{
@@ -33,20 +32,30 @@ pub(super) struct PendingActions {
     pub(super) renames: BTreeMap<NaiveDate, Vec<(Symbol, Symbol)>>,
 }
 
-fn regular_session_close(date: NaiveDate) -> Result<Option<u32>, BacktestError> {
-    let carter_mourning = date == NaiveDate::from_ymd_opt(2025, 1, 9).unwrap();
-    if carter_mourning || !date.is_busday().map_err(|_| BacktestError::TradingCalendar { date })? {
-        return Ok(None);
-    }
-
+fn is_early_close(date: NaiveDate) -> bool {
     // July 3, the Friday after Thanksgiving, and Christmas Eve.
-    let early = matches!(
+    matches!(
         (date.month(), date.day(), date.weekday()),
         (7, 3, Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu)
             | (11, 23..=29, Weekday::Fri)
             | (12, 24, Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu)
-    );
-    Ok(Some(if early { 13 * 60 } else { 16 * 60 }))
+    )
+}
+
+fn regular_session(date: NaiveDate) -> std::ops::Range<DateTime<Utc>> {
+    let timestamp = |hour| {
+        Eastern
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), hour, 0, 0)
+            .single()
+            .expect("NYSE session time is unambiguous")
+            .with_timezone(&Utc)
+    };
+    let open = Eastern
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 9, 30, 0)
+        .single()
+        .expect("NYSE session time is unambiguous")
+        .with_timezone(&Utc);
+    open..timestamp(if is_early_close(date) { 13 } else { 16 })
 }
 
 /// All mutable state of a running backtest. Phase methods live in
@@ -376,8 +385,9 @@ pub(super) fn run_prepared<A: Algorithm>(
 
     let mut eng = Engine::new(ctx, pending);
     eng.log_startup(&files);
+    let regular_hours_only = !eng.ctx.extended_market_hours;
     let mut session_date = None;
-    let mut session_close = None;
+    let mut session = None;
 
     // Drop whole months outside the configured date range before opening
     // anything: a narrow window over a long dataset shouldn't pay to list or
@@ -412,8 +422,7 @@ pub(super) fn run_prepared<A: Algorithm>(
 
         // Trading date in US Eastern, so after-market bars (which cross
         // midnight UTC) stay on the day they belong to.
-        let tick_et = tick_time.with_timezone(&Eastern);
-        let tick_date = tick_et.date_naive();
+        let tick_date = tick_time.with_timezone(&Eastern).date_naive();
         if let Some(start) = eng.ctx.start_date {
             if tick_date < start {
                 continue;
@@ -425,13 +434,12 @@ pub(super) fn run_prepared<A: Algorithm>(
             }
         }
 
-        if !eng.ctx.extended_market_hours {
+        if regular_hours_only {
             if session_date != Some(tick_date) {
                 session_date = Some(tick_date);
-                session_close = regular_session_close(tick_date)?;
+                session = Some(regular_session(tick_date));
             }
-            let minute = tick_et.hour() * 60 + tick_et.minute();
-            if session_close.is_none_or(|close| !(9 * 60 + 30..close).contains(&minute)) {
+            if !session.as_ref().is_some_and(|bounds| bounds.contains(&tick_time)) {
                 continue;
             }
         }
@@ -452,11 +460,20 @@ mod session_tests {
     }
 
     #[test]
-    fn nyse_closes() {
-        assert_eq!(regular_session_close(date(2024, 1, 3)).unwrap(), Some(16 * 60));
-        assert_eq!(regular_session_close(date(2024, 11, 29)).unwrap(), Some(13 * 60));
-        assert_eq!(regular_session_close(date(2024, 12, 25)).unwrap(), None);
-        assert_eq!(regular_session_close(date(2025, 1, 9)).unwrap(), None);
-        assert!(regular_session_close(date(2019, 1, 2)).is_err());
+    fn regular_session_bounds_are_cached_as_utc_timestamps() {
+        let full_day = regular_session(date(2024, 7, 2));
+        assert_eq!(full_day.start, Utc.with_ymd_and_hms(2024, 7, 2, 13, 30, 0).unwrap());
+        assert_eq!(full_day.end, Utc.with_ymd_and_hms(2024, 7, 2, 20, 0, 0).unwrap());
+
+        let early_day = regular_session(date(2024, 11, 29));
+        assert_eq!(early_day.start, Utc.with_ymd_and_hms(2024, 11, 29, 14, 30, 0).unwrap());
+        assert_eq!(early_day.end, Utc.with_ymd_and_hms(2024, 11, 29, 18, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn regular_session_includes_open_and_excludes_close() {
+        let session = regular_session(date(2024, 11, 29));
+        assert!(session.contains(&session.start));
+        assert!(!session.contains(&session.end));
     }
 }

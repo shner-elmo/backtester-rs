@@ -424,8 +424,8 @@ impl Context {
     /// Include or exclude bars outside the US-equity regular session.
     ///
     /// Defaults to `true`. Passing `false` filters the input to the NYSE
-    /// regular session, including holidays and early closes. Leave it enabled
-    /// for precomputed daily bars stamped at Eastern midnight.
+    /// regular session, including 13:00 early closes. Leave it enabled for
+    /// precomputed daily bars stamped at Eastern midnight.
     pub fn set_extended_market_hours(&mut self, include: bool) {
         self.extended_market_hours = include;
     }

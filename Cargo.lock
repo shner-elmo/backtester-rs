@@ -635,7 +635,6 @@ dependencies = [
  "chrono",
  "chrono-tz 0.9.0",
  "criterion",
- "nyse-holiday-cal",
  "parquet 56.2.0",
  "rustc-hash",
  "serde",
@@ -2521,16 +2520,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "nyse-holiday-cal"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "382dbb796eed7dbed8603bb577c3e5ce74caaff6dc74b528bc5e733c1d123ee6"
-dependencies = [
- "chrono",
- "lazy_static",
 ]
 
 [[package]]

@@ -30,8 +30,6 @@ pub enum BacktestError {
     /// The configured date range is inverted: the start date is after the end
     /// date.
     InvalidDateRange { start: NaiveDate, end: NaiveDate },
-    /// Regular-session filtering was requested outside the NYSE calendar.
-    TradingCalendar { date: NaiveDate },
     /// A bar's timestamp ran backwards. The engine streams each Parquet file
     /// in row order and never re-sorts, so rows must be non-decreasing in
     /// `window_start` within a file, and a month partition must not contain
@@ -67,9 +65,6 @@ impl fmt::Display for BacktestError {
             }
             Self::InvalidDateRange { start, end } => {
                 write!(f, "invalid date range: start date {start} is after end date {end}")
-            }
-            Self::TradingCalendar { date } => {
-                write!(f, "NYSE holiday calendar does not support {date}")
             }
             Self::ReaderThreadDied => {
                 write!(f, "a Parquet decode thread died before reaching the end of the data")

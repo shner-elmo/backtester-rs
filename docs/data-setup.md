@@ -180,30 +180,6 @@ rust-script scripts/ingest_arrow.rs \
   --input <raw-minute-dir>
 ```
 
-## Generating an early-close calendar
-
-[`scripts/generate_early_close_calendar.rs`](../scripts/generate_early_close_calendar.rs) scans
-the minute dataset through a backtester algorithm subscribed only to SPY. The algorithm records
-SPY's final extended-hours bar on every trading date. Because minute bars are start-stamped, a
-last bar in the hour ending at 17:00 US Eastern identifies a half day and one in the hour ending
-at 20:00 identifies a full day. It writes the half-day dates to
-`$BACKTEST_DATA_DIR/metadata/early_closes.json`; their regular session always closes at 13:00.
-
-```bash
-export BACKTEST_DATA_DIR=/path/to/minute-dataset
-rust-script scripts/generate_early_close_calendar.rs
-```
-
-The resulting shape is:
-
-```json
-[
-  "2024-07-03",
-  "2024-11-29",
-  "2024-12-24"
-]
-```
-
 The script creates `encoded_tickers.json` as part of the dataset by scanning
 the input, sorting distinct tickers, and assigning sequential `u16` ids. It
 publishes the map through a temporary file and atomic rename. CSV parse errors
@@ -272,7 +248,7 @@ Bar semantics:
   Eastern trading day: first open, max high, min low, last close, summed
   volume, stamped at **US Eastern midnight**. Normal sessions are
   09:30–16:00 (the 16:00 bar is excluded); official early closes, including
-  13:00 half days, are honored by the exchange calendar.
+  13:00 half days, use the earlier boundary.
 - Because of the midnight stamp, `bar.session()` reports `PreMarket` for every
   daily bar and `Context::on_time` callbacks don't line up with real market
   hours. Leave `Context`'s default extended-hours setting enabled when reading

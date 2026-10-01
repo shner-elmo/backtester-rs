@@ -122,7 +122,7 @@ definitions.
   a margin model is configured.
 - Pre-market and after-market bars are included by default. Use
   `Context::set_extended_market_hours(false)` for NYSE regular sessions,
-  including holidays and early closes.
+  including 13:00 early closes.
 - Prices are raw and unadjusted. Optional metadata files provide splits,
   dividends, and ticker renames; stale held symbols are treated as delisted.
 
