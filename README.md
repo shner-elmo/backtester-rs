@@ -1,5 +1,6 @@
 # backtester-rs
 
+
 A fast, event-driven backtesting engine for US equity minute data. Write a
 strategy as a Rust trait; the engine streams Parquet data, executes orders, and
 produces performance results.
@@ -71,6 +72,8 @@ fn main() {
 `run` and `run_backtest` read the canonical dataset root from
 `BACKTEST_DATA_DIR`. Library callers that already have a path can use
 `run_with_data_dir(strategy, path)` or `run_backtest_with_data_dir(strategy, path)`.
+Strategies can use `Context::set_bar_data_dir` to stream a compatible
+pre-resampled daily copy while retaining the primary root's symbols and metadata.
 
 See [Running a Backtest](docs/backtesting.md) for the complete API, including
 indicators, consolidators, order types, fill models, and corporate actions.
@@ -118,7 +121,9 @@ definitions.
   `FillTiming::NextBarOpen` to avoid same-bar look-ahead.
 - Slippage and commissions default to zero, and buying power is unlimited until
   a margin model is configured.
-- Pre-market and after-market bars are included.
+- Pre-market and after-market bars are included by default. Use
+  `Context::set_extended_market_hours(false)` for NYSE regular sessions,
+  including 13:00 early closes.
 - Prices are raw and unadjusted. Optional metadata files provide splits,
   dividends, and ticker renames; stale held symbols are treated as delisted.
 
@@ -131,6 +136,12 @@ At reader channel depth 8, the reference no-op scan in the
 roughly 79–83 seconds (~22–23 million bars/s) on an 8-core Ryzen 7 5700U with NVMe
 storage. The same cold-disk scan took about 142 seconds on SATA. Strategy logic
 and hardware determine real-world throughput.
+
+
+## How it works
+
+<img width="5886" height="10742" alt="diagram" src="https://github.com/user-attachments/assets/e2c7b686-e6b3-4ee9-8636-b6e8b47f1e32" />
+
 
 ## Development
 

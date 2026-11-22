@@ -17,9 +17,9 @@
 //! The resampling *is* a backtest, one per month run in parallel: every symbol gets a
 //! `ConsolidatorPeriod::Daily` consolidator, so reading, ordering checks and aggregation are the
 //! engine's own, and the bars are exactly what a strategy consolidating the minute data would
-//! see (stamped at US Eastern midnight, pre- and after-market included). Volume is written as
-//! UInt32 (the engine's column type); a daily sum above `u32::MAX` saturates and is counted in
-//! the summary.
+//! see after applying the NYSE regular-session calendar (stamped at US Eastern midnight, with
+//! official early closes). Volume is written as UInt32 (the engine's column type); a daily sum
+//! above `u32::MAX` saturates and is counted in the summary.
 //!
 //! ```cargo
 //! [dependencies]
@@ -74,6 +74,9 @@ impl Algorithm for DailyCollector {
         ctx.set_log_config(LogConfig::none());
         // Months already run in parallel; more decode threads per run would only oversubscribe.
         ctx.set_read_threads(1);
+        // Apply the engine's exchange calendar before the otherwise
+        // session-agnostic daily consolidators see each minute.
+        ctx.set_extended_market_hours(false);
         ctx.set_start_date(self.first.year(), self.first.month(), self.first.day());
         ctx.set_end_date(self.last.year(), self.last.month(), self.last.day());
         for symbol in ctx.dataset_symbols() {
