@@ -60,6 +60,56 @@ across 60 month files, which SATA degrades on and NVMe does not. So the practica
 SATA penalty is larger than the raw spec gap. Actionable: keep the working
 dataset on NVMe — full-universe scans roughly halve (142 s → ~80 s).
 
+## Reader channel-depth memory benchmark (2026-10-02)
+
+A follow-up benchmark checked whether the ~950 MiB RSS in wide-universe runs is
+mostly decoded chunks queued in the reader channels. The production default was
+left at depth 8; this run only added per-run configuration and measured whether
+lower depths are safe enough to recommend.
+
+Method: release build (`thin` LTO, one codegen unit), 8 reader threads, warmed
+2024 Q1 on the NVMe minute dataset before every quarter run, no trades, no
+backtest result output, and GNU `time -v` around every repetition. All accepted
+runs exited successfully with stable ticks, bars, checksums, final equity, and
+callback counts.
+
+The initial `noop-wide` check confirms channel buffering is the main RSS driver:
+
+| depth | median wall | median peak RSS | vs depth 8 RSS |
+|---:|---:|---:|---:|
+| 1 | 7.335 s | 291 MiB | −65.6% |
+| 4 | 6.035 s | 541 MiB | −36.2% |
+| 8 | 5.820 s | 848 MiB | baseline |
+
+The four-workload Q1 sweep used depths 1, 2, 3, 4, 6, and 8 with three
+repetitions each; high-spread cells received two more repetitions before the
+recommendation. Median wall time / median RSS:
+
+| workload | depth 1 | depth 2 | depth 3 | depth 4 | depth 6 | depth 8 |
+|---|---:|---:|---:|---:|---:|---:|
+| `noop-wide` | 7.387s / 290 MiB | 7.048s / 361 MiB | 6.635s / 429 MiB | 6.089s / 546 MiB | 5.820s / 744 MiB | 5.903s / 849 MiB |
+| `indicators-wide` | 12.023s / 394 MiB | 11.993s / 484 MiB | 12.153s / 559 MiB | 12.661s / 659 MiB | 12.003s / 832 MiB | 11.719s / 970 MiB |
+| `consolidator-wide` | 17.688s / 408 MiB | 17.021s / 499 MiB | 17.931s / 580 MiB | 17.468s / 683 MiB | 18.325s / 848 MiB | 17.441s / 993 MiB |
+| `mixed-narrow` | 2.592s / 79 MiB | 2.589s / 81 MiB | 2.609s / 82 MiB | 2.626s / 81 MiB | 2.581s / 81 MiB | 2.588s / 83 MiB |
+
+Depth 8 was the only setting within 5% of the fastest median for every workload.
+Depth 4 missed that threshold on `indicators-wide`, and depth 6 missed it on
+`consolidator-wide`. The full validation therefore used depth 8.
+
+Full 56-month validation at depth 8:
+
+| workload | median wall | median peak RSS | ticks | bars | checksum |
+|---|---:|---:|---:|---:|---|
+| `noop-wide` | 88.678 s | 931 MiB | 1,120,001 | 1,835,105,812 | `b045452492db67ff` |
+| `mixed-narrow` | 26.024 s | 111 MiB | 1,006,021 | 10,776,702 | `19278cdbc06ad833` |
+
+The default is now depth 4 to reduce memory use in strategy backtests. Compared
+with depth 8, it reduced median peak RSS by 31–36% across the three wide
+workloads. The wide consolidator took about the same time, the full-universe
+no-op took 3% longer, and the wide indicator median was 8% slower amid
+substantial run-to-run variation. On throughput-sensitive runs, compare depth 8
+using `Context::set_read_channel_depth(8)`.
+
 ## The knobs
 
 | Knob | Where | Value | Controls | Configurable? |
@@ -67,7 +117,7 @@ dataset on NVMe — full-universe scans roughly halve (142 s → ~80 s).
 | `set_read_threads(n)` | `backtester/src/context.rs` | `0` → `default_threads()` | decode threads ahead of the tick loop | yes, per-run via `Context` |
 | `default_threads()` | `backtester/src/tick_stream.rs` | `min(cores, 8)` | thread count when `0` | derived |
 | `MAX_AUTO_THREADS` | `backtester/src/tick_stream.rs` | `8` | cap on the auto thread count | hardcoded |
-| `CHANNEL_DEPTH` | `backtester/src/tick_stream.rs` | `8` (was `2`) | decoded chunks a worker may queue ahead of the consumer | hardcoded |
+| `set_read_channel_depth(n)` | `backtester/src/context.rs` | `4` (must be non-zero) | decoded chunks a worker may queue ahead of the consumer | yes, per-run via `Context` |
 | `READ_BATCH_SIZE` | `backtester/src/data.rs` | `131_072` | rows per Arrow batch decoded at once | hardcoded |
 | row-group size | `scripts/ingest_arrow.rs` | Parquet writer default | rows per row group = one decode work unit | ingest-time only |
 
@@ -83,8 +133,8 @@ dataset on NVMe — full-universe scans roughly halve (142 s → ~80 s).
    symbol width, but the bytes stay in cache so you measure decode.
 3. **Sweep one axis at a time** from the current defaults; a knob only matters if
    it moves bars/s outside the ~3% noise band. `NOOP_THREADS=n` picks threads
-   without a rebuild; `CHANNEL_DEPTH` / `READ_BATCH_SIZE` are consts, so edit +
-   `cargo build --release --example no_op_baseline` per value.
+   without a rebuild. Use the `channel_depth_benchmark` example with `--depth N`
+   to sweep depth. Changing `READ_BATCH_SIZE` requires a rebuild.
 4. **Confirm on the full cold scan** before promoting — the production path is
    disk-bound and a knob that helps the warm case must at least not regress it.
 

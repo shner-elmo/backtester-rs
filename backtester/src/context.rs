@@ -105,6 +105,8 @@ pub struct Context {
     /// Threads decoding Parquet ahead of the tick loop; 0 picks a default
     /// from the machine's parallelism.
     pub(crate) read_threads: usize,
+    /// Decoded chunks each reader thread may queue ahead of the tick loop.
+    pub(crate) read_channel_depth: usize,
     /// Whether bars outside the NYSE regular session enter the engine.
     pub(crate) extended_market_hours: bool,
     pub(crate) slippage: Box<dyn SlippageModel>,
@@ -143,6 +145,7 @@ impl Default for Context {
             resting_orders: Vec::new(),
             max_volume_participation: 0.0,
             read_threads: 0,
+            read_channel_depth: crate::tick_stream::DEFAULT_READ_CHANNEL_DEPTH,
             extended_market_hours: true,
             slippage: Box::new(NoSlippage),
             commission: Box::new(NoCommission),
@@ -415,10 +418,22 @@ impl Context {
     /// (the read still overlaps the tick loop, just without the fan-out).
     ///
     /// Results do not depend on this — the tick stream is identical either
-    /// way — so it is purely a throughput/memory trade: each thread keeps a
-    /// couple of decoded batches resident.
+    /// way — so it is purely a throughput/memory trade: each thread may keep
+    /// decoded batches resident up to the configured read-channel depth.
     pub fn set_read_threads(&mut self, threads: usize) {
         self.read_threads = threads;
+    }
+
+    /// Set how many decoded chunks each reader thread may queue ahead of the
+    /// event loop. Defaults to 4 and must be non-zero.
+    ///
+    /// If a wide backtest needs higher throughput, benchmark depth 8 on
+    /// your dataset. Extra read-ahead can help when the strategy processes
+    /// bars quickly, at the cost of higher peak memory. Lower the depth to
+    /// reduce memory use.
+    pub fn set_read_channel_depth(&mut self, depth: usize) {
+        assert!(depth > 0, "read channel depth must be greater than zero");
+        self.read_channel_depth = depth;
     }
 
     /// Include or exclude bars outside the US-equity regular session.
@@ -585,6 +600,17 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+
+    #[test]
+    fn read_channel_depth_defaults_to_four() {
+        assert_eq!(Context::default().read_channel_depth, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "read channel depth must be greater than zero")]
+    fn read_channel_depth_rejects_zero() {
+        Context::default().set_read_channel_depth(0);
+    }
 
     fn et(y: i32, mo: u32, d: u32, h: u32, m: u32) -> DateTime<Utc> {
         Eastern.with_ymd_and_hms(y, mo, d, h, m, 0).unwrap().with_timezone(&Utc)

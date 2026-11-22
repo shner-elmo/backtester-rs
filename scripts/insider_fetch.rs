@@ -29,7 +29,7 @@
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
 //! ureq = { version = "3", features = ["platform-verifier"] }
-//! zip = { version = "2", default-features = false, features = ["deflate"] }
+//! zip = { version = "2.6.1", default-features = false, features = ["deflate"] }
 //!
 //! [dev-dependencies]
 //! tempfile = "3"
@@ -199,7 +199,7 @@ fn download_quarter(
 /// header name. Missing columns fail loudly (naming the file and column) so
 /// upstream schema drift is caught, not silently mis-parsed.
 struct Tsv<'a> {
-    reader: csv::Reader<zip::read::ZipFile<'a>>,
+    reader: csv::Reader<zip::read::ZipFile<'a, File>>,
     indexes: Vec<usize>,
     row: csv::StringRecord,
 }

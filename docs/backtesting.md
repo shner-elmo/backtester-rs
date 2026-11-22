@@ -146,6 +146,7 @@ Configure the run and interact with the portfolio through `ctx`:
 | `set_dividends_file(path)` | Dividends JSON location (default `metadata/get_dividends.json`; explicit path must exist) |
 | `set_renames_file(path)` | Renames JSON location (default `metadata/ticker_renames.json`; explicit path must exist) |
 | `set_read_threads(n)` | Parquet decode threads feeding the tick loop (default `0` = auto) — see [Parallel decode](#parallel-decode) |
+| `set_read_channel_depth(n)` | Decoded chunks queued per reader thread (default `4`, must be non-zero) — see [Parallel decode](#parallel-decode) |
 | `consolidate(symbol, period, cb)` | Aggregate bars into a larger timeframe |
 | `on_time(...)` | Schedule a callback at a time of day |
 | `ctx.portfolio` | Cash, positions, and equity |
@@ -553,7 +554,11 @@ of taking turns with it.
 This is on by default and changes nothing about results: the tick stream is
 identical bar for bar, whatever the thread count. `ctx.set_read_threads(n)`
 overrides it (`0` = pick from the machine's parallelism, `1` = decode on a
-single background thread).
+single background thread). `ctx.set_read_channel_depth(n)` controls how many
+decoded chunks each reader may queue ahead (default `4`). Lower values reduce
+peak memory. If throughput matters on a wide run, benchmark
+`ctx.set_read_channel_depth(8)` on your workload to see whether extra read-ahead
+helps.
 
 How much it buys depends on which side is the bottleneck. On one 30.7M-row
 month:
