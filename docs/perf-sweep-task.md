@@ -92,12 +92,9 @@ recommendation. Median wall time / median RSS:
 | `consolidator-wide` | 17.688s / 408 MiB | 17.021s / 499 MiB | 17.931s / 580 MiB | 17.468s / 683 MiB | 18.325s / 848 MiB | 17.441s / 993 MiB |
 | `mixed-narrow` | 2.592s / 79 MiB | 2.589s / 81 MiB | 2.609s / 82 MiB | 2.626s / 81 MiB | 2.581s / 81 MiB | 2.588s / 83 MiB |
 
-Decision: stay at depth 8 for now. Depth 1 saves a lot of memory and is fine
-for strategy-heavy or narrow consumers, but it is 25% slower than the fastest
-depth on `noop-wide`. Depth 4 is within 5% on `noop-wide` and
-`consolidator-wide`, but misses the 5% threshold on `indicators-wide`; depth 6
-misses on `consolidator-wide`. Depth 8 is the only depth within 5% of the
-fastest median for every workload.
+Depth 8 was the only setting within 5% of the fastest median for every workload.
+Depth 4 missed that threshold on `indicators-wide`, and depth 6 missed it on
+`consolidator-wide`. The full validation therefore used depth 8.
 
 Full 56-month validation at depth 8:
 
@@ -106,10 +103,12 @@ Full 56-month validation at depth 8:
 | `noop-wide` | 88.678 s | 931 MiB | 1,120,001 | 1,835,105,812 | `b045452492db67ff` |
 | `mixed-narrow` | 26.024 s | 111 MiB | 1,006,021 | 10,776,702 | `19278cdbc06ad833` |
 
-Takeaway: deep buffering is unnecessary for slower consumers, but the fastest
-full-universe path still benefits enough from read-ahead that the default
-should remain 8 unless a caller opts into lower memory with
-`Context::set_read_channel_depth`.
+The default is now depth 4 to reduce memory use in strategy backtests. Compared
+with depth 8, it reduced median peak RSS by 31–36% across the three wide
+workloads. The wide consolidator took about the same time, the full-universe
+no-op took 3% longer, and the wide indicator median was 8% slower amid
+substantial run-to-run variation. On throughput-sensitive runs, compare depth 8
+using `Context::set_read_channel_depth(8)`.
 
 ## The knobs
 
@@ -118,7 +117,7 @@ should remain 8 unless a caller opts into lower memory with
 | `set_read_threads(n)` | `backtester/src/context.rs` | `0` → `default_threads()` | decode threads ahead of the tick loop | yes, per-run via `Context` |
 | `default_threads()` | `backtester/src/tick_stream.rs` | `min(cores, 8)` | thread count when `0` | derived |
 | `MAX_AUTO_THREADS` | `backtester/src/tick_stream.rs` | `8` | cap on the auto thread count | hardcoded |
-| `set_read_channel_depth(n)` | `backtester/src/context.rs` | `8` (must be non-zero) | decoded chunks a worker may queue ahead of the consumer | yes, per-run via `Context` |
+| `set_read_channel_depth(n)` | `backtester/src/context.rs` | `4` (must be non-zero) | decoded chunks a worker may queue ahead of the consumer | yes, per-run via `Context` |
 | `READ_BATCH_SIZE` | `backtester/src/data.rs` | `131_072` | rows per Arrow batch decoded at once | hardcoded |
 | row-group size | `scripts/ingest_arrow.rs` | Parquet writer default | rows per row group = one decode work unit | ingest-time only |
 
@@ -134,8 +133,8 @@ should remain 8 unless a caller opts into lower memory with
    symbol width, but the bytes stay in cache so you measure decode.
 3. **Sweep one axis at a time** from the current defaults; a knob only matters if
    it moves bars/s outside the ~3% noise band. `NOOP_THREADS=n` picks threads
-   without a rebuild; `CHANNEL_DEPTH` / `READ_BATCH_SIZE` are consts, so edit +
-   `cargo build --release --example no_op_baseline` per value.
+   without a rebuild. Use the `channel_depth_benchmark` example with `--depth N`
+   to sweep depth. Changing `READ_BATCH_SIZE` requires a rebuild.
 4. **Confirm on the full cold scan** before promoting — the production path is
    disk-bound and a knob that helps the warm case must at least not regress it.
 

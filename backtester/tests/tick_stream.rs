@@ -152,7 +152,7 @@ fn parallel_decode_matches_a_sequential_sweep() {
 
     // Thread counts on both sides of the unit count, so the rotation is
     // exercised with workers that get several units, one unit, and none.
-    for depth in [1, 2, 8] {
+    for depth in [1, 2, 4, 8] {
         for threads in [1, 2, 3, 8, 32] {
             let got = parallel(&files, &mask, threads, depth);
             assert_eq!(
@@ -191,7 +191,7 @@ fn a_selective_subscription_still_matches() {
 
     let expected = sequential(&files, &mask);
     assert!(expected.iter().all(|(_, bars)| bars.len() == 2));
-    for depth in [1, 2, 8] {
+    for depth in [1, 2, 4, 8] {
         for threads in [1, 4] {
             assert_eq!(
                 parallel(&files, &mask, threads, depth),
@@ -213,7 +213,7 @@ fn ticks_that_straddle_a_file_boundary_arrive_whole() {
 
     let files = sorted_parquet_files(dir.path().to_str().unwrap());
     let mask = all_symbols(4);
-    for depth in [1, 2, 8] {
+    for depth in [1, 2, 4, 8] {
         for threads in [1, 4] {
             let ticks = parallel(&files, &mask, threads, depth);
 
@@ -244,7 +244,7 @@ fn unsorted_data_fails_the_stream_at_the_first_bad_row() {
 
     let files = sorted_parquet_files(dir.path().to_str().unwrap());
     let mask = all_symbols(1);
-    for depth in [1, 2, 8] {
+    for depth in [1, 2, 4, 8] {
         for threads in [1, 2, 8] {
             let mut stream = TickStream::with_channel_depth(&files, &mask, threads, depth).unwrap();
             let err = loop {

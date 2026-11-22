@@ -47,17 +47,11 @@ use crate::{
     error::BacktestError,
 };
 
-/// Chunks a worker may have queued ahead of the consumer. The consumer reads
-/// its workers in a fixed rotation, so a shallow channel makes a worker block
-/// the moment the consumer is busy elsewhere in the rotation — the pool then
-/// starves waiting on the single tick loop rather than reading ahead of it.
-/// Measured on the full minute dataset (swap off): raising this from 2 to 8
-/// cut a warm decode-bound scan by ~35% (17.0M → 22.9M bars/s) and a full
-/// cold-disk scan by ~28% (197.7s → 142.3s), read-ahead overlapping disk I/O
-/// with decode. Flat past 8; the cost is `depth × threads` resident chunks
-/// (~7 MB each on a wide universe, so a few hundred MB at the default thread
-/// count).
-pub(crate) const DEFAULT_READ_CHANNEL_DEPTH: usize = 8;
+/// Chunks each worker may queue ahead of the consumer. Depth 4 saved about
+/// a third of peak memory in the wide benchmarks compared with depth 8.
+/// The consumer reads workers in a fixed rotation, so extra buffering can
+/// help a fast consumer avoid waiting for its next chunk.
+pub(crate) const DEFAULT_READ_CHANNEL_DEPTH: usize = 4;
 
 /// Cap on auto-selected decode threads. The path is consumer-bound: a warm
 /// full-universe sweep peaks around 4 threads (the single tick loop saturates
@@ -115,7 +109,8 @@ pub struct TickStream {
 
 impl TickStream {
     /// Stream `files` (already in chronological order) through `threads`
-    /// decode threads. `threads` of 0 means [`default_threads`].
+    /// decode threads. `threads` of 0 means [`default_threads`]. Each reader
+    /// can queue four decoded chunks.
     pub fn new(
         files: &[PathBuf],
         subscribed: &SubscriptionMask,

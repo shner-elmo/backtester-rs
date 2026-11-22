@@ -404,9 +404,12 @@ impl Context {
     }
 
     /// Set how many decoded chunks each reader thread may queue ahead of the
-    /// event loop. A deeper channel can overlap more I/O and decode with a
-    /// fast strategy, at the cost of keeping more decoded data resident.
-    /// Defaults to 8 and must be non-zero.
+    /// event loop. Defaults to 4 and must be non-zero.
+    ///
+    /// If a wide backtest needs higher throughput, benchmark depth 8 on
+    /// your dataset. Extra read-ahead can help when the strategy processes
+    /// bars quickly, at the cost of higher peak memory. Lower the depth to
+    /// reduce memory use.
     pub fn set_read_channel_depth(&mut self, depth: usize) {
         assert!(depth > 0, "read channel depth must be greater than zero");
         self.read_channel_depth = depth;
@@ -569,8 +572,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_channel_depth_defaults_to_eight() {
-        assert_eq!(Context::default().read_channel_depth, 8);
+    fn read_channel_depth_defaults_to_four() {
+        assert_eq!(Context::default().read_channel_depth, 4);
     }
 
     #[test]

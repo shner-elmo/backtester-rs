@@ -20,7 +20,7 @@ use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
 
 const STARTING_CASH: f64 = 100_000.0;
-const DEFAULT_DEPTH: usize = 8;
+const DEFAULT_DEPTH: usize = 4;
 const DEFAULT_THREADS: usize = 8;
 const NARROW_SYMBOLS: usize = 100;
 
